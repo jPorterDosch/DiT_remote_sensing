@@ -47,7 +47,6 @@ dependencies:
     - filelock==3.14.0
     - fire==0.6.0
     - flatbuffers==24.3.25
-    - flux==0.0.0.post1+g8726236aa
     - fonttools==4.53.1
     - fsspec==2024.6.1
     - gitdb==4.0.11
