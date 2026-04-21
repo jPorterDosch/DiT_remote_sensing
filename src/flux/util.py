@@ -9,10 +9,12 @@ from einops import rearrange
 from huggingface_hub import hf_hub_download
 from imwatermark import WatermarkEncoder
 from matplotlib.colors import ListedColormap
+from pathlib import Path
 from PIL import Image
 from safetensors.torch import load_file as load_sft
 from scipy.spatial.distance import cosine
 from torch.nn import functional as F
+from torchvision import transforms
 
 from flux.model import Flux, FluxParams
 from flux.modules.autoencoder import AutoEncoder, AutoEncoderParams
@@ -405,7 +407,7 @@ def visual_matching(A, B, img1_path, img2_path, cat):
 def visualize_and_save_features_pca_pair(src_ft, src_ft_in, trg_ft, img1_path, img2_path, cat):
     img1_name = (img1_path.split("/")[-1]).split(".")[0]
     img2_name = (img2_path.split("/")[-1]).split(".")[0]
-    save_dir = "./matching_visualization/flux_pad_in/feat_pairs/%s/" % cat
+    # save_dir = "./matching_visualization/flux_pad_in/feat_pairs/%s/" % cat
 
     calculate_similarity(
         src_ft_in,
@@ -671,10 +673,6 @@ WATERMARK_MESSAGE = 0b001010101111111010000111100111001111010100101110
 # bin(x)[2:] gives bits of x as str, use int to convert them to 0/1
 WATERMARK_BITS = [int(bit) for bit in bin(WATERMARK_MESSAGE)[2:]]
 embed_watermark = WatermarkEmbedder(WATERMARK_BITS)
-
-from pathlib import Path
-
-from torchvision import transforms
 
 
 def load_video(video_folder: str, resize=None, num_frames=None):
