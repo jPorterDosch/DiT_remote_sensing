@@ -110,8 +110,8 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install ruff
-        run: pip install ruff
+      - name: Set up Ruff
+        uses: astral-sh/ruff-action@v3
 
       # --- Format Check (PR-changed files only, delta-based) ---
       - name: Run ruff format
