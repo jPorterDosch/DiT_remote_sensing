@@ -18,4 +18,6 @@ source ~/.bashrc
 conda env create -f environment.yml
 conda activate DiTF
 pip install -e ".[all]"
-#### TODO: need to set up models on ISAAC (models are very large, in total ~90 GB, we need to run them in a shared space).
+ 
+ ### Accessing data and baseline models
+ Models and EuroSAT dataset are mounted on ISAAC cluster at /lustre/isaac24/scratch/jdosch1/DeepLearning.
