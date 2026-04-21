@@ -110,7 +110,7 @@ def print_load_warning(missing: list[str], unexpected: list[str]) -> None:
 
 
 def load_flow_model(name: str, device: str | torch.device = "cuda", hf_download: bool = True):
-    # Loading Flux
+    # Loading flux
     print("Init model")
     ckpt_path = configs[name].ckpt_path
     if (
