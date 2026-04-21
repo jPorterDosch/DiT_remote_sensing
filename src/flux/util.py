@@ -35,7 +35,7 @@ configs = {
         repo_id="black-forest-labs/FLUX.1-dev",
         repo_flow="flux1-dev.safetensors",
         repo_ae="ae.safetensors",
-        ckpt_path="/home/jdosch1/personal/DiTF/ditf_models/FLUX.1-dev/flux1-dev.safetensors",
+        ckpt_path="/lustre/isaac24/scratch/jdosch1/DeepLearning/FLUX.1-dev/flux1-dev.safetensors",
         params=FluxParams(
             in_channels=64,
             vec_in_dim=768,
@@ -50,7 +50,7 @@ configs = {
             qkv_bias=True,
             guidance_embed=True,
         ),
-        ae_path="/home/jdosch1/personal/DiTF/ditf_models/FLUX.1-dev/ae.safetensors",
+        ae_path="/lustre/isaac24/scratch/jdosch1/DeepLearning/FLUX.1-dev/ae.safetensors",
         ae_params=AutoEncoderParams(
             resolution=256,
             in_channels=3,
@@ -109,9 +109,7 @@ def print_load_warning(missing: list[str], unexpected: list[str]) -> None:
         print(f"Got {len(unexpected)} unexpected keys:\n\t" + "\n\t".join(unexpected))
 
 
-def load_flow_model(
-    name: str, device: str | torch.device = "cuda", hf_download: bool = True
-):
+def load_flow_model(name: str, device: str | torch.device = "cuda", hf_download: bool = True):
     # Loading Flux
     print("Init model")
     ckpt_path = configs[name].ckpt_path
@@ -139,7 +137,7 @@ def load_t5(device: str | torch.device = "cuda", max_length: int = 512) -> HFEmb
     # max length 64, 128, 256 and 512 should work (if your sequence is short enough)
     # TODO: update these paths to shared ISAAC directory when available.
     return HFEmbedder(
-        "/home/jdosch1/personal/DiTF/ditf_models/t5-v1_1-xxl",
+        "/lustre/isaac24/scratch/jdosch1/DeepLearning/t5-v1_1-xxl",
         max_length=max_length,
         torch_dtype=torch.bfloat16,
     ).to(device)
@@ -148,15 +146,13 @@ def load_t5(device: str | torch.device = "cuda", max_length: int = 512) -> HFEmb
 def load_clip(device: str | torch.device = "cuda") -> HFEmbedder:
     # TODO: update these paths to shared ISAAC directory when available.
     return HFEmbedder(
-        "/home/jdosch1/personal/DiTF/ditf_models/clip-vit-large-patch14",
+        "/lustre/isaac24/scratch/jdosch1/DeepLearning/clip-vit-large-patch14",
         max_length=77,
         torch_dtype=torch.bfloat16,
     ).to(device)
 
 
-def load_ae(
-    name: str, device: str | torch.device = "cuda", hf_download: bool = True
-) -> AutoEncoder:
+def load_ae(name: str, device: str | torch.device = "cuda", hf_download: bool = True) -> AutoEncoder:
     ckpt_path = configs[name].ae_path
     if (
         ckpt_path is None
@@ -200,16 +196,14 @@ class WatermarkEmbedder:
         if squeeze:
             image = image[None, ...]
         n = image.shape[0]
-        image_np = rearrange(
-            (255 * image).detach().cpu(), "n b c h w -> (n b) h w c"
-        ).numpy()[:, :, :, ::-1]
+        image_np = rearrange((255 * image).detach().cpu(), "n b c h w -> (n b) h w c").numpy()[:, :, :, ::-1]
         # torch (b, c, h, w) in [0, 1] -> numpy (b, h, w, c) [0, 255]
         # watermarking libary expects input as cv2 BGR format
         for k in range(image_np.shape[0]):
             image_np[k] = self.encoder.encode(image_np[k], "dwtDct")
-        image = torch.from_numpy(
-            rearrange(image_np[:, :, :, ::-1], "(n b) h w c -> n b c h w", n=n)
-        ).to(image.device)
+        image = torch.from_numpy(rearrange(image_np[:, :, :, ::-1], "(n b) h w c -> n b c h w", n=n)).to(
+            image.device
+        )
         image = torch.clamp(image / 255, min=0.0, max=1.0)
         if squeeze:
             image = image[0]
@@ -231,9 +225,9 @@ def replace_center_feature_with_gpu(tensor, window_size, threshold=0.3):
     modified_tensor = tensor.clone()
 
     # 手动填充张量的 height 和 width 维度（只在前两个维度进行对称填充）
-    padded_tensor = torch.zeros(
-        (height + 2 * radius, width + 2 * radius, channels), device="cuda"
-    ).to(torch.bfloat16)
+    padded_tensor = torch.zeros((height + 2 * radius, width + 2 * radius, channels), device="cuda").to(
+        torch.bfloat16
+    )
     padded_tensor[radius : radius + height, radius : radius + width, :] = tensor
 
     # 将所有窗口的特征堆叠成一个 5D 张量 [batch, window_size, window_size, height, width]
@@ -246,9 +240,7 @@ def replace_center_feature_with_gpu(tensor, window_size, threshold=0.3):
 
     # 获取窗口的中心特征 [height, width, channels]
     center_indices = (window_size * window_size) // 2
-    center_features = unfolded_windows[
-        :, :, center_indices, :
-    ]  # 取出每个窗口的中心特征
+    center_features = unfolded_windows[:, :, center_indices, :]  # 取出每个窗口的中心特征
 
     # 计算中心特征与窗口中其他所有特征的余弦相似度
     # 使用广播机制计算相似度 [height, width, window_size*window_size-1]
@@ -293,7 +285,6 @@ def replace_center_feature_with_gpu(tensor, window_size, threshold=0.3):
 
 
 def calculate_similarity(tensor, window_size, save_dir, img_name):
-
     # 获取特征张量的尺寸
 
     tensor = tensor.float().squeeze(0).permute(1, 2, 0).cpu().numpy()
@@ -321,9 +312,7 @@ def calculate_similarity(tensor, window_size, save_dir, img_name):
                     if m == radius and n == radius:
                         continue  # 跳过中心点本身
                     feature = window[m, n, :]
-                    sim = 1 - cosine(
-                        center_feature, feature
-                    )  # 1 - cosine 距离即为余弦相似度
+                    sim = 1 - cosine(center_feature, feature)  # 1 - cosine 距离即为余弦相似度
                     similarities.append(sim)
 
             # 计算平均相似度
@@ -336,7 +325,6 @@ def calculate_similarity(tensor, window_size, save_dir, img_name):
 
 
 def visual_hotmap(feature_map, save_dir=None, img_name=None):
-
     # 生成随机的特征图
     # feature_map = np.random.rand(32, 32, 1280)
     # feature_map = feature_map.squeeze(0).permute(1,2,0).cpu().numpy()
@@ -414,10 +402,7 @@ def visual_matching(A, B, img1_path, img2_path, cat):
     plt.savefig(os.path.join(save_dir, "%s_%s.jpg" % (img1_name, img2_name)))
 
 
-def visualize_and_save_features_pca_pair(
-    src_ft, src_ft_in, trg_ft, img1_path, img2_path, cat
-):
-
+def visualize_and_save_features_pca_pair(src_ft, src_ft_in, trg_ft, img1_path, img2_path, cat):
     img1_name = (img1_path.split("/")[-1]).split(".")[0]
     img2_name = (img2_path.split("/")[-1]).split(".")[0]
     save_dir = "./matching_visualization/flux_pad_in/feat_pairs/%s/" % cat
@@ -528,9 +513,7 @@ def resize(img, target_res=224, resize=True, to_pil=True, edge=False):
             img = np.asarray(img)
             top_pad = (target_res - height) // 2
             bottom_pad = target_res - height - top_pad
-            img = np.pad(
-                img, pad_width=[(top_pad, bottom_pad), (0, 0), (0, 0)], mode="edge"
-            )
+            img = np.pad(img, pad_width=[(top_pad, bottom_pad), (0, 0), (0, 0)], mode="edge")
         else:
             if resize:
                 img = img.resize(
@@ -544,9 +527,7 @@ def resize(img, target_res=224, resize=True, to_pil=True, edge=False):
             img = np.asarray(img)
             left_pad = (target_res - width) // 2
             right_pad = target_res - width - left_pad
-            img = np.pad(
-                img, pad_width=[(0, 0), (left_pad, right_pad), (0, 0)], mode="edge"
-            )
+            img = np.pad(img, pad_width=[(0, 0), (left_pad, right_pad), (0, 0)], mode="edge")
         canvas = img
     if to_pil:
         canvas = Image.fromarray(canvas)
@@ -579,19 +560,14 @@ def preprocess_kps_pad(kps, img_width, img_height, size):
 
 
 def preprocess_data(data, size=512):
-
     source_size = data["src_imsize"][:2]
     target_size = data["trg_imsize"][:2]
 
     src_kps = torch.tensor(data["src_kps"]).float()
     trg_kps = torch.tensor(data["trg_kps"]).float()
 
-    source_kps, src_x, src_y, src_scale = preprocess_kps_pad(
-        src_kps, source_size[0], source_size[1], size
-    )
-    target_kps, trg_x, trg_y, trg_scale = preprocess_kps_pad(
-        trg_kps, target_size[0], target_size[1], size
-    )
+    source_kps, src_x, src_y, src_scale = preprocess_kps_pad(src_kps, source_size[0], source_size[1], size)
+    target_kps, trg_x, trg_y, trg_scale = preprocess_kps_pad(trg_kps, target_size[0], target_size[1], size)
 
     trg_bndbox = np.asarray(data["trg_bndbox"])
     trg_bndbox = trg_bndbox * trg_scale
@@ -614,9 +590,7 @@ def draw_correspondences_gathered(points1, points2, image1, image2):
     :param image2: a PIL image.
     :return: a figure of images with marked points.
     """
-    assert len(points1) == len(points2), (
-        f"points lengths are incompatible: {len(points1)} != {len(points2)}."
-    )
+    assert len(points1) == len(points2), f"points lengths are incompatible: {len(points1)} != {len(points2)}."
     num_points = len(points1)
 
     if num_points > 15:
@@ -654,16 +628,12 @@ def draw_correspondences_gathered(points1, points2, image1, image2):
 
     for point1, point2, color in zip(points1, points2, colors):
         y1, x1 = point1
-        circ1_1 = plt.Circle(
-            (x1, y1), radius1, facecolor=color, edgecolor="white", alpha=0.5
-        )
+        circ1_1 = plt.Circle((x1, y1), radius1, facecolor=color, edgecolor="white", alpha=0.5)
         circ1_2 = plt.Circle((x1, y1), radius2, facecolor=color, edgecolor="white")
         ax1.add_patch(circ1_1)
         ax1.add_patch(circ1_2)
         y2, x2 = point2
-        circ2_1 = plt.Circle(
-            (x2, y2), radius1, facecolor=color, edgecolor="white", alpha=0.5
-        )
+        circ2_1 = plt.Circle((x2, y2), radius1, facecolor=color, edgecolor="white", alpha=0.5)
         circ2_2 = plt.Circle((x2, y2), radius2, facecolor=color, edgecolor="white")
         ax2.add_patch(circ2_1)
         ax2.add_patch(circ2_2)
@@ -728,11 +698,7 @@ def load_video(video_folder: str, resize=None, num_frames=None):
 
     for file in input_files:
         if resize is not None:
-            video.append(
-                transforms.ToTensor()(
-                    Image.open(str(file)).resize((resw, resh), Image.LANCZOS)
-                )
-            )
+            video.append(transforms.ToTensor()(Image.open(str(file)).resize((resw, resh), Image.LANCZOS)))
         else:
             video.append(transforms.ToTensor()(Image.open(str(file))))
 
@@ -742,22 +708,14 @@ def load_video(video_folder: str, resize=None, num_frames=None):
 def add_config_paths(data_path, config):
     # preprocessing
     config["video_folder"] = os.path.join(data_path, "video")
-    config["trajectories_file"] = os.path.join(
-        data_path, "of_trajectories", "trajectories.pt"
-    )
+    config["trajectories_file"] = os.path.join(data_path, "of_trajectories", "trajectories.pt")
     config["unfiltered_trajectories_file"] = os.path.join(
         data_path, "of_trajectories", "trajectories_wo_direct_filter.pt"
     )
-    config["fg_trajectories_file"] = os.path.join(
-        data_path, "of_trajectories", "fg_trajectories.pt"
-    )
-    config["bg_trajectories_file"] = os.path.join(
-        data_path, "of_trajectories", "bg_trajectories.pt"
-    )
+    config["fg_trajectories_file"] = os.path.join(data_path, "of_trajectories", "fg_trajectories.pt")
+    config["bg_trajectories_file"] = os.path.join(data_path, "of_trajectories", "bg_trajectories.pt")
 
-    config["embed_video_path"] = os.path.join(
-        data_path, "flux_embeddings", "flux_embed_video.pt"
-    )
+    config["embed_video_path"] = os.path.join(data_path, "flux_embeddings", "flux_embed_video.pt")
     config["bb_dir"] = os.path.join(data_path, "flux_best_buddies")
 
     # model
