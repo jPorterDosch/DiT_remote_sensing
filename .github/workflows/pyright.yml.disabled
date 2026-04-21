@@ -1,0 +1,364 @@
+# =============================================================================
+# Pyright Type Checking Workflow
+# =============================================================================
+# Runs on every PR. Only checks files changed in the PR.
+# Fails if PR introduces NEW type errors (not pre-existing ones).
+#
+# Local usage:
+#   npx pyright                    # Check all files
+#   npx pyright src/file.py        # Check specific file
+#
+# =============================================================================
+
+name: Pyright
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install pyright
+        run: npm install -g pyright
+
+      # --- Get Changed Files ---
+      - name: Get changed Python files
+        id: changed
+        run: |
+          # Get Python files changed in this PR (|| true prevents exit on no .py files)
+          CHANGED=$(git diff --name-only origin/main...HEAD | grep '\.py$' || true)
+          CHANGED=$(echo "$CHANGED" | tr '\n' ' ')
+          echo "files=$CHANGED" >> $GITHUB_OUTPUT
+
+          if [ -z "$CHANGED" ]; then
+            echo "No Python files changed in this PR"
+            echo "skip=true" >> $GITHUB_OUTPUT
+          else
+            echo "Changed files: $CHANGED"
+            echo "skip=false" >> $GITHUB_OUTPUT
+            echo "count=$(echo $CHANGED | wc -w | tr -d ' ')" >> $GITHUB_OUTPUT
+          fi
+
+      # --- Analyze PR Branch ---
+      - name: Analyze PR branch
+        if: steps.changed.outputs.skip != 'true'
+        id: pr
+        run: |
+          mkdir -p .pyright-stats
+
+          # Run pyright on WHOLE codebase for full context
+          pyright --outputjson 2>/dev/null > .pyright-stats/pr_full.json || true
+
+          # Filter to only errors in changed files
+          # Store changed files as JSON array for jq filtering
+          echo '${{ steps.changed.outputs.files }}' | tr ' ' '\n' | jq -R -s 'split("\n") | map(select(length > 0))' > .pyright-stats/changed_files.json
+
+          jq --slurpfile files .pyright-stats/changed_files.json '
+            .generalDiagnostics |= [.[] | select(
+              (.severity == "error" or .severity == "warning") and
+              (($files[0] | map("/" + .)) as $paths | .file | endswith($paths[]))
+            )]
+          ' .pyright-stats/pr_full.json > .pyright-stats/pr.json
+
+          # Extract unique signatures separately for errors and warnings
+          # Format: file:line:rule
+          jq -r '.generalDiagnostics[] | select(.severity == "error") | "\(.file):\(.range.start.line):\(.rule // "unknown")"' \
+            .pyright-stats/pr.json | sort -u > .pyright-stats/pr_errors.txt
+          jq -r '.generalDiagnostics[] | select(.severity == "warning") | "\(.file):\(.range.start.line):\(.rule // "unknown")"' \
+            .pyright-stats/pr.json | sort -u > .pyright-stats/pr_warnings.txt
+
+          PR_ERRORS=$(wc -l < .pyright-stats/pr_errors.txt | tr -d ' ')
+          PR_WARNINGS=$(wc -l < .pyright-stats/pr_warnings.txt | tr -d ' ')
+          echo "errors=$PR_ERRORS" >> $GITHUB_OUTPUT
+          echo "warnings=$PR_WARNINGS" >> $GITHUB_OUTPUT
+          echo "PR branch: $PR_ERRORS errors, $PR_WARNINGS warnings in changed files"
+
+      # --- Analyze Main Branch ---
+      - name: Analyze main branch
+        if: steps.changed.outputs.skip != 'true'
+        id: main
+        run: |
+          # Checkout main
+          git checkout origin/main --quiet
+
+          # Run pyright on WHOLE codebase for full context
+          pyright --outputjson 2>/dev/null > .pyright-stats/main_full.json || true
+
+          # Filter to only errors/warnings in changed files
+          jq --slurpfile files .pyright-stats/changed_files.json '
+            .generalDiagnostics |= [.[] | select(
+              (.severity == "error" or .severity == "warning") and
+              (($files[0] | map("/" + .)) as $paths | .file | endswith($paths[]))
+            )]
+          ' .pyright-stats/main_full.json > .pyright-stats/main.json
+
+          # Extract unique signatures separately for errors and warnings
+          jq -r '.generalDiagnostics[] | select(.severity == "error") | "\(.file):\(.range.start.line):\(.rule // "unknown")"' \
+            .pyright-stats/main.json | sort -u > .pyright-stats/main_errors.txt
+          jq -r '.generalDiagnostics[] | select(.severity == "warning") | "\(.file):\(.range.start.line):\(.rule // "unknown")"' \
+            .pyright-stats/main.json | sort -u > .pyright-stats/main_warnings.txt
+
+          MAIN_ERRORS=$(wc -l < .pyright-stats/main_errors.txt | tr -d ' ')
+          MAIN_WARNINGS=$(wc -l < .pyright-stats/main_warnings.txt | tr -d ' ')
+          echo "errors=$MAIN_ERRORS" >> $GITHUB_OUTPUT
+          echo "warnings=$MAIN_WARNINGS" >> $GITHUB_OUTPUT
+          echo "Main branch: $MAIN_ERRORS errors, $MAIN_WARNINGS warnings in changed files"
+
+          # Return to PR
+          git checkout - --quiet
+
+      # --- Find New/Fixed Issues ---
+      - name: Find new and fixed issues
+        if: steps.changed.outputs.skip != 'true'
+        id: diff
+        run: |
+          D=".pyright-stats"
+
+          # New errors: in PR but not in main
+          comm -23 "$D/pr_errors.txt" "$D/main_errors.txt" > "$D/new_errors.txt"
+          # Fixed errors: in main but not in PR
+          comm -13 "$D/pr_errors.txt" "$D/main_errors.txt" > "$D/fixed_errors.txt"
+
+          # New warnings: in PR but not in main
+          comm -23 "$D/pr_warnings.txt" "$D/main_warnings.txt" > "$D/new_warnings.txt"
+          # Fixed warnings: in main but not in PR
+          comm -13 "$D/pr_warnings.txt" "$D/main_warnings.txt" > "$D/fixed_warnings.txt"
+
+          NEW_ERRORS=$(wc -l < "$D/new_errors.txt" | tr -d ' ')
+          FIXED_ERRORS=$(wc -l < "$D/fixed_errors.txt" | tr -d ' ')
+          NEW_WARNINGS=$(wc -l < "$D/new_warnings.txt" | tr -d ' ')
+          FIXED_WARNINGS=$(wc -l < "$D/fixed_warnings.txt" | tr -d ' ')
+
+          echo "new_errors=$NEW_ERRORS" >> $GITHUB_OUTPUT
+          echo "fixed_errors=$FIXED_ERRORS" >> $GITHUB_OUTPUT
+          echo "new_warnings=$NEW_WARNINGS" >> $GITHUB_OUTPUT
+          echo "fixed_warnings=$FIXED_WARNINGS" >> $GITHUB_OUTPUT
+
+          echo "New: $NEW_ERRORS errors, $NEW_WARNINGS warnings"
+          echo "Fixed: $FIXED_ERRORS errors, $FIXED_WARNINGS warnings"
+
+      # --- Build Comment ---
+      - name: Build comment body
+        if: steps.changed.outputs.skip != 'true'
+        run: |
+          D=".pyright-stats"
+          NEW_ERRORS="${{ steps.diff.outputs.new_errors }}"
+          FIXED_ERRORS="${{ steps.diff.outputs.fixed_errors }}"
+          NEW_WARNINGS="${{ steps.diff.outputs.new_warnings }}"
+          FIXED_WARNINGS="${{ steps.diff.outputs.fixed_warnings }}"
+          FILES="${{ steps.changed.outputs.count }}"
+          WORKSPACE="$(pwd)"
+
+          # Status based on new errors (warnings don't fail the check)
+          if [[ "${NEW_ERRORS:-0}" -gt 0 ]]; then
+            STATUS="❌ +$NEW_ERRORS new errors"
+          elif [[ "${FIXED_ERRORS:-0}" -gt 0 ]]; then
+            STATUS="✅ Fixed $FIXED_ERRORS errors"
+          else
+            STATUS="✅ No new errors"
+          fi
+
+          # Build comment
+          {
+            echo '<!-- pyright-pr-summary -->'
+            echo "## 🔍 Pyright — $STATUS"
+            echo ''
+            echo '| Check | Result |'
+            echo '|-------|--------|'
+            if [[ "${NEW_ERRORS:-0}" -gt 0 ]]; then
+              echo "| **Errors** | ❌ $NEW_ERRORS new ($FILES files checked) |"
+            elif [[ "${FIXED_ERRORS:-0}" -gt 0 ]]; then
+              echo "| **Errors** | ✅ $FIXED_ERRORS fixed ($FILES files checked) |"
+            else
+              echo "| **Errors** | ✅ No new errors ($FILES files checked) |"
+            fi
+            if [[ "${NEW_WARNINGS:-0}" -gt 0 ]]; then
+              echo "| **Warnings** | ⚠️ $NEW_WARNINGS new |"
+            elif [[ "${FIXED_WARNINGS:-0}" -gt 0 ]]; then
+              echo "| **Warnings** | ✅ $FIXED_WARNINGS fixed |"
+            else
+              echo "| **Warnings** | ✅ No new warnings |"
+            fi
+            echo ''
+
+            # New errors section
+            if [[ "${NEW_ERRORS:-0}" -gt 0 ]]; then
+              echo "### ❌ New Errors ($NEW_ERRORS)"
+              echo ''
+              echo '| Location | Rule | Message |'
+              echo '|----------|------|---------|'
+
+              jq -R -s 'split("\n") | map(select(length > 0))' "$D/new_errors.txt" > "$D/new_err_sigs.json"
+              jq -r --slurpfile sigs "$D/new_err_sigs.json" --arg ws "$WORKSPACE" '
+                [.generalDiagnostics[] | select(.severity == "error") |
+                  "\(.file):\(.range.start.line):\(.rule // "unknown")" as $sig |
+                  select($sigs[0] | index($sig)) |
+                  {sig: $sig, file: .file, line: .range.start.line, rule: (.rule // "unknown"), msg: .message}
+                ] |
+                group_by(.sig) | map(first) | .[] |
+                (.file | ltrimstr($ws + "/")) as $relpath |
+                "| [\($relpath):\(.line)](../blob/${{ github.head_ref }}/\($relpath)#L\(.line)) | `\(.rule)` | \(.msg | split("\n") | first | gsub("\\|"; "│") | gsub("`"; "'"'"'") | if length > 80 then .[:77] + "..." else . end) |"
+              ' "$D/pr.json"
+              echo ''
+            fi
+
+            # New warnings section
+            if [[ "${NEW_WARNINGS:-0}" -gt 0 ]]; then
+              echo "### ⚠️ New Warnings ($NEW_WARNINGS)"
+              echo ''
+              echo '| Location | Rule | Message |'
+              echo '|----------|------|---------|'
+
+              jq -R -s 'split("\n") | map(select(length > 0))' "$D/new_warnings.txt" > "$D/new_warn_sigs.json"
+              jq -r --slurpfile sigs "$D/new_warn_sigs.json" --arg ws "$WORKSPACE" '
+                [.generalDiagnostics[] | select(.severity == "warning") |
+                  "\(.file):\(.range.start.line):\(.rule // "unknown")" as $sig |
+                  select($sigs[0] | index($sig)) |
+                  {sig: $sig, file: .file, line: .range.start.line, rule: (.rule // "unknown"), msg: .message}
+                ] |
+                group_by(.sig) | map(first) | .[] |
+                (.file | ltrimstr($ws + "/")) as $relpath |
+                "| [\($relpath):\(.line)](../blob/${{ github.head_ref }}/\($relpath)#L\(.line)) | `\(.rule)` | \(.msg | split("\n") | first | gsub("\\|"; "│") | gsub("`"; "'"'"'") | if length > 80 then .[:77] + "..." else . end) |"
+              ' "$D/pr.json"
+              echo ''
+            fi
+
+            # Fixed errors section (collapsed)
+            if [[ "${FIXED_ERRORS:-0}" -gt 0 ]]; then
+              echo "<details>"
+              echo "<summary>🟢 Fixed Errors ($FIXED_ERRORS)</summary>"
+              echo ''
+              echo '| Location | Rule | Message |'
+              echo '|----------|------|---------|'
+
+              jq -R -s 'split("\n") | map(select(length > 0))' "$D/fixed_errors.txt" > "$D/fixed_err_sigs.json"
+              jq -r --slurpfile sigs "$D/fixed_err_sigs.json" --arg ws "$WORKSPACE" '
+                [.generalDiagnostics[] | select(.severity == "error") |
+                  "\(.file):\(.range.start.line):\(.rule // "unknown")" as $sig |
+                  select($sigs[0] | index($sig)) |
+                  {sig: $sig, file: .file, line: .range.start.line, rule: (.rule // "unknown"), msg: .message}
+                ] |
+                group_by(.sig) | map(first) | .[] |
+                (.file | ltrimstr($ws + "/")) as $relpath |
+                "| `\($relpath):\(.line)` | `\(.rule)` | \(.msg | split("\n") | first | gsub("\\|"; "│") | gsub("`"; "'"'"'") | if length > 80 then .[:77] + "..." else . end) |"
+              ' "$D/main.json"
+              echo ''
+              echo "</details>"
+              echo ''
+            fi
+
+            # Fixed warnings section (collapsed)
+            if [[ "${FIXED_WARNINGS:-0}" -gt 0 ]]; then
+              echo "<details>"
+              echo "<summary>🟡 Fixed Warnings ($FIXED_WARNINGS)</summary>"
+              echo ''
+              echo '| Location | Rule | Message |'
+              echo '|----------|------|---------|'
+
+              jq -R -s 'split("\n") | map(select(length > 0))' "$D/fixed_warnings.txt" > "$D/fixed_warn_sigs.json"
+              jq -r --slurpfile sigs "$D/fixed_warn_sigs.json" --arg ws "$WORKSPACE" '
+                [.generalDiagnostics[] | select(.severity == "warning") |
+                  "\(.file):\(.range.start.line):\(.rule // "unknown")" as $sig |
+                  select($sigs[0] | index($sig)) |
+                  {sig: $sig, file: .file, line: .range.start.line, rule: (.rule // "unknown"), msg: .message}
+                ] |
+                group_by(.sig) | map(first) | .[] |
+                (.file | ltrimstr($ws + "/")) as $relpath |
+                "| `\($relpath):\(.line)` | `\(.rule)` | \(.msg | split("\n") | first | gsub("\\|"; "│") | gsub("`"; "'"'"'") | if length > 80 then .[:77] + "..." else . end) |"
+              ' "$D/main.json"
+              echo ''
+              echo "</details>"
+              echo ''
+            fi
+          } > "$D/comment.md"
+
+      - name: Build skip comment
+        if: steps.changed.outputs.skip == 'true'
+        run: |
+          mkdir -p .pyright-stats
+          {
+            echo '<!-- pyright-pr-summary -->'
+            echo '## 🔍 Pyright — ⏭️ Skipped'
+            echo ''
+            echo 'No Python files changed in this PR.'
+          } > .pyright-stats/comment.md
+
+      - name: Find existing comment
+        uses: peter-evans/find-comment@v3
+        id: find-comment
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          comment-author: 'github-actions[bot]'
+          body-includes: '<!-- pyright-pr-summary -->'
+
+      - name: Post PR comment
+        uses: peter-evans/create-or-update-comment@v4
+        with:
+          comment-id: ${{ steps.find-comment.outputs.comment-id }}
+          issue-number: ${{ github.event.pull_request.number }}
+          body-path: .pyright-stats/comment.md
+          edit-mode: replace
+
+      # --- Final Status ---
+      - name: Check for regressions
+        if: steps.changed.outputs.skip != 'true'
+        run: |
+          NEW_ERRORS="${{ steps.diff.outputs.new_errors }}"
+          FIXED_ERRORS="${{ steps.diff.outputs.fixed_errors }}"
+          NEW_WARNINGS="${{ steps.diff.outputs.new_warnings }}"
+          FIXED_WARNINGS="${{ steps.diff.outputs.fixed_warnings }}"
+
+          echo "=== Pyright Check ==="
+          echo ""
+          echo "  New errors:     ${NEW_ERRORS:-0}"
+          echo "  New warnings:   ${NEW_WARNINGS:-0}"
+          echo "  Fixed errors:   ${FIXED_ERRORS:-0}"
+          echo "  Fixed warnings: ${FIXED_WARNINGS:-0}"
+          echo ""
+
+          # Fail only on new errors (warnings are informational)
+          if [[ "${NEW_ERRORS:-0}" -gt 0 ]]; then
+            echo "  ❌ FAILED: $NEW_ERRORS new type errors introduced"
+            echo ""
+            echo "  New errors:"
+            while IFS=: read -r file line rule; do
+              echo "    $(basename "$file"):$line [$rule]"
+            done < .pyright-stats/new_errors.txt
+            echo ""
+            echo "  To fix:"
+            echo "    1. Run: npx pyright <file>"
+            echo "    2. Fix the reported errors"
+            echo "    3. Push to update this PR"
+            echo ""
+            echo "::error::$NEW_ERRORS new type errors introduced"
+            exit 1
+          fi
+
+          if [[ "${FIXED_ERRORS:-0}" -gt 0 ]]; then
+            echo "  ✅ PASSED: Fixed $FIXED_ERRORS errors!"
+          else
+            echo "  ✅ PASSED: No new errors"
+          fi
+
+          if [[ "${NEW_WARNINGS:-0}" -gt 0 ]]; then
+            echo "  ⚠️ Note: $NEW_WARNINGS new warnings (non-blocking)"
+          fi
