@@ -11,13 +11,17 @@ We take their findings on the specific properties required to extract features f
 
 ### Project Setup
 #### Download conda (if not already installed)
+```
 curl -fsSL https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -o miniconda.sh
 bash miniconda.sh
 source ~/.bashrc
+```
 #### Navigate back to copied directory
+```
 conda env create -f environment.yml
 conda activate DiTF
 pip install -e ".[all]"
+```
  
  ### Accessing data and baseline models
  Models and EuroSAT dataset are mounted on ISAAC cluster at /lustre/isaac24/scratch/jdosch1/DeepLearning.
