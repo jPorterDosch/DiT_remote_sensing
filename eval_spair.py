@@ -34,7 +34,7 @@ class Config:
     dit_model: Literal["flux"] = "flux"
 
     # in order [width, height]; set to [0, 0] to keep original size
-    img_size: list[int] = field(default_factory=lambda: [768, 768])
+    img_size: tuple[int, int] = field(default_factory=lambda: (768, 768))
 
     # t for diffusion, e.g. [1, 1000]
     t: int = 260
