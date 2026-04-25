@@ -43,7 +43,6 @@ params=(
     [dataset_path]="/lustre/isaac24/scratch/jdosch1/DeepLearning/datasets/SPair-71k"
     [save_path]="$SAVE_DIR"
     [dit_model]="flux"
-    [img_size]="640 640"
     [t]="260"
     [k]="28"
     [ensemble_size]="8"
@@ -91,6 +90,7 @@ set -x
 parallel -j $PARALLEL_JOBS --delay 15 --shuf --verbose \
 	python3 "$PROJECT_ROOT/eval_spair.py" \
         --cd \
+        --img_size 640 640 \
         $SWEEP_PLACEHOLDERS \
     $SWEEP_VALUES
 

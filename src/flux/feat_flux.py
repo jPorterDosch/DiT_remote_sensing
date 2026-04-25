@@ -106,6 +106,9 @@ class Featurizer4Eval(Featurizer):
                 cat2prompt_embeds[cat] = (prompt_embeds, text_ids, vec)
             self.cat2prompt_embeds = cat2prompt_embeds
 
+        # Free up some GPU memory to prevent OOM. We will only use t5 and clip for text embedding, and they are not needed during inference.
+        del self.t5
+        del self.clip
         gc.collect()
         torch.cuda.empty_cache()
 
