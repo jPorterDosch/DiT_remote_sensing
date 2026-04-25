@@ -1,7 +1,6 @@
 from dataclasses import dataclass, field
 from typing import Literal
 
-import argparse
 import torch
 from torch.nn import functional as F
 from tqdm import tqdm
@@ -12,16 +11,13 @@ import json
 from PIL import Image
 import torch.nn as nn
 from einops import rearrange
-import time
-from torchvision.transforms import PILToTensor, ToPILImage
+from torchvision.transforms import PILToTensor
 import tyro
 
 import warnings
 
 warnings.filterwarnings('ignore')
 
-import numpy as np
-from scipy.spatial.distance import cosine
 
 # config dataclass for easier argument parsing, see how it is called below in main.
 @dataclass
