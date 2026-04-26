@@ -2,18 +2,14 @@ from dataclasses import dataclass
 import numpy as np
 import torch
 from torch import Tensor, nn
-import os
-import copy
-from sklearn.decomposition import PCA
-from einops import rearrange
-import math
-from torchvision import transforms as T
-from math import sqrt
-from PIL import Image
-import time
-from flux.modules.layers import (DoubleStreamBlock, EmbedND, LastLayer,
-                                 MLPEmbedder, SingleStreamBlock,
-                                 timestep_embedding)
+from flux.modules.layers import (
+    DoubleStreamBlock,
+    EmbedND,
+    LastLayer,
+    MLPEmbedder,
+    SingleStreamBlock,
+    timestep_embedding,
+)
 
 
 @dataclass
@@ -110,18 +106,17 @@ class Flux(nn.Module):
 
         # for block in self.double_blocks:
         for i, block in enumerate(self.double_blocks):
-            
             img, txt = block(img=img, txt=txt, vec=vec, pe=pe)
 
         img = torch.cat((txt, img), 1)
         for block in self.single_blocks:
             img = block(img, vec=vec, pe=pe)
-            
+
         img = img[:, txt.shape[1] :, ...]
 
         img = self.final_layer(img, vec)  # (N, T, patch_size ** 2 * out_channels)
         return img
-    
+
     def forward_feat(
         self,
         img: Tensor,
@@ -139,51 +134,50 @@ class Flux(nn.Module):
 
         # running on sequences img
         img = self.img_in(img)
-        
+
         img_in_copy = img.clone()
         vec = self.time_in(timestep_embedding(timesteps, 256))
         if self.params.guidance_embed:
             if guidance is None:
                 raise ValueError("Didn't get guidance strength for guidance distilled model.")
             vec = vec + self.guidance_in(timestep_embedding(guidance, 256))
-        
+
         vec_t = vec.clone().detach()
-        
+
         vec = vec + self.vector_in(y)
-        
+
         vec_y = self.vector_in(y)
-        
+
         txt = self.txt_in(txt)
 
         ids = torch.cat((txt_ids, img_ids), dim=1)
         pe = self.pe_embedder(ids)
-        up_ft=[]
-        
+        up_ft = []
+
         for i, block in enumerate(self.double_blocks):
-                
             if i > np.max(ft_indices):
                 break
-            img, txt, img_feat = block.forward_feat(img=img, txt=txt, vec=vec, pe=pe, return_feat=True if i in ft_indices else False)
-            
+            img, txt, img_feat = block.forward_feat(
+                img=img, txt=txt, vec=vec, pe=pe, return_feat=True if i in ft_indices else False
+            )
+
             if i in ft_indices:
                 # print(sample.shape)
                 up_ft.append(img_feat.clone().detach())
-            
-        
+
         img = torch.cat((txt, img), 1)
         for i, block in enumerate(self.single_blocks):
-            
             # print(19+i)
             if (19 + i) > np.max(ft_indices):
                 break
-            img, img_feat, mod = block.forward_feat(img, vec=(vec, vec_t, vec_y), pe=pe, return_feat=True if (i+19) in ft_indices else False)
-            
+            img, img_feat, mod = block.forward_feat(
+                img, vec=(vec, vec_t, vec_y), pe=pe, return_feat=True if (i + 19) in ft_indices else False
+            )
+
             if (19 + i) in ft_indices:
-                
                 up_ft.append(img_feat[:, txt.shape[1] :, ...].clone().detach())
                 up_ft.append(mod)
-                
-                
+
         img = img[:, txt.shape[1] :, ...]
 
         img = self.final_layer(img, vec)  # (N, T, patch_size ** 2 * out_channels)
@@ -191,4 +185,3 @@ class Flux(nn.Module):
         # output = {}
         output = up_ft
         return output
-    

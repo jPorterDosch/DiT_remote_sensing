@@ -1,7 +1,7 @@
 import torch
 from einops import rearrange
 from torch import Tensor
-import math
+
 
 def attention(q: Tensor, k: Tensor, v: Tensor, pe: Tensor) -> Tensor:
     q, k = apply_rope(q, k, pe)
@@ -29,10 +29,10 @@ def apply_rope(xq: Tensor, xk: Tensor, freqs_cis: Tensor) -> tuple[Tensor, Tenso
     # print(freqs_cis[0,0,800,32, :])
     # freqs_cis[:,:,:,:, 0,0]=1.0
     # freqs_cis[:,:,:,:, 0,1]=0.0
-    
+
     # freqs_cis[:,:,:,:, 0,0]=0.0
     # freqs_cis[:,:,:,:, 0,1]=1.0
-    
+
     xq_out = freqs_cis[..., 0] * xq_[..., 0] + freqs_cis[..., 1] * xq_[..., 1]
     xk_out = freqs_cis[..., 0] * xk_[..., 0] + freqs_cis[..., 1] * xk_[..., 1]
     return xq_out.reshape(*xq.shape).type_as(xq), xk_out.reshape(*xk.shape).type_as(xk)
