@@ -1,7 +1,9 @@
-import torch
-from flux.util import load_ae, load_clip, load_flow_model, load_t5
 import gc
+
+import torch
 from einops import rearrange, repeat
+
+from .util import load_ae, load_clip, load_flow_model, load_t5
 
 
 def prepare_txt(bs, t5, clip, prompt, device="cuda"):
@@ -73,8 +75,6 @@ class Featurizer:
         unet_ft = unet_ft_all["up_ft"][up_ft_index]  # ensem, c, h, w
         unet_ft = unet_ft.mean(0, keepdim=True)  # 1,c,h,w
         return unet_ft
-
-
 
 
 class Featurizer4Eval(Featurizer):

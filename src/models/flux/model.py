@@ -1,8 +1,10 @@
 from dataclasses import dataclass
+
 import numpy as np
 import torch
 from torch import Tensor, nn
-from flux.modules.layers import (
+
+from .modules.layers import (
     DoubleStreamBlock,
     EmbedND,
     LastLayer,
