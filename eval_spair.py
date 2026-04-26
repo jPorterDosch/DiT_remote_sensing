@@ -1,4 +1,6 @@
-import argparse
+from dataclasses import dataclass, field
+from typing import Literal
+
 import torch
 from torch.nn import functional as F
 from tqdm import tqdm
@@ -9,15 +11,48 @@ import json
 from PIL import Image
 import torch.nn as nn
 from einops import rearrange
-import time
-from torchvision.transforms import PILToTensor, ToPILImage
+from torchvision.transforms import PILToTensor
+import tyro
 
 import warnings
 
 warnings.filterwarnings('ignore')
 
-import numpy as np
-from scipy.spatial.distance import cosine
+
+# config dataclass for easier argument parsing, see how it is called below in main.
+@dataclass
+class Config:
+    """SPair-71k Evaluation Script"""
+
+    dataset_path: str = "/dataset/SPair-71k"
+    dataset: str = "SPair"
+    save_path: str = "/scratch/spair_ft/"
+    
+    # Experiment name for logging. If None, will raise, set in eval_spair.sh.
+    exp_name: str | None = None
+
+    dit_model: Literal["flux"] = "flux"
+
+    # in order [width, height]; set to [0, 0] to keep original size
+    img_size: tuple[int, int] = field(default_factory=lambda: (768, 768))
+
+    # t for diffusion, e.g. [1, 1000]
+    t: int = 260
+
+    # DiT blocks to extract feature maps from, e.g. [0, 57]
+    k: list[int] = field(default_factory=lambda: [28])
+
+    ensemble_size: int = 8
+
+    # whether to adopt channel discard
+    cd: bool = False
+
+    def __post_init__(self):
+        if self.exp_name is None:
+            raise ValueError("exp_name must be set for logging purposes.")
+
+
+# =================================================================
 
 def main(args):
     for arg in vars(args):
@@ -270,21 +305,7 @@ def main(args):
 
 
 if __name__ == "__main__":
-    # print("test")
-    parser = argparse.ArgumentParser(description='SPair-71k Evaluation Script')
-    parser.add_argument('--dataset_path', type=str, default='/dataset/SPair-71k', help='path to spair dataset')
-    parser.add_argument('--dataset', type=str, default='SPair', help='path to spair dataset')
-    parser.add_argument('--save_path', type=str, default='/scratch/lt453/spair_ft/', help='path to save features')
-    parser.add_argument('--dit_model', choices=['flux'], default='flux', help="which dit version to use")
-    parser.add_argument('--img_size', nargs='+', type=int, default=[768, 768],
-                        help='''in the order of [width, height], resize input image
-                            to [w, h] before fed into diffusion model, if set to 0, will
-                            stick to the original input size. by default is 768x768.''')
-    parser.add_argument('--t', default=260, type=int, help='t for diffusion') ###调参[1,1000]
-    parser.add_argument('--k', nargs='+', type=int, default=[28], help='which dit block to extract the ft map') ###调参[0,57]
-    parser.add_argument('--ensemble_size', default=8, type=int, help='ensemble size for getting an image ft map')
-    parser.add_argument("--cd", action="store_true", default=False, help='whether adopt channel discard.')
-    args = parser.parse_args()
+    args=tyro.cli(Config)
     
     torch.backends.cudnn.enabled = True
     torch.backends.cudnn.benchmark = True
