@@ -10,10 +10,11 @@ import torch.nn as nn
 import tyro
 from einops import rearrange
 from PIL import Image
-from src.models.flux.feat_flux import Featurizer4Eval
 from torch.nn import functional as F
 from torchvision.transforms import PILToTensor
 from tqdm import tqdm
+
+from src.models.flux.feat_flux import Featurizer4Eval
 
 warnings.filterwarnings("ignore")
 
@@ -45,6 +46,7 @@ class Config:
 
     # whether to adopt channel discard
     cd: bool = False
+    discard_channels: list[int] = field(default_factory=lambda: [154, 1446])
 
     def __post_init__(self):
         if self.exp_name is None:
@@ -83,7 +85,6 @@ def main(args):
         for json_path in cat_list:
             with open(os.path.join(dataset_path, test_path, json_path)) as temp_f:
                 data = json.load(temp_f)
-                temp_f.close()
             src_imname = data["src_imname"]
             trg_imname = data["trg_imname"]
             if src_imname not in cat2img[cat]:
@@ -92,9 +93,7 @@ def main(args):
                 cat2img[cat].append(trg_imname)
 
     if args.dit_model == "flux":
-        dit_model = Featurizer4Eval(
-            cat_list=all_cats[:], ensemble_size=args.ensemble_size
-        )
+        dit_model = Featurizer4Eval(cat_list=all_cats[:], ensemble_size=args.ensemble_size)
     else:
         raise Exception("model must be in [flux] ")
 
@@ -185,8 +184,8 @@ def main(args):
             # preventing LayerNorm from propagating their adverse influence to the remaining dimensions.
             # For a given DiT, the MA dimensions are fixed and easy to identify; we simply zero those channels.
             if args.cd:
-                src_ft_raw[:, 154, :, :] = 0.0
-                src_ft_raw[:, 1446, :, :] = 0.0
+                for ch in args.discard_channels:
+                    src_ft_raw[:, ch, :, :] = 0.0
 
             src_ft = rearrange(src_ft_raw, "b c h w -> b (h w) c")
             src_ft = pre_norm(src_ft)
@@ -229,9 +228,7 @@ def main(args):
             w = trg_ft.shape[-1]
 
             trg_bndbox = data["trg_bndbox"]
-            threshold = max(
-                trg_bndbox[3] - trg_bndbox[1], trg_bndbox[2] - trg_bndbox[0]
-            )
+            threshold = max(trg_bndbox[3] - trg_bndbox[1], trg_bndbox[2] - trg_bndbox[0])
 
             total = 0
             correct = 0
@@ -247,9 +244,7 @@ def main(args):
                 trg_point = data["trg_kps"][idx]
                 src_list.append(src_point)
                 num_channel = src_ft.size(1)
-                src_vec = src_ft[0, :, src_point[1], src_point[0]].view(
-                    1, num_channel
-                )  # 1, C
+                src_vec = src_ft[0, :, src_point[1], src_point[0]].view(1, num_channel)  # 1, C
                 trg_vec = trg_ft.view(num_channel, -1).transpose(0, 1)  # HW, C
                 src_vec = F.normalize(src_vec).transpose(0, 1)  # c, 1
                 trg_vec = F.normalize(trg_vec)  # HW, c
@@ -258,9 +253,7 @@ def main(args):
 
                 max_yx = np.unravel_index(cos_map.argmax(), cos_map.shape)
                 trg_list.append([max_yx[1], max_yx[0]])
-                dist = (
-                    (max_yx[1] - trg_point[0]) ** 2 + (max_yx[0] - trg_point[1]) ** 2
-                ) ** 0.5
+                dist = ((max_yx[1] - trg_point[0]) ** 2 + (max_yx[0] - trg_point[1]) ** 2) ** 0.5
                 if (dist / threshold) <= 0.1:
                     correct += 1
                     cat_correct += 1
@@ -301,11 +294,9 @@ def main(args):
         # 如果目录不存在，则创建它
         os.makedirs(save_dir)
     # print(result)
-    with open(
-        "layers_cat/%s/t%s_b%s_e%s.json"
-        % (args.dit_model, args.t, args.k, args.ensemble_size),
-        "w+",
-    ) as json_file:
+    json_out_path = "layers_cat/%s/t%s_b%s_e%s.json" % (args.dit_model, args.t, args.k, args.ensemble_size)
+    os.makedirs(os.path.dirname(json_out_path), exist_ok=True)
+    with open(json_out_path, "w+") as json_file:
         json.dump(result, json_file, indent=4, ensure_ascii=False)
 
 
