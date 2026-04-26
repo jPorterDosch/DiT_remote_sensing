@@ -161,14 +161,15 @@ class Featurizer4Eval(Featurizer):
         )
 
         
-        mod = model_output[1]
+        # mod = model_output[1]
         # print(mod)
         dit_feat = model_output[0]
         dit_feat = rearrange(dit_feat, "b (h w) c -> b h w c", h=h//2, w=w//2)
         dit_feat = dit_feat.permute(0, 3, 1, 2)
         dit_feat = dit_feat.mean(0, keepdim=True) # 1,c,h,w
         
-        mod = [(mod.shift).mean(0, keepdim=True), (mod.scale).mean(0, keepdim=True), (mod.gate).mean(0, keepdim=True)]
+        # mod = [(mod.shift).mean(0, keepdim=True), (mod.scale).mean(0, keepdim=True), (mod.gate).mean(0, keepdim=True)]
         
         
-        return dit_feat, torch.cat(mod, dim=1)
+        # return dit_feat, torch.cat(mod, dim=1)
+        return dit_feat, None
