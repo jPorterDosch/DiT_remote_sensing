@@ -1,31 +1,12 @@
-
-"""
-start with 2 hidden layers and 2048 units
-Use ReLU activations
-Adam optimizer
-Learning rate = 0.001
-start with 20 epochs
-batch size?
-"""
-
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from tqdm import tqdm
-import os
-import argparse # To pass in block_idx and timestep if needed
-
-# Import your dataloader and category list
-from src.flux.eurosat_dataloader import get_eurosat_dataloader, get_eurosat_categories
-
-# Import the feature extractor
-from src.flux.feat_flux import Featurizer4Eval 
+from torch.utils.data import TensorDataset, DataLoader
 
 # ---------------------------------------------------------
-# Configuration & Paths
+# Configuration
 # ---------------------------------------------------------
-DATA_ROOT = "/lustre/isaac24/scratch/jdosch1/DeepLearning/datasets/EuroSAT"
-BATCH_SIZE = 1 # MUST be 1 for this specific implementation of Featurizer4Eval
+BATCH_SIZE = 256
 NUM_EPOCHS = 20
 LEARNING_RATE = 1e-3
 NUM_CLASSES = 10 
@@ -41,9 +22,15 @@ class EuroSAT_MLP(nn.Module):
     def __init__(self, input_dim, hidden_dim, num_classes):
         super().__init__()
         self.network = nn.Sequential(
+            # First hidden layer
             nn.Linear(input_dim, hidden_dim),
             nn.ReLU(),
             nn.Dropout(0.2),
+            # Second hidden layer (as requested!)
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            # Output layer
             nn.Linear(hidden_dim, num_classes)
         )
 
@@ -51,79 +38,74 @@ class EuroSAT_MLP(nn.Module):
         return self.network(x)
 
 # ---------------------------------------------------------
-# Training Setup
+# Training & Evaluation Loop
 # ---------------------------------------------------------
-def train_mlp():
-    # Setup a dummy args object to pass to the forward pass
-    parser = argparse.ArgumentParser()
-    args, _ = parser.parse_known_args()
-
-    print("Loading datasets...")
-    # NOTE: The batch size must be 1 because Featurizer4Eval hardcodes `.unsqueeze(0)` internally.
-    train_loader = get_eurosat_dataloader(root=DATA_ROOT, split="train", batch_size=BATCH_SIZE, shuffle=True)
+def train_eval_mlp():
+    print("Loading cached features from disk...")
     
-    # Get the categories for prompt preparation
-    cat_list = get_eurosat_categories()
-
-    print("Loading frozen FLUX backbone (this may take a minute)...")
-    featurizer = Featurizer4Eval(flux_id="flux-dev", cat_list=cat_list)
-
-    # Determine Feature Dimensions via a dummy pass
-    sample_batch = next(iter(train_loader))
-    dummy_img = sample_batch["img"][0].to(device) # Featurizer expects [C, H, W]
-    dummy_cat = sample_batch["class_name"][0]
+    # Load BOTH train and test splits
+    train_data = torch.load('eurosat_flux_features_train.pt')
+    test_data = torch.load('eurosat_flux_features_test.pt')
     
-    with torch.no_grad(): 
-        # Unpack the tuple: we only want the features, not the mod parameters
-        dummy_features, _ = featurizer.forward(args=args, img_tensor=dummy_img, category=dummy_cat, block_idx=[1])
-        
-        # Output is [1, C, H, W]. Global average pool over H and W.
-        dummy_features = dummy_features.mean(dim=[2, 3]) 
+    train_features, train_labels = train_data['features'], train_data['labels']
+    test_features, test_labels = test_data['features'], test_data['labels']
     
-    feature_dim = dummy_features.shape[1]
-    print(f"Detected FLUX representation dimension: {feature_dim}")
+    feature_dim = train_features.shape[1]
+    print(f"Loaded Train Features: {train_features.shape[0]} images, {feature_dim} dimensions")
+    print(f"Loaded Test Features: {test_features.shape[0]} images, {feature_dim} dimensions")
+    
+    # Create DataLoaders
+    train_dataset = TensorDataset(train_features, train_labels)
+    test_dataset = TensorDataset(test_features, test_labels)
+    
+    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True) 
+    test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False)
 
+    # Initialize MLP
     mlp = EuroSAT_MLP(input_dim=feature_dim, hidden_dim=HIDDEN_DIM, num_classes=NUM_CLASSES).to(device)
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(mlp.parameters(), lr=LEARNING_RATE)
-
-    # ---------------------------------------------------------
-    # The Training Loop
-    # ---------------------------------------------------------
-    print("Starting training...")
+    
+    print("\nStarting training loop...")
     for epoch in range(NUM_EPOCHS):
+        
+        # --- TRAINING PHASE ---
         mlp.train()
-        running_loss = 0.0
-        correct = 0
-        total = 0
-
-        # Loop over the training data
-        for batch in tqdm(train_loader, desc=f"Epoch {epoch+1}/{NUM_EPOCHS}"):
-            # Dataloader gives us a batch dimension, but Featurizer4Eval wants a single image [C, H, W]
-            image = batch["img"][0].to(device) 
-            label = batch["label"].to(device) # This is a tensor like [0]
-            category = batch["class_name"][0] # This is a string
-
-            with torch.no_grad():
-                # Pass image and text category to get features
-                features, _ = featurizer.forward(args=args, img_tensor=image, category=category, block_idx=[1])
-                features = features.mean(dim=[2, 3]) # [1, C]
-
-            features = features.to(torch.float32)
+        total_loss = 0
+        
+        for batch_features, batch_labels in train_loader:
+            batch_features = batch_features.to(device)
+            batch_labels = batch_labels.to(device)
+            
             optimizer.zero_grad()
-            outputs = mlp(features) # Output shape will be [1, 10]
-
-            loss = criterion(outputs, label)
+            outputs = mlp(batch_features)
+            loss = criterion(outputs, batch_labels)
             loss.backward()
             optimizer.step()
-
-            running_loss += loss.item()
-            _, predicted = torch.max(outputs.data, 1)
-            total += 1
-            correct += (predicted == label).sum().item()
-
-        epoch_acc = 100 * correct / total
-        print(f"Epoch [{epoch+1}/{NUM_EPOCHS}] Loss: {running_loss/len(train_loader):.4f} | Train Acc: {epoch_acc:.2f}%")
+            
+            total_loss += loss.item()
+            
+        avg_train_loss = total_loss / len(train_loader)
+        
+        # --- EVALUATION PHASE ---
+        mlp.eval()
+        correct = 0
+        total = 0
+        
+        with torch.no_grad():
+            for batch_features, batch_labels in test_loader:
+                batch_features = batch_features.to(device)
+                batch_labels = batch_labels.to(device)
+                
+                outputs = mlp(batch_features)
+                _, predicted = torch.max(outputs.data, 1) # Get the index of the highest logit
+                
+                total += batch_labels.size(0)
+                correct += (predicted == batch_labels).sum().item()
+                
+        test_accuracy = 100 * correct / total
+        
+        print(f"Epoch {epoch+1}/{NUM_EPOCHS} | Train Loss: {avg_train_loss:.4f} | Test Accuracy: {test_accuracy:.2f}%")
 
 if __name__ == "__main__":
-    train_mlp()
+    train_eval_mlp()
