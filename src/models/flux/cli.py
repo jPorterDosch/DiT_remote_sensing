@@ -10,11 +10,11 @@ from fire import Fire
 from PIL import ExifTags, Image
 
 from flux.sampling import denoise, get_noise, get_schedule, prepare, unpack
-from flux.util import (configs, embed_watermark, load_ae, load_clip,
-                       load_flow_model, load_t5)
+from flux.util import configs, embed_watermark, load_ae, load_clip, load_flow_model, load_t5
 from transformers import pipeline
 
 NSFW_THRESHOLD = 0.85
+
 
 @dataclass
 class SamplingOptions:
@@ -48,7 +48,7 @@ def parse_prompt(options: SamplingOptions) -> SamplingOptions | None:
             options.width = 16 * (int(width) // 16)
             print(
                 f"Setting resolution to {options.width} x {options.height} "
-                f"({options.height *options.width/1e6:.2f}MP)"
+                f"({options.height * options.width / 1e6:.2f}MP)"
             )
         elif prompt.startswith("/h"):
             if prompt.count(" ") != 1:
@@ -58,7 +58,7 @@ def parse_prompt(options: SamplingOptions) -> SamplingOptions | None:
             options.height = 16 * (int(height) // 16)
             print(
                 f"Setting resolution to {options.width} x {options.height} "
-                f"({options.height *options.width/1e6:.2f}MP)"
+                f"({options.height * options.width / 1e6:.2f}MP)"
             )
         elif prompt.startswith("/g"):
             if prompt.count(" ") != 1:
@@ -226,7 +226,7 @@ def main(
 
         img = Image.fromarray((127.5 * (x + 1.0)).cpu().byte().numpy())
         nsfw_score = [x["score"] for x in nsfw_classifier(img) if x["label"] == "nsfw"][0]
-        
+
         if nsfw_score < NSFW_THRESHOLD:
             exif_data = Image.Exif()
             exif_data[ExifTags.Base.Software] = "AI generated;txt2img;flux"

@@ -32,10 +32,10 @@ EUROSAT_PROMPTS = {
     "SeaLake": "sea or lake",
 }
 
+
 # Returns images as [C, H, W] tensors normalized to [-1, 1],
 # matching the input format used by Featurizer4Eval and the eval scripts.
 class EuroSATDataset(Dataset):
-
     def __init__(self, root, split=None, img_size=224):
         """
         Args:
@@ -53,10 +53,9 @@ class EuroSATDataset(Dataset):
             class_dir = os.path.join(root, class_name)
             if not os.path.isdir(class_dir):
                 continue
-            filenames = sorted([
-                f for f in os.listdir(class_dir)
-                if f.lower().endswith((".jpg", ".jpeg", ".png", ".tif"))
-            ])
+            filenames = sorted(
+                [f for f in os.listdir(class_dir) if f.lower().endswith((".jpg", ".jpeg", ".png", ".tif"))]
+            )
 
             if split is not None:
                 pivot = int(len(filenames) * 0.8)
@@ -66,11 +65,13 @@ class EuroSATDataset(Dataset):
                     filenames = filenames[pivot:]
 
             for fname in filenames:
-                self.samples.append((
-                    os.path.join(class_dir, fname),
-                    class_idx,
-                    class_name,
-                ))
+                self.samples.append(
+                    (
+                        os.path.join(class_dir, fname),
+                        class_idx,
+                        class_name,
+                    )
+                )
 
     @staticmethod
     def _round_to_multiple(val, m):
@@ -95,8 +96,7 @@ class EuroSATDataset(Dataset):
         }
 
 
-def get_eurosat_dataloader(root, split=None, img_size=224, batch_size=1,
-                           shuffle=False, num_workers=0):
+def get_eurosat_dataloader(root, split=None, img_size=224, batch_size=1, shuffle=False, num_workers=0):
     """
     Convenience function to create a EuroSAT DataLoader.
 
@@ -120,9 +120,11 @@ def get_eurosat_dataloader(root, split=None, img_size=224, batch_size=1,
         pin_memory=torch.cuda.is_available(),
     )
 
+
 # Returns the list of class names for use with Featurizer4Eval's cat_list.
 def get_eurosat_categories():
     return list(EUROSAT_PROMPTS.values())
+
 
 # Returns mapping from folder name to readable prompt text.
 def get_eurosat_class_to_prompt():

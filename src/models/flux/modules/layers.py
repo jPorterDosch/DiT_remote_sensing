@@ -1,12 +1,10 @@
 import math
 from dataclasses import dataclass
-import time
 import torch
 from einops import rearrange
 from torch import Tensor, nn
 
 from flux.math import attention, rope
-from torch.nn import functional as F
 
 
 class EmbedND(nn.Module):
@@ -190,8 +188,7 @@ class DoubleStreamBlock(nn.Module):
         txt = txt + txt_mod1.gate * self.txt_attn.proj(txt_attn)
         txt = txt + txt_mod2.gate * self.txt_mlp((1 + txt_mod2.scale) * self.txt_norm2(txt) + txt_mod2.shift)
         return img, txt
-    
-    
+
     def forward_feat(self, img: Tensor, txt: Tensor, vec: Tensor, pe: Tensor, return_feat=False):
         img_mod1, img_mod2 = self.img_mod(vec)
         txt_mod1, txt_mod2 = self.txt_mod(vec)
@@ -199,9 +196,9 @@ class DoubleStreamBlock(nn.Module):
         # prepare image for attention
         img_modulated = self.img_norm1(img)
         img_modulated = (1 + img_mod1.scale) * img_modulated + img_mod1.shift
-        
+
         # x_feat = img_modulated.clone()
-        
+
         img_qkv = self.img_attn.qkv(img_modulated)
         img_q, img_k, img_v = rearrange(img_qkv, "B L (K H D) -> K B H L D", K=3, H=self.num_heads)
         img_q, img_k = self.img_attn.norm(img_q, img_k, img_v)
@@ -220,15 +217,15 @@ class DoubleStreamBlock(nn.Module):
 
         attn = attention(q, k, v, pe=pe)
         txt_attn, img_attn = attn[:, : txt.shape[1]], attn[:, txt.shape[1] :]
-        
+
         # time.sleep(5000)
         # calculate the img bloks
         img = img + img_mod1.gate * self.img_attn.proj(img_attn)
         img_copy = img.clone()
         img_feat = (1 + img_mod2.scale) * self.img_norm2(img_copy) + img_mod2.shift
-        
+
         x_feat = img_feat.clone()
-        
+
         img = img + img_mod2.gate * self.img_mlp((1 + img_mod2.scale) * self.img_norm2(img) + img_mod2.shift)
 
         # calculate the txt bloks
@@ -287,16 +284,15 @@ class SingleStreamBlock(nn.Module):
         # compute activation in mlp stream, cat again and run second linear layer
         output = self.linear2(torch.cat((attn, self.mlp_act(mlp)), 2))
         return x + mod.gate * output
-    
+
     def forward_feat(self, x: Tensor, vec: Tensor, pe: Tensor, return_feat=False):
         mod, _ = self.modulation(vec[0])
-        
+
         x_feat = x.clone()
         x_norm = self.pre_norm(x)
         x_mod = (1 + mod.scale) * x_norm + mod.shift
         # x_feat_ada = x_mod.clone()
-            
-            
+
         qkv, mlp = torch.split(self.linear1(x_mod), [3 * self.hidden_size, self.mlp_hidden_dim], dim=-1)
 
         q, k, v = rearrange(qkv, "B L (K H D) -> K B H L D", K=3, H=self.num_heads)
@@ -304,8 +300,7 @@ class SingleStreamBlock(nn.Module):
 
         # compute attention
         attn = attention(q, k, v, pe=pe)
-        
-        
+
         # compute activation in mlp stream, cat again and run second linear layer
         output = self.linear2(torch.cat((attn, self.mlp_act(mlp)), 2))
 

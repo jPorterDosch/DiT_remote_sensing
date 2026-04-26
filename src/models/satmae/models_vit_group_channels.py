@@ -12,7 +12,7 @@ import torch.nn as nn
 from timm.layers.patch_embed import PatchEmbed
 from timm.models.vision_transformer import VisionTransformer
 
-from utils import get_1d_sincos_pos_embed_from_grid, get_2d_sincos_pos_embed
+from .utils import get_1d_sincos_pos_embed_from_grid, get_2d_sincos_pos_embed
 
 
 class GroupChannelsVisionTransformer(VisionTransformer):

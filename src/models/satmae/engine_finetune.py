@@ -12,7 +12,7 @@ from timm.utils.metrics import accuracy
 from torch.optim import Optimizer
 from torch.utils.data import DataLoader
 
-from utils import NativeScalerWithGradNormCount
+from .utils import NativeScalerWithGradNormCount
 
 
 def adjust_learning_rate(optimizer: Optimizer, epoch: float, config) -> float:
@@ -91,11 +91,8 @@ def train_one_epoch(
         if (data_iter_step + 1) % config.accum_iter == 0:
             optimizer.zero_grad()
 
-        # TODO: replaced hardcoded min_lr (0.0) and max_lr (10.0) with config values. MUST ADD TO CONFIG
-        # min_lr = min(
-        #     config.min_lr, max(group["lr"] for group in optimizer.param_groups)
-        # )
-        max_lr = max(config.max_lr, max(group["lr"] for group in optimizer.param_groups))
+        # min_lr = max(group["lr"] for group in optimizer.param_groups)
+        max_lr = max(group["lr"] for group in optimizer.param_groups)
 
     stats = {
         "loss": total_loss / max(total_samples, 1),
