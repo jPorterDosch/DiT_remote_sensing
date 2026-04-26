@@ -13,10 +13,6 @@
 _dir="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)}"
 while [ "$_dir" != "/" ] && [ ! -d "$_dir/.git" ]; do _dir="$(dirname "$_dir")"; done
 PROJECT_ROOT="$_dir"
-<<<<<<< HEAD
-=======
-[ ! -f "$PROJECT_ROOT/train_det.py" ] && echo "FATAL: Cannot find project root" >&2 && exit 1
->>>>>>> dfa5e80 (Updated eval_spair to use tyro command parsing, added slurm script)
 
 source "$PROJECT_ROOT/experiments/_common.sh" || {
 	echo "FATAL: Failed to source common.sh" >&2; exit 1;
@@ -51,10 +47,6 @@ params=(
     [t]="260"
     [k]="28"
     [ensemble_size]="8"
-<<<<<<< HEAD
-=======
-    [cd]="True"
->>>>>>> dfa5e80 (Updated eval_spair to use tyro command parsing, added slurm script)
 )
 
 
@@ -98,10 +90,7 @@ set -x
 # Baseline
 parallel -j $PARALLEL_JOBS --delay 15 --shuf --verbose \
 	python3 "$PROJECT_ROOT/eval_spair.py" \
-<<<<<<< HEAD
         --cd \
-=======
->>>>>>> dfa5e80 (Updated eval_spair to use tyro command parsing, added slurm script)
         $SWEEP_PLACEHOLDERS \
     $SWEEP_VALUES
 
