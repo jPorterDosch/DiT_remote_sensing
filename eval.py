@@ -63,8 +63,7 @@ def main(cfg: EvalConfig) -> None:
     torch.backends.cudnn.enabled = True
     torch.backends.cudnn.benchmark = True
 
-    # this will let us know when we need to manually add a dataset, model, or task
-    # "registering" new dataset is necessary but this silution still generalizes entrypoint
+    # Registering a new dataset is still necessary, but this solution keeps the entrypoint generic.
     if cfg.dataset.name not in DATASETS:
         raise ValueError(f"Unknown dataset '{cfg.dataset.name}'. Registered: {list(DATASETS)}")
     if cfg.model.name not in MODELS:
