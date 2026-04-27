@@ -8,6 +8,7 @@
 #SBATCH --partition=campus-gpu
 #SBATCH --time=1-00:00:00               # Wall time (days-hh:mm:ss)
 #SBATCH --output=logs/%x/%j.out
+#SBATCH --error=logs/%x/%j.out
 # --- Bootstrap: find project root (can't be sourced) ------
 _dir="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)}"
 while [ "$_dir" != "/" ] && [ ! -d "$_dir/.git" ]; do _dir="$(dirname "$_dir")"; done
