@@ -11,6 +11,7 @@ from tqdm import tqdm
 from sklearn.metrics import f1_score
 from registry import register_task
 
+
 class _LinearProbe(nn.Module):
     """Single linear layer trained on top of frozen DiT features."""
 

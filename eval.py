@@ -39,6 +39,8 @@ class EvalConfig:
     model: ModelConfig = field(default_factory=ModelConfig)
     dataset: DatasetConfig = field(default_factory=DatasetConfig)
 
+    device: int = 0
+
     save_path: str = "features/"
     img_size: list[int] = field(default_factory=lambda: [224, 224])
     t: int = 260  ###调参[1,1000]
@@ -63,15 +65,18 @@ class EvalConfig:
 
 
 def main(cfg: EvalConfig) -> None:
-    torch.cuda.set_device(0)
+    torch.cuda.set_device(cfg.device)
     torch.backends.cudnn.enabled = True
     torch.backends.cudnn.benchmark = True
 
     # this will let us know when we need to manually add a dataset, model, or task
     # "registering" new dataset is necessary but this silution still generalizes entrypoint
-    assert cfg.dataset.name in DATASETS, f"Unknown dataset '{cfg.dataset.name}'. Registered: {list(DATASETS)}"
-    assert cfg.model.name in MODELS, f"Unknown model '{cfg.model.name}'. Registered: {list(MODELS)}"
-    assert cfg.task in TASKS, f"Unknown task '{cfg.task}'. Registered: {list(TASKS)}"
+    if cfg.dataset.name not in DATASETS:
+        raise ValueError(f"Unknown dataset '{cfg.dataset.name}'. Registered: {list(DATASETS)}")
+    if cfg.model.name not in MODELS:
+        raise ValueError(f"Unknown model '{cfg.model.name}'. Registered: {list(MODELS)}")
+    if cfg.task not in TASKS:
+        raise ValueError(f"Unknown task '{cfg.task}'. Registered: {list(TASKS)}")
 
     dataset = DATASETS[cfg.dataset.name](cfg)
     model = MODELS[cfg.model.name](cfg, dataset.category_list)
