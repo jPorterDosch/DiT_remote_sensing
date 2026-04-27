@@ -21,7 +21,7 @@ class FluxModel:
         self,
         img: torch.Tensor,
         timestep: int,
-        block_idx: list[int],
+        block_idx: int,
         ensemble_size: int,
         caption:  str = "a photo of a image",
         category: str = "image",

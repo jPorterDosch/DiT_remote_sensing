@@ -9,7 +9,7 @@ class ModelProtocol(Protocol):
         self,
         img: torch.Tensor,
         timestep: int,
-        block_idx: list[int],
+        block_idx: int,
         ensemble_size: int,
         **kwargs: Any,
     ) -> torch.Tensor: ...

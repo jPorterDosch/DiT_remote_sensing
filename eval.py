@@ -41,7 +41,7 @@ class EvalConfig:
     save_path: str       = "features/"
     img_size:  list[int] = field(default_factory=lambda: [224, 224])
     t:         int       = 260        ###调参[1,1000]
-    k:         list[int] = field(default_factory=lambda: [28])  ###调参[0,57]
+    k:         int       = 28          ###调参[0,57]
     cd:        bool      = False
 
     ## classification
