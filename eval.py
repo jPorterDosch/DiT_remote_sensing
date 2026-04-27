@@ -57,6 +57,18 @@ class EvalConfig:
     num_workers: int = 4
     overwrite_features: bool = False
 
+    def __post_init__(self) -> None:
+        if not torch.cuda.is_available():
+            raise RuntimeError(
+                "CUDA is not available, and this script requires a GPU"
+            )
+        n_gpus = torch.cuda.device_count()
+
+        if self.device >= n_gpus:
+            raise ValueError(
+                f"{self.device} requested but only {n_gpus} GPU(s) available (valid indices: 0–{n_gpus - 1})."
+            )
+
 
 def main(cfg: EvalConfig) -> None:
     torch.cuda.set_device(cfg.device)
