@@ -137,7 +137,7 @@ class Featurizer4Eval(Featurizer):
         mods = []
 
         # Sequential to avoid OOM.
-        for _ in range(ensemble_size):
+        for i in range(ensemble_size):
             latents = self.ae.encode(img_tensor)
             latents = latents.to(torch.bfloat16)
 
@@ -151,12 +151,16 @@ class Featurizer4Eval(Featurizer):
             t_vec = torch.full((img.shape[0],), t, dtype=img.dtype, device=img.device)
             guidance_vec = torch.full((img.shape[0],), guidance, device=img.device, dtype=img.dtype)
 
+            prompt_embeds_i = prompt_embeds[i : i + 1]
+            text_ids_i = text_ids[i : i + 1]
+            vec_i = vec[i : i + 1]
+
             model_output = self.model.forward_feat(
                 img=img,
                 img_ids=img_ids,
-                txt=prompt_embeds,
-                txt_ids=text_ids,
-                y=vec,
+                txt=prompt_embeds_i,
+                txt_ids=text_ids_i,
+                y=vec_i,
                 timesteps=t_vec,
                 ft_indices=block_idx,
                 cat=category,
