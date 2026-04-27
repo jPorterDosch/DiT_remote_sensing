@@ -101,6 +101,7 @@ class Featurizer4Eval(Featurizer):
     @torch.no_grad()
     def forward(
         self,
+        args,
         img_tensor,
         caption="a photo of a image",
         category="image",
