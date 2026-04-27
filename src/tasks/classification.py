@@ -11,9 +11,6 @@ from tqdm import tqdm
 from sklearn.metrics import f1_score
 from registry import register_task
 
-NUM_CLASSES = 10
-
-
 class _LinearProbe(nn.Module):
     """Single linear layer trained on top of frozen DiT features."""
 
@@ -54,11 +51,11 @@ def _extract_features(cfg, model, dataloader, split_name: str):
     return feats, labels
 
 
-def _subsample_by_fraction(feats, labels, fraction: float, seed: int):
+def _subsample_by_fraction(feats, labels, fraction: float, seed: int, num_classes: int):
     # class-balanced subsample: take `fraction` percent of each class independently
     rng = np.random.default_rng(seed)
     keep_idx: list[int] = []
-    for cls in range(NUM_CLASSES):
+    for cls in range(num_classes):
         cls_idx = np.where(labels == cls)[0]
         n_keep = max(1, int(len(cls_idx) * fraction / 100.0))
         chosen = rng.choice(cls_idx, size=n_keep, replace=False)
@@ -67,13 +64,13 @@ def _subsample_by_fraction(feats, labels, fraction: float, seed: int):
     return feats[keep_idx], labels[keep_idx]
 
 
-def _train_linear_probe(train_feats, train_labels, num_epochs, lr, batch_size, device):
+def _train_linear_probe(train_feats, train_labels, num_epochs, lr, batch_size, device, num_classes: int):
     X = torch.from_numpy(train_feats).float().to(device)
     y = torch.from_numpy(train_labels).long().to(device)
 
     ds = torch.utils.data.TensorDataset(X, y)
     loader = DataLoader(ds, batch_size=batch_size, shuffle=True, drop_last=False)
-    probe = _LinearProbe(X.shape[1], NUM_CLASSES).to(device)
+    probe = _LinearProbe(X.shape[1], num_classes).to(device)
     optimizer = torch.optim.Adam(probe.parameters(), lr=lr, weight_decay=1e-4)
     criterion = nn.CrossEntropyLoss()
 
@@ -131,11 +128,12 @@ class ClassificationTask:
 
         result: dict = {}
         class_names = getattr(dataset, "class_names", dataset.category_list)
+        num_classes = len(class_names)
 
         print("Label fractions: %s" % cfg.label_fractions)
         for frac in cfg.label_fractions:
             sub_feats, sub_labels = _subsample_by_fraction(
-                train_feats, train_labels, fraction=frac, seed=cfg.seed
+                train_feats, train_labels, fraction=frac, seed=cfg.seed, num_classes=num_classes
             )
             probe, steps, elapsed = _train_linear_probe(
                 sub_feats,
@@ -144,6 +142,7 @@ class ClassificationTask:
                 lr=cfg.clf_lr,
                 batch_size=cfg.clf_batch_size,
                 device=torch.device("cuda"),
+                num_classes=num_classes,
             )
             top1, f1 = _evaluate_probe(probe, test_feats, test_labels, torch.device("cuda"))
 
