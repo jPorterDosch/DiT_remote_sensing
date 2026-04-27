@@ -2,8 +2,9 @@ from __future__ import annotations
 import os
 import sys
 
-# src/ has no __init__.py; add it to path so flux.* imports resolve inside src/flux/
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "src"))
+_root = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(_root, "src"))          # src.data, src.models.*
+sys.path.insert(0, os.path.join(_root, "src", "models")) # flux.* internal imports
 
 import torch
 import tyro

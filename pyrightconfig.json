@@ -1,4 +1,4 @@
 {
     "pythonVersion": "3.10",
-    "extraPaths": [".", "src"]
+    "extraPaths": [".", "src", "src/models"]
 }

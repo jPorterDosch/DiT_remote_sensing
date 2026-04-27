@@ -1,5 +1,5 @@
 from __future__ import annotations
-from src.flux.eurosat_dataloader import (
+from src.data.eurosat_dataloader import (
     EuroSATDataset as _EuroSATDataset,
     get_eurosat_categories,
     EUROSAT_CLASSES,
