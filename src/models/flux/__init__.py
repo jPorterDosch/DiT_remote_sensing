@@ -9,3 +9,5 @@ from pathlib import Path
 
 PACKAGE = __package__.replace("_", "-")
 PACKAGE_ROOT = Path(__file__).parent
+
+from . import adapter  # noqa: F401 — triggers @register_model("flux")

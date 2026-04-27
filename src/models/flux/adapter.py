@@ -2,7 +2,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 from einops import rearrange
-from src.models.flux.feat_flux import Featurizer4Eval
+from .feat_flux import Featurizer4Eval
 from registry import register_model
 
 

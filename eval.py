@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 
 warnings.filterwarnings("ignore")
 
-import models    # noqa: F401  — triggers @register_model decorators
+import models    # noqa: F401  — resolves to src/models/, triggers @register_model decorators
 import datasets  # noqa: F401  — triggers @register_dataset decorators
 import tasks     # noqa: F401  — triggers @register_task decorators
 
