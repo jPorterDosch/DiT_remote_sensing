@@ -1,3 +1,4 @@
+# ruff: noqa: E402  — sys.path must be mutated before any local imports
 from __future__ import annotations
 import os
 import sys
