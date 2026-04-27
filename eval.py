@@ -53,9 +53,9 @@ class EvalConfig:
     clf_lr: float = 1e-3
     clf_batch_size: int = 256
     seed: int = 42
+    batch_size: int = 1
     num_workers: int = 4
     overwrite_features: bool = False
-
 
 
 def main(cfg: EvalConfig) -> None:
