@@ -24,22 +24,19 @@ class DatasetProtocol(Protocol):
 
 @runtime_checkable
 class TaskProtocol(Protocol):
-    def run(self, 
-            cfg: Any, 
-            model: Any, 
-            dataset: Any, 
-            results_dir: str) -> dict: ...
+    def run(self, cfg: Any, model: Any, dataset: Any, results_dir: str) -> dict: ...
 
 
-MODELS:   dict[str, type] = {}
+MODELS: dict[str, type] = {}
 DATASETS: dict[str, type] = {}
-TASKS:    dict[str, type] = {}
+TASKS: dict[str, type] = {}
 
 
 def register_model(name: str):
     def decorator(cls: type) -> type:
         MODELS[name] = cls
         return cls
+
     return decorator
 
 
@@ -47,6 +44,7 @@ def register_dataset(name: str):
     def decorator(cls: type) -> type:
         DATASETS[name] = cls
         return cls
+
     return decorator
 
 
@@ -54,4 +52,5 @@ def register_task(name: str):
     def decorator(cls: type) -> type:
         TASKS[name] = cls
         return cls
+
     return decorator

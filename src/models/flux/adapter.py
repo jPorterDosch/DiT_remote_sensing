@@ -9,9 +9,9 @@ from registry import register_model
 @register_model("flux")
 class FluxModel:
     def __init__(self, cfg, category_list: list[str]) -> None:
-        self._cd       = cfg.cd
+        self._cd = cfg.cd
         self._pre_norm = nn.LayerNorm(3072, elementwise_affine=False, eps=1e-6)
-        self._inner    = Featurizer4Eval(
+        self._inner = Featurizer4Eval(
             cat_list=list(category_list),
             ensemble_size=cfg.model.ensemble_size,
         )
@@ -23,11 +23,12 @@ class FluxModel:
         timestep: int,
         block_idx: int,
         ensemble_size: int,
-        caption:  str = "a photo of a image",
+        caption: str = "a photo of a image",
         category: str = "image",
     ) -> torch.Tensor:
         feat_raw, ada = self._inner.forward(
-            None, img,
+            None,
+            img,
             caption=caption,
             category=category,
             timestep=timestep,
@@ -38,7 +39,7 @@ class FluxModel:
         B, C, H, W = feat_raw.shape
 
         if self._cd:
-            feat_raw[:, 154,  :, :] = 0.0
+            feat_raw[:, 154, :, :] = 0.0
             feat_raw[:, 1446, :, :] = 0.0
 
         feat = rearrange(feat_raw, "b c h w -> b (h w) c")

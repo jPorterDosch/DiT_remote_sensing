@@ -14,13 +14,13 @@ from registry import register_task
 @register_task("correspondence")
 class CorrespondenceTask:
     def run(self, cfg, model, dataset, results_dir: str) -> dict:
-        data         = dataset.get_data(cfg)
+        data = dataset.get_data(cfg)
         dataset_path = data["dataset_path"]
-        test_path    = data["test_path"]
-        all_cats     = data["all_cats"]
-        cat2json     = data["cat2json"]
-        cat2img      = data["cat2img"]
-        captions     = data["captions"]
+        test_path = data["test_path"]
+        all_cats = data["all_cats"]
+        cat2json = data["cat2json"]
+        cat2img = data["cat2img"]
+        captions = data["captions"]
 
         #### feature extraction
         print("saving all test images' features...")
@@ -29,12 +29,10 @@ class CorrespondenceTask:
         for cat in tqdm(all_cats):
             feat_dict: dict[str, torch.Tensor] = {}
             for image_path in cat2img[cat]:
-                img = Image.open(
-                    os.path.join(dataset_path, "JPEGImages", cat, image_path)
-                )
+                img = Image.open(os.path.join(dataset_path, "JPEGImages", cat, image_path))
 
                 ###preprocess
-                image_arr  = np.array(img)
+                image_arr = np.array(img)
                 in_h, in_w = image_arr.shape[:2]
                 scale = cfg.img_size[0] / max(in_h, in_w)
                 H = int(round(in_h * scale / 16)) * 16  # 保证是16的倍数
@@ -56,9 +54,9 @@ class CorrespondenceTask:
             torch.save(feat_dict, os.path.join(cfg.save_path, f"{cat}.pth"))
 
         #### evaluation
-        total_pck   = []
+        total_pck = []
         all_correct = 0
-        all_total   = 0
+        all_total = 0
 
         mean_image_sum = 0.0
         mean_point_sum = 0.0
@@ -71,12 +69,11 @@ class CorrespondenceTask:
             #### load data feature
             feat_dict = torch.load(os.path.join(cfg.save_path, f"{cat}.pth"))
 
-            cat_pck     = []
+            cat_pck = []
             cat_correct = 0
-            cat_total   = 0
+            cat_total = 0
 
             for cat_idx, json_path in enumerate(tqdm(cat_list)):
-
                 ##load image pair
                 with open(os.path.join(dataset_path, test_path, json_path)) as f:
                     pair = json.load(f)
@@ -99,40 +96,37 @@ class CorrespondenceTask:
                 w = trg_ft.shape[-1]
 
                 trg_bndbox = pair["trg_bndbox"]
-                threshold  = max(
+                threshold = max(
                     trg_bndbox[3] - trg_bndbox[1],
                     trg_bndbox[2] - trg_bndbox[0],
                 )
 
-                total   = 0
+                total = 0
                 correct = 0
                 src_list: list = []
                 trg_list: list = []
 
                 # print(len(pair['src_kps']))
                 for idx in range(len(pair["src_kps"])):
-                    total     += 1
+                    total += 1
                     cat_total += 1
                     all_total += 1
-                    src_point  = pair["src_kps"][idx]
-                    trg_point  = pair["trg_kps"][idx]
+                    src_point = pair["src_kps"][idx]
+                    trg_point = pair["trg_kps"][idx]
                     src_list.append(src_point)
                     num_channel = src_ft.size(1)
-                    src_vec = src_ft[0, :, src_point[1], src_point[0]].view(1, num_channel) # 1, C
-                    trg_vec = trg_ft.view(num_channel, -1).transpose(0, 1) # HW, C
-                    src_vec = F.normalize(src_vec).transpose(0, 1) # c, 1
-                    trg_vec = F.normalize(trg_vec) # HW, c
+                    src_vec = src_ft[0, :, src_point[1], src_point[0]].view(1, num_channel)  # 1, C
+                    trg_vec = trg_ft.view(num_channel, -1).transpose(0, 1)  # HW, C
+                    src_vec = F.normalize(src_vec).transpose(0, 1)  # c, 1
+                    trg_vec = F.normalize(trg_vec)  # HW, c
 
-                    cos_map = torch.mm(trg_vec, src_vec).view(h, w).cpu().numpy() # H, W
+                    cos_map = torch.mm(trg_vec, src_vec).view(h, w).cpu().numpy()  # H, W
 
                     max_yx = np.unravel_index(cos_map.argmax(), cos_map.shape)
                     trg_list.append([max_yx[1], max_yx[0]])
-                    dist = (
-                        (max_yx[1] - trg_point[0]) ** 2
-                        + (max_yx[0] - trg_point[1]) ** 2
-                    ) ** 0.5
+                    dist = ((max_yx[1] - trg_point[0]) ** 2 + (max_yx[0] - trg_point[1]) ** 2) ** 0.5
                     if (dist / threshold) <= 0.1:
-                        correct     += 1
+                        correct += 1
                         cat_correct += 1
                         all_correct += 1
 
@@ -154,8 +148,8 @@ class CorrespondenceTask:
         print(f"Mean per image PCK@0.1: {mean_image_sum / len(all_cats):.2f}")
         print(f"Mean per point PCK@0.1: {mean_point_sum / len(all_cats):.2f}")
 
-        result["image"]["All"]  = round(np.mean(total_pck) * 100, 2)
-        result["point"]["All"]  = round(all_correct / all_total * 100, 2)
+        result["image"]["All"] = round(np.mean(total_pck) * 100, 2)
+        result["point"]["All"] = round(all_correct / all_total * 100, 2)
         result["image"]["Mean"] = round(mean_image_sum / len(all_cats), 2)
         result["point"]["Mean"] = round(mean_point_sum / len(all_cats), 2)
 

@@ -7,19 +7,15 @@ from registry import register_dataset
 @register_dataset("spair")
 class SPairDataset:
     def __init__(self, cfg) -> None:
-        self.category_list: list[str] = os.listdir(
-            os.path.join(cfg.dataset.path, "JPEGImages")
-        )
+        self.category_list: list[str] = os.listdir(os.path.join(cfg.dataset.path, "JPEGImages"))
 
     def get_data(self, cfg) -> dict:
         dataset_path = cfg.dataset.path
-        test_path    = "PairAnnotation/test"
-        json_list    = os.listdir(os.path.join(dataset_path, test_path))
-        all_cats     = self.category_list
+        test_path = "PairAnnotation/test"
+        json_list = os.listdir(os.path.join(dataset_path, test_path))
+        all_cats = self.category_list
 
-        cat2json: dict[str, list[str]] = {
-            cat: [j for j in json_list if cat in j] for cat in all_cats
-        }
+        cat2json: dict[str, list[str]] = {cat: [j for j in json_list if cat in j] for cat in all_cats}
 
         cat2img: dict[str, list[str]] = {}
         for cat in all_cats:
@@ -36,9 +32,9 @@ class SPairDataset:
 
         return {
             "dataset_path": dataset_path,
-            "test_path":    test_path,
-            "all_cats":     all_cats,
-            "cat2json":     cat2json,
-            "cat2img":      cat2img,
-            "captions":     captions,
+            "test_path": test_path,
+            "all_cats": all_cats,
+            "cat2json": cat2json,
+            "cat2img": cat2img,
+            "captions": captions,
         }

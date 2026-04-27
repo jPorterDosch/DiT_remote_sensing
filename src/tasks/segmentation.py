@@ -18,7 +18,7 @@ def _norm_mask(mask: torch.Tensor) -> torch.Tensor:
     for cnt in range(c):
         mask_cnt = mask[cnt, :, :]
         if mask_cnt.max() > 0:
-            mask_cnt = (mask_cnt - mask_cnt.min())
+            mask_cnt = mask_cnt - mask_cnt.min()
             mask_cnt = mask_cnt / mask_cnt.max()
             mask[cnt, :, :] = mask_cnt
     return mask
@@ -43,22 +43,24 @@ def _restrict_neighborhood(h: int, w: int, size_mask_neighborhood: int) -> torch
 def _extract_feature(cfg, model, frame: torch.Tensor, ori_h: int, ori_w: int, return_h_w: bool = False):
     """Extract one frame feature everytime."""
     with torch.no_grad():
-        feat      = model.extract(
+        feat = model.extract(
             frame,
             timestep=cfg.t,
             block_idx=cfg.k,
             ensemble_size=cfg.model.ensemble_size,
         )  # 1, C, H, W
-        feat      = feat.squeeze(0)                # C, H, W
-        _c, h, w  = feat.shape
-        feat      = torch.permute(feat, (1, 2, 0)) # h, w, c
-        feat      = feat.view(h * w, _c)           # hw, c
+        feat = feat.squeeze(0)  # C, H, W
+        _c, h, w = feat.shape
+        feat = torch.permute(feat, (1, 2, 0))  # h, w, c
+        feat = feat.view(h * w, _c)  # hw, c
         if return_h_w:
             return feat, h, w
         return feat
 
 
-def _label_propagation(cfg, model, frame_tar, list_frame_feats, list_segs, ori_h, ori_w, mask_neighborhood=None):
+def _label_propagation(
+    cfg, model, frame_tar, list_frame_feats, list_segs, ori_h, ori_w, mask_neighborhood=None
+):
     """
     propagate segs of frames in list_frames to frame_tar
     """
@@ -71,16 +73,18 @@ def _label_propagation(cfg, model, frame_tar, list_frame_feats, list_segs, ori_h
     gc.collect()
     torch.cuda.empty_cache()
 
-    return_feat_tar = feat_tar.T # dim x h*w
+    return_feat_tar = feat_tar.T  # dim x h*w
 
-    ncontext     = len(list_frame_feats)
-    feat_sources = torch.stack(list_frame_feats) # nmb_context x dim x h*w
+    ncontext = len(list_frame_feats)
+    feat_sources = torch.stack(list_frame_feats)  # nmb_context x dim x h*w
 
-    feat_tar     = F.normalize(feat_tar, dim=1, p=2)
+    feat_tar = F.normalize(feat_tar, dim=1, p=2)
     feat_sources = F.normalize(feat_sources, dim=1, p=2)
 
     feat_tar = feat_tar.unsqueeze(0).repeat(ncontext, 1, 1)
-    aff = torch.exp(torch.bmm(feat_tar, feat_sources) / cfg.temperature) # nmb_context x h*w (tar:  query) x h*w (source:  keys)
+    aff = torch.exp(
+        torch.bmm(feat_tar, feat_sources) / cfg.temperature
+    )  # nmb_context x h*w (tar:  query) x h*w (source:  keys)
 
     if cfg.size_mask_neighborhood > 0:
         if mask_neighborhood is None:
@@ -88,7 +92,9 @@ def _label_propagation(cfg, model, frame_tar, list_frame_feats, list_segs, ori_h
             mask_neighborhood = mask_neighborhood.unsqueeze(0).repeat(ncontext, 1, 1)
         aff *= mask_neighborhood
 
-    aff = aff.float().transpose(2, 1).reshape(-1, h * w) # nmb_context*h*w (source:  keys) x h*w (tar:  queries)
+    aff = (
+        aff.float().transpose(2, 1).reshape(-1, h * w)
+    )  # nmb_context*h*w (source:  keys) x h*w (tar:  queries)
     tk_val, _ = torch.topk(aff, dim=0, k=cfg.topk)
     tk_val_min, _ = torch.min(tk_val, dim=0)
     aff[aff < tk_val_min] = 0
@@ -101,7 +107,7 @@ def _label_propagation(cfg, model, frame_tar, list_frame_feats, list_segs, ori_h
     list_segs = [s.cuda() for s in list_segs]
     segs = torch.cat(list_segs)
     nmb_context, C, h, w = segs.shape
-    segs    = segs.reshape(nmb_context, C, -1).transpose(2, 1).reshape(-1, C).T # C x nmb_context*h*w
+    segs = segs.reshape(nmb_context, C, -1).transpose(2, 1).reshape(-1, C).T  # C x nmb_context*h*w
     seg_tar = torch.mm(segs, aff)
     seg_tar = seg_tar.reshape(1, C, h, w)
 
@@ -109,7 +115,7 @@ def _label_propagation(cfg, model, frame_tar, list_frame_feats, list_segs, ori_h
 
 
 def _imwrite_indexed(filename: str, array, color_palette) -> None:
-    """ Save indexed png for DAVIS."""
+    """Save indexed png for DAVIS."""
     if np.atleast_3d(array).shape[2] != 1:
         raise Exception("Saving indexed PNGs requires 2D array.")
     im = Image.fromarray(array)
@@ -124,9 +130,9 @@ def _to_one_hot(y_tensor, n_dims=None):
     """
     if n_dims is None:
         n_dims = int(y_tensor.max() + 1)
-    _, h, w   = y_tensor.size()
-    y_tensor  = y_tensor.type(torch.LongTensor).view(-1, 1)
-    n_dims    = n_dims if n_dims is not None else int(torch.max(y_tensor)) + 1
+    _, h, w = y_tensor.size()
+    y_tensor = y_tensor.type(torch.LongTensor).view(-1, 1)
+    n_dims = n_dims if n_dims is not None else int(torch.max(y_tensor)) + 1
     y_one_hot = torch.zeros(y_tensor.size()[0], n_dims).scatter_(1, y_tensor, 1)
     y_one_hot = y_one_hot.view(h, w, n_dims)
     return y_one_hot.permute(2, 0, 1).unsqueeze(0)
@@ -170,7 +176,7 @@ def _read_frame(frame_dir: str, scale_size: list[int] = [960]):
 
 
 def _read_seg(seg_dir: str, scale_factor: int, scale_size: list[int] = [960]):
-    seg    = Image.open(seg_dir)
+    seg = Image.open(seg_dir)
     _w, _h = seg.size  # note PIL.Image.Image's size is (w, h)
     if len(scale_size) == 1:
         if _w > _h:
@@ -190,7 +196,9 @@ def _read_seg(seg_dir: str, scale_factor: int, scale_size: list[int] = [960]):
 
 
 @torch.no_grad()
-def _eval_video_tracking_davis(cfg, model, scale_factor, frame_list, video_dir, first_seg, seg_ori, color_palette):
+def _eval_video_tracking_davis(
+    cfg, model, scale_factor, frame_list, video_dir, first_seg, seg_ori, color_palette
+):
     """Evaluate tracking on a video given first frame & segmentation"""
     video_folder = os.path.join(cfg.output_dir, video_dir.split("/")[-1])
     os.makedirs(video_folder, exist_ok=True)
@@ -214,7 +222,7 @@ def _eval_video_tracking_davis(cfg, model, scale_factor, frame_list, video_dir, 
 
         # we use the first segmentation and the n previous ones
         used_frame_feats = [frame1_feat] + [pair[0] for pair in list(que.queue)]
-        used_segs        = [first_seg]   + [pair[1] for pair in list(que.queue)]
+        used_segs = [first_seg] + [pair[1] for pair in list(que.queue)]
 
         frame_tar_avg, feat_tar, mask_neighborhood = _label_propagation(
             cfg, model, frame_tar, used_frame_feats, used_segs, ori_h, ori_w, mask_neighborhood
@@ -229,8 +237,11 @@ def _eval_video_tracking_davis(cfg, model, scale_factor, frame_list, video_dir, 
 
         # upsampling & argmax
         frame_tar_avg = F.interpolate(
-            frame_tar_avg, scale_factor=scale_factor,
-            mode="bilinear", align_corners=False, recompute_scale_factor=False,
+            frame_tar_avg,
+            scale_factor=scale_factor,
+            mode="bilinear",
+            align_corners=False,
+            recompute_scale_factor=False,
         )[0]
         frame_tar_avg = _norm_mask(frame_tar_avg)
         _, frame_tar_seg = torch.max(frame_tar_avg, dim=0)
@@ -245,10 +256,10 @@ def _eval_video_tracking_davis(cfg, model, scale_factor, frame_list, video_dir, 
 @register_task("segmentation")
 class SegmentationTask:
     def run(self, cfg, model, dataset, results_dir: str) -> dict:
-        data          = dataset.get_data(cfg)
-        video_list    = data["video_list"]
+        data = dataset.get_data(cfg)
+        video_list = data["video_list"]
         color_palette = data["color_palette"]
-        scale_factor  = data["scale_factor"]
+        scale_factor = data["scale_factor"]
 
         n_last_frames = cfg.n_last_frames
         os.makedirs(cfg.output_dir, exist_ok=True)
@@ -263,10 +274,10 @@ class SegmentationTask:
                 cfg.n_last_frames = n_last_frames
 
             print(f"[{i}/{len(video_list)}] Begin to segmentate video {video_name}.")
-            video_dir  = os.path.join(cfg.dataset.path, "JPEGImages/480p/", video_name)
+            video_dir = os.path.join(cfg.dataset.path, "JPEGImages/480p/", video_name)
             frame_list = _read_frame_list(video_dir)
-            seg_path   = frame_list[0].replace("JPEGImages", "Annotations").replace("jpg", "png")
-            img_size   = cfg.img_size[0] if isinstance(cfg.img_size, list) else cfg.img_size
+            seg_path = frame_list[0].replace("JPEGImages", "Annotations").replace("jpg", "png")
+            img_size = cfg.img_size[0] if isinstance(cfg.img_size, list) else cfg.img_size
             first_seg, seg_ori = _read_seg(seg_path, scale_factor, scale_size=[img_size])
             _eval_video_tracking_davis(
                 cfg, model, scale_factor, frame_list, video_dir, first_seg, seg_ori, color_palette
