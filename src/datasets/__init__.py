@@ -1,1 +1,1 @@
-from . import spair, eurosat, davis  # noqa: F401
+from . import spair, eurosat  # noqa: F401
