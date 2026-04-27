@@ -56,12 +56,6 @@ class EvalConfig:
     num_workers: int = 4
     overwrite_features: bool = False
 
-    ## segmentation
-    output_dir: str = "./davis_results_flux/"
-    n_last_frames: int = 7
-    size_mask_neighborhood: int = 12
-    topk: int = 5
-    temperature: float = 0.1
 
 
 def main(cfg: EvalConfig) -> None:
