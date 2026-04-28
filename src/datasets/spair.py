@@ -27,7 +27,7 @@ class SPairDataset:
                     if data[key] not in cat2img[cat]:
                         cat2img[cat].append(data[key])
 
-        with open("spair_detailed_captions.json") as f:
+        with open(cfg.captions_path) as f:
             captions = json.load(f)
 
         return {

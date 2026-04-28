@@ -48,6 +48,9 @@ class EvalConfig:
     cd: bool = False
     discard_channels: list[int] = field(default_factory=lambda: [154, 1446])
 
+    ## correspondence (spair)
+    captions_path: str = "spair_detailed_captions.json"
+
     ## classification
     label_fractions: list[float] = field(default_factory=lambda: [1.0, 5.0, 10.0, 50.0, 100.0])
     clf_epochs: int = 50
