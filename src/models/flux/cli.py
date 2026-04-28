@@ -8,10 +8,10 @@ import torch
 from einops import rearrange
 from fire import Fire
 from PIL import ExifTags, Image
-
-from flux.sampling import denoise, get_noise, get_schedule, prepare, unpack
-from flux.util import configs, embed_watermark, load_ae, load_clip, load_flow_model, load_t5
 from transformers import pipeline
+
+from .sampling import denoise, get_noise, get_schedule, prepare, unpack
+from .util import configs, embed_watermark, load_ae, load_clip, load_flow_model, load_t5
 
 NSFW_THRESHOLD = 0.85
 

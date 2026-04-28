@@ -1,9 +1,10 @@
+import gc
+
 import torch
+from einops import rearrange, repeat
 
 # from diffusers.models.unet_2d_condition import UNet2DConditionModel
-from flux.util import load_ae, load_clip, load_flow_model, load_t5
-import gc
-from einops import rearrange, repeat
+from .util import load_ae, load_clip, load_flow_model, load_t5
 
 
 def prepare_txt(bs, t5, clip, prompt, device="cuda"):

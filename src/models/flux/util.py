@@ -1,5 +1,6 @@
 import os
 from dataclasses import dataclass
+from pathlib import Path
 
 import cv2
 import matplotlib.pyplot as plt
@@ -9,16 +10,15 @@ from einops import rearrange
 from huggingface_hub import hf_hub_download
 from imwatermark import WatermarkEncoder
 from matplotlib.colors import ListedColormap
-from pathlib import Path
 from PIL import Image
 from safetensors.torch import load_file as load_sft
 from scipy.spatial.distance import cosine
 from torch.nn import functional as F
 from torchvision import transforms
 
-from flux.model import Flux, FluxParams
-from flux.modules.autoencoder import AutoEncoder, AutoEncoderParams
-from flux.modules.conditioner import HFEmbedder
+from .model import Flux, FluxParams
+from .modules.autoencoder import AutoEncoder, AutoEncoderParams
+from .modules.conditioner import HFEmbedder
 
 
 @dataclass
