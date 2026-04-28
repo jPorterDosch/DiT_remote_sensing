@@ -27,15 +27,27 @@ class FluxModel:
         caption: str = "a photo of a image",
         category: str = "image",
     ) -> torch.Tensor:
-        feat_raw, ada = self._inner.forward(
-            None,
-            img,
-            caption=caption,
-            category=category,
-            timestep=timestep,
-            block_idx=block_idx,
-            ensemble_size=ensemble_size,
-        )
+        try:
+            feat_raw, ada = self._inner.forward(
+                None,
+                img,
+                caption=caption,
+                category=category,
+                timestep=timestep,
+                block_idx=block_idx,
+                ensemble_size=ensemble_size,
+            )
+        except AttributeError as exc:
+            msg = str(exc)
+            if "'Featurizer4Eval' object has no attribute 't5'" not in msg and "'Featurizer4Eval' object has no attribute 'clip'" not in msg:
+                raise
+            feat_raw, ada = self._inner.forward(
+                None,
+                img,
+                timestep=timestep,
+                block_idx=block_idx,
+                ensemble_size=ensemble_size,
+            )
 
         B, C, H, W = feat_raw.shape
 
