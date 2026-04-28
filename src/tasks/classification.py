@@ -28,24 +28,25 @@ def _extract_features(cfg, model, dataloader, split_name: str):
     """Extract and return (features, labels) for all images in dataloader."""
     all_feats: list[torch.Tensor] = []
     all_labels: list[torch.Tensor] = []
+    device = torch.device(cfg.device)
 
     print("saving %s images' features..." % split_name)
     for batch in tqdm(dataloader):
-        img = batch["img"].cuda()  # 1, 3, H, W
-        label = batch["label"]  # 1
+        img = batch["img"].to(device)  # B, 3, H, W
+        label = batch["label"]  # B
 
         feat = model.extract(
-            img.squeeze(0),
+            img,
             timestep=cfg.t,
             block_idx=cfg.k,
             ensemble_size=cfg.model.ensemble_size,
-        )  # 1, C, H, W
+        )  # B, C, H, W
 
         feat_vec = feat.mean(dim=[2, 3])  # B, C  — global average pool
         feat_vec = F.normalize(feat_vec, dim=1)
 
         all_feats.append(feat_vec.cpu())
-        all_labels.append(label)
+        all_labels.append(label.cpu())
 
     feats = torch.cat(all_feats, dim=0).numpy()  # N, C
     labels = torch.cat(all_labels, dim=0).numpy()  # N
