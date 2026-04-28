@@ -240,7 +240,6 @@ def load_ap10k_data(path, size=768, category="cat", split="test", subsample=0):
         source_json_path = "/mnt/nvme0n1/chaofan/" + source_json_path
         target_json_path = "/mnt/nvme0n1/chaofan/" + target_json_path
 
-
         with open(source_json_path) as f:
             src_file = json.load(f)
         with open(target_json_path) as f:
