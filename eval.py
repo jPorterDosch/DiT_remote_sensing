@@ -41,11 +41,12 @@ class EvalConfig:
 
     device: int = 0
 
-    save_path: str = "features/"
+    save_path: str | None = None  # if not specified, f"features/{self.dataset.name}/{self.model.name}
     img_size: list[int] = field(default_factory=lambda: [224, 224])
     t: int = 260  ###调参[1,1000]
     k: int = 28  ###调参[0,57]
     cd: bool = False
+    discard_channels: list[int] = field(default_factory=lambda: [154, 1446])
 
     ## classification
     label_fractions: list[float] = field(default_factory=lambda: [1.0, 5.0, 10.0, 50.0, 100.0])
@@ -59,15 +60,14 @@ class EvalConfig:
 
     def __post_init__(self) -> None:
         if not torch.cuda.is_available():
-            raise RuntimeError(
-                "CUDA is not available, and this script requires a GPU"
-            )
+            raise RuntimeError("CUDA is not available, and this script requires a GPU")
         n_gpus = torch.cuda.device_count()
-
         if self.device >= n_gpus:
             raise ValueError(
                 f"{self.device} requested but only {n_gpus} GPU(s) available (valid indices: 0–{n_gpus - 1})."
             )
+        if self.save_path is None:
+            self.save_path = os.path.join("features", self.dataset.name, self.model.name)
 
 
 def main(cfg: EvalConfig) -> None:
