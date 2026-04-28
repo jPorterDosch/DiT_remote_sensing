@@ -32,25 +32,29 @@ DATASETS: dict[str, type] = {}
 TASKS: dict[str, type] = {}
 
 
+def _register_or_raise(registry: dict[str, type], registry_name: str, name: str, cls: type) -> type:
+    if name in registry:
+        raise ValueError(f"{registry_name} '{name}' is already registered")
+    registry[name] = cls
+    return cls
+
+
 def register_model(name: str):
     def decorator(cls: type) -> type:
-        MODELS[name] = cls
-        return cls
+        return _register_or_raise(MODELS, "Model", name, cls)
 
     return decorator
 
 
 def register_dataset(name: str):
     def decorator(cls: type) -> type:
-        DATASETS[name] = cls
-        return cls
+        return _register_or_raise(DATASETS, "Dataset", name, cls)
 
     return decorator
 
 
 def register_task(name: str):
     def decorator(cls: type) -> type:
-        TASKS[name] = cls
-        return cls
+        return _register_or_raise(TASKS, "Task", name, cls)
 
     return decorator
