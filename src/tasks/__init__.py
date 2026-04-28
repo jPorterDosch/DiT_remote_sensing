@@ -1,1 +1,1 @@
-from . import correspondence, classification, segmentation  # noqa: F401
+from . import correspondence, classification  # noqa: F401
