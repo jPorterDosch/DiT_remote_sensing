@@ -72,6 +72,7 @@ def _train_linear_probe(train_feats, train_labels, num_epochs, lr, batch_size, d
     ds = torch.utils.data.TensorDataset(X, y)
     loader = DataLoader(ds, batch_size=batch_size, shuffle=True, drop_last=False)
     probe = _LinearProbe(X.shape[1], num_classes).to(device)
+    # TODO: make optimizer and loss configurable (e.g. SGD, label smoothing)
     optimizer = torch.optim.Adam(probe.parameters(), lr=lr, weight_decay=1e-4)
     criterion = nn.CrossEntropyLoss()
 
@@ -96,7 +97,9 @@ def _evaluate_probe(probe, test_feats, test_labels, device):
     preds = probe(X).cpu().numpy().argmax(axis=1)
     top1 = (preds == test_labels).mean() * 100.0
     macro_f1 = f1_score(test_labels, preds, average="macro") * 100.0
-    return top1, macro_f1
+    weighted_f1 = f1_score(test_labels, preds, average="weighted") * 100.0
+    per_class_f1 = f1_score(test_labels, preds, average=None) * 100.0
+    return top1, macro_f1, weighted_f1, per_class_f1
 
 
 @register_task("classification")
@@ -145,32 +148,38 @@ class ClassificationTask:
                 device=torch.device("cuda"),
                 num_classes=num_classes,
             )
-            top1, f1 = _evaluate_probe(probe, test_feats, test_labels, torch.device("cuda"))
+            top1, macro_f1, weighted_f1, per_class_f1 = _evaluate_probe(
+                probe, test_feats, test_labels, torch.device("cuda")
+            )
 
-            # per-class accuracy breakdown
+            # per-class accuracy and F1 breakdown
             probe.eval()
             with torch.no_grad():
                 X = torch.from_numpy(test_feats).float().cuda()
                 preds = probe(X).cpu().numpy().argmax(axis=1)
-            per_class: dict[str, float] = {}
+            per_class_acc: dict[str, float] = {}
+            per_class_f1_dict: dict[str, float] = {}
             for cls_idx, cls_name in enumerate(class_names):
                 mask = test_labels == cls_idx
                 cls_acc = (preds[mask] == test_labels[mask]).mean() * 100.0
-                per_class[cls_name] = round(float(cls_acc), 2)
+                per_class_acc[cls_name] = round(float(cls_acc), 2)
+                per_class_f1_dict[cls_name] = round(float(per_class_f1[cls_idx]), 2)
 
             result[frac] = {
                 "label_fraction_pct": frac,
                 "n_train_samples": int(len(sub_labels)),
-                "top1_accuracy": round(top1, 2),
-                "macro_f1": round(f1, 2),
+                "top1_accuracy": round(float(top1), 2),
+                "macro_f1": round(float(macro_f1), 2),
+                "weighted_f1": round(float(weighted_f1), 2),
                 "training_steps": steps,
                 "wall_clock_seconds": round(elapsed, 2),
-                "per_class_accuracy": per_class,
+                "per_class_accuracy": per_class_acc,
+                "per_class_f1": per_class_f1_dict,
             }
 
             print(
-                "%s%% labels  top1: %.2f  macro-f1: %.2f  n=%d  steps=%d  time=%.1fs"
-                % (frac, top1, f1, len(sub_labels), steps, elapsed)
+                "%s%% labels  top1: %.2f  macro-f1: %.2f  weighted-f1: %.2f  n=%d  steps=%d  time=%.1fs"
+                % (frac, top1, macro_f1, weighted_f1, len(sub_labels), steps, elapsed)
             )
 
             torch.cuda.empty_cache()
