@@ -39,7 +39,10 @@ class FluxModel:
             )
         except AttributeError as exc:
             msg = str(exc)
-            if "'Featurizer4Eval' object has no attribute 't5'" not in msg and "'Featurizer4Eval' object has no attribute 'clip'" not in msg:
+            if (
+                "'Featurizer4Eval' object has no attribute 't5'" not in msg
+                and "'Featurizer4Eval' object has no attribute 'clip'" not in msg
+            ):
                 raise
             feat_raw, ada = self._inner.forward(
                 None,
