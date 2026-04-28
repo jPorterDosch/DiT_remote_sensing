@@ -10,6 +10,7 @@ from registry import register_model
 class FluxModel:
     def __init__(self, cfg, category_list: list[str]) -> None:
         self._cd = cfg.cd
+        self._discard_channels = list(cfg.discard_channels)
         self._pre_norm = nn.LayerNorm(3072, elementwise_affine=False, eps=1e-6)
         self._inner = Featurizer4Eval(
             cat_list=list(category_list),
@@ -39,8 +40,8 @@ class FluxModel:
         B, C, H, W = feat_raw.shape
 
         if self._cd:
-            feat_raw[:, 154, :, :] = 0.0
-            feat_raw[:, 1446, :, :] = 0.0
+            for ch in self._discard_channels:
+                feat_raw[:, ch, :, :] = 0.0
 
         feat = rearrange(feat_raw, "b c h w -> b (h w) c")
         feat = self._pre_norm(feat)
