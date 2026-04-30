@@ -120,7 +120,7 @@ def main():
         print("Only one (t, k) found — nothing to sweep over. Exiting.")
         return
 
-    n_axes = 1 + (unique_k > 1) + (unique_t > 1)
+    n_axes = (unique_t > 1 and unique_k > 1) + (unique_t > 1) + (unique_k > 1)
     fig, axes = plt.subplots(1, n_axes, figsize=(6 * n_axes, 5))
     if n_axes == 1:
         axes = [axes]

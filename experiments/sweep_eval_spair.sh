@@ -7,8 +7,8 @@
 #SBATCH --qos=campus-gpu
 #SBATCH --partition=campus-gpu-bigmem
 #SBATCH --time=1-00:00:00               # Wall time (days-hh:mm:ss)
-#SBATCH --output=logs/%x/%j.out
-#SBATCH --error=logs/%x/%j.out
+#SBATCH --output=logs/%x-%j.out
+#SBATCH --error=logs/%x-%j.out
 
 # --- Bootstrap: find project root (can't be sourced) ------
 _dir="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)}"
@@ -16,7 +16,7 @@ while [ "$_dir" != "/" ] && [ ! -d "$_dir/.git" ]; do _dir="$(dirname "$_dir")";
 PROJECT_ROOT="$_dir"
 
 source "$PROJECT_ROOT/experiments/_common.sh" || {
-	echo "FATAL: Failed to source common.sh" >&2; exit 1;
+	echo "FATAL: Failed to source experiments/_common.sh" >&2; exit 1;
 }
 setup_environment
 
