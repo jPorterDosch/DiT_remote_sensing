@@ -50,18 +50,20 @@ def load_results(model: str, metric: str) -> pd.DataFrame:
             continue
         rows.append({**meta, "pck_mean": pck_mean, "pck_all": pck_all})
     if not rows:
-        raise FileNotFoundError(
-            f"No result JSONs found in layers_cat/{model}/. "
-            "Run eval_spair.py first."
-        )
+        raise FileNotFoundError(f"No result JSONs found in layers_cat/{model}/. Run eval_spair.py first.")
     return pd.DataFrame(rows)
 
 
 def plot_heatmap(df: pd.DataFrame, metric: str, ax: plt.Axes) -> None:
     pivot = df.pivot_table(index="t", columns="k", values="pck_mean", aggfunc="mean")
     pivot = pivot.sort_index(ascending=False)  # highest t at top
-    im = ax.imshow(pivot.values, aspect="auto", cmap="RdYlGn",
-                   vmin=df["pck_mean"].min() * 0.97, vmax=df["pck_mean"].max() * 1.01)
+    im = ax.imshow(
+        pivot.values,
+        aspect="auto",
+        cmap="RdYlGn",
+        vmin=df["pck_mean"].min() * 0.97,
+        vmax=df["pck_mean"].max() * 1.01,
+    )
     ax.set_xticks(range(len(pivot.columns)))
     ax.set_xticklabels(pivot.columns)
     ax.set_yticks(range(len(pivot.index)))
@@ -74,8 +76,7 @@ def plot_heatmap(df: pd.DataFrame, metric: str, ax: plt.Axes) -> None:
         for j, k in enumerate(pivot.columns):
             v = pivot.loc[t, k]
             if not np.isnan(v):
-                ax.text(j, i, f"{v:.1f}", ha="center", va="center", fontsize=8,
-                        color="black")
+                ax.text(j, i, f"{v:.1f}", ha="center", va="center", fontsize=8, color="black")
 
 
 def plot_lines_by_block(df: pd.DataFrame, metric: str, ax: plt.Axes) -> None:
