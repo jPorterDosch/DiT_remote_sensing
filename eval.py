@@ -62,7 +62,9 @@ class EvalConfig:
     save_dir: str | None = None  # if not specified, will be generated from config hash (see make_run_name())
     img_size: list[int] = field(default_factory=lambda: [224, 224])
     t: int = 260  ###调参[1,1000]
-    k: int = 28  ###调参[0,57]
+    k: int | list[int] = (
+        28  # [0, 57], for now, we can currently extract from multiple blocks, but have no aggregation methods implemented yet. Future work could explore this direction (e.g. concatenation, attention-based fusion, etc.
+    )
     cd: bool = False
     discard_channels: list[int] = field(default_factory=lambda: [154, 1446])
 
@@ -127,9 +129,6 @@ def main(cfg: EvalConfig) -> None:
     dataset = DATASETS[cfg.dataset.name](cfg)
     model = MODELS[cfg.model.name](cfg, dataset.category_list)
     task = TASKS[cfg.task]()
-
-    results_dir = os.path.join("results", cfg.dataset.name, cfg.model.name)
-    os.makedirs(results_dir, exist_ok=True)
 
     task.run(cfg, model, dataset)
 

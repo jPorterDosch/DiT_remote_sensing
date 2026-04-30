@@ -1,5 +1,7 @@
 from __future__ import annotations
+
 from typing import Any, Protocol, runtime_checkable
+
 import torch
 
 
@@ -24,7 +26,7 @@ class DatasetProtocol(Protocol):
 
 @runtime_checkable
 class TaskProtocol(Protocol):
-    def run(self, cfg: Any, model: Any, dataset: Any, results_dir: str) -> dict: ...
+    def run(self, cfg: Any, model: Any, dataset: Any) -> dict: ...
 
 
 MODELS: dict[str, type] = {}

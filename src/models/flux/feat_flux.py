@@ -151,6 +151,8 @@ class Featurizer4Eval(Featurizer):
         dit_feats = []
         mods = []
 
+        block_indices = [block_idx] if isinstance(block_idx, int) else block_idx
+
         # Sequential to avoid OOM.
         for i in range(ensemble_size):
             latents = self.ae.encode(img_tensor)
@@ -177,7 +179,7 @@ class Featurizer4Eval(Featurizer):
                 txt_ids=text_ids_i,
                 y=vec_i,
                 timesteps=t_vec,
-                ft_indices=block_idx,
+                ft_indices=block_indices,
                 cat=category,
                 guidance=guidance_vec,
             )

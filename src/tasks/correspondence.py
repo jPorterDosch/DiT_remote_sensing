@@ -158,10 +158,6 @@ class CorrespondenceTask:
         result["image"]["Mean"] = round(mean_image_sum / len(all_cats), 2)
         result["point"]["Mean"] = round(mean_point_sum / len(all_cats), 2)
 
-        # 判断目录是否存在
-        if not os.path.exists(cfg.save_dir):
-            # 如果目录不存在，则创建它
-            os.makedirs(cfg.save_dir)
         # print(result)
         out_path = os.path.join(
             cfg.save_dir,

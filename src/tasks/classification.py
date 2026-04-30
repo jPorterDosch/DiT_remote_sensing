@@ -203,10 +203,6 @@ class ClassificationTask:
 
             torch.cuda.empty_cache()
 
-        # 判断目录是否存在
-        if not os.path.exists(cfg.save_dir):
-            # 如果目录不存在，则创建它
-            os.makedirs(cfg.save_dir)
         out_path = os.path.join(
             cfg.save_dir,
             "t%s_b%s_e%s_seed%s.json" % (cfg.t, cfg.k, cfg.model.ensemble_size, cfg.seed),
