@@ -1,15 +1,19 @@
 from __future__ import annotations
-import os
+
 import json
+import os
 import time
+
+import numpy as np
 import torch
 import torch.nn as nn
+from registry import register_task
+from sklearn.metrics import f1_score
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
-import numpy as np
 from tqdm import tqdm
-from sklearn.metrics import f1_score
-from registry import register_task
+
+from ..utils import seed_worker
 
 
 class _LinearProbe(nn.Module):
@@ -35,18 +39,20 @@ def _extract_features(cfg, model, dataloader, split_name: str):
         img = batch["img"].to(device)  # B, 3, H, W
         label = batch["label"]  # B
 
-        feat = model.extract(
-            img,
-            timestep=cfg.t,
-            block_idx=cfg.k,
-            ensemble_size=cfg.model.ensemble_size,
-        )  # B, C, H, W
+        for single_img in img:
+            # TODO: if GPU can tolerate higher batch sizes, we can extract features for the whole batch at once instead of looping through images one by one.
+            feat = model.extract(
+                img,
+                timestep=cfg.t,
+                block_idx=cfg.k,
+                ensemble_size=cfg.model.ensemble_size,
+            )  # 1, C, H, W
 
-        feat_vec = feat.mean(dim=[2, 3])  # B, C  — global average pool
-        feat_vec = F.normalize(feat_vec, dim=1)
+            feat_vec = feat.mean(dim=[2, 3])  # 1, C  — global average pool
+            feat_vec = F.normalize(feat_vec, dim=1)
 
-        all_feats.append(feat_vec.cpu())
-        all_labels.append(label.cpu())
+            all_feats.append(feat_vec.cpu())
+            all_labels.append(label.cpu())
 
     feats = torch.cat(all_feats, dim=0).numpy()  # N, C
     labels = torch.cat(all_labels, dim=0).numpy()  # N
@@ -71,7 +77,13 @@ def _train_linear_probe(train_feats, train_labels, num_epochs, lr, batch_size, d
     y = torch.from_numpy(train_labels).long().to(device)
 
     ds = torch.utils.data.TensorDataset(X, y)
-    loader = DataLoader(ds, batch_size=batch_size, shuffle=True, drop_last=False)
+    loader = DataLoader(
+        ds,
+        batch_size=batch_size,
+        shuffle=True,
+        drop_last=False,
+        worker_init_fn=seed_worker,
+    )
     probe = _LinearProbe(X.shape[1], num_classes).to(device)
     # TODO: make optimizer and loss configurable (e.g. SGD, label smoothing)
     optimizer = torch.optim.Adam(probe.parameters(), lr=lr, weight_decay=1e-4)
@@ -110,9 +122,9 @@ class ClassificationTask:
         train_loader = loaders["train"]
         test_loader = loaders["test"]
 
-        os.makedirs(cfg.save_path, exist_ok=True)
-        train_feat_path = os.path.join(cfg.save_path, "train_feats.npz")
-        test_feat_path = os.path.join(cfg.save_path, "test_feats.npz")
+        os.makedirs(cfg.save_dir, exist_ok=True)
+        train_feat_path = os.path.join(cfg.save_dir, "train_feats.npz")
+        test_feat_path = os.path.join(cfg.save_dir, "test_feats.npz")
 
         # load cached features if available, otherwise extract and save
         if os.path.exists(train_feat_path) and not cfg.overwrite_features:
@@ -138,7 +150,11 @@ class ClassificationTask:
         print("Label fractions: %s" % cfg.label_fractions)
         for frac in cfg.label_fractions:
             sub_feats, sub_labels = _subsample_by_fraction(
-                train_feats, train_labels, fraction=frac, seed=cfg.seed, num_classes=num_classes
+                train_feats,
+                train_labels,
+                fraction=frac,
+                seed=cfg.seed,
+                num_classes=num_classes,
             )
             probe, steps, elapsed = _train_linear_probe(
                 sub_feats,
@@ -146,11 +162,11 @@ class ClassificationTask:
                 num_epochs=cfg.clf_epochs,
                 lr=cfg.clf_lr,
                 batch_size=cfg.clf_batch_size,
-                device=torch.device("cuda"),
+                device=torch.device(cfg.device),
                 num_classes=num_classes,
             )
             top1, macro_f1, weighted_f1, per_class_f1 = _evaluate_probe(
-                probe, test_feats, test_labels, torch.device("cuda")
+                probe, test_feats, test_labels, torch.device(cfg.device)
             )
 
             # per-class accuracy and F1 breakdown

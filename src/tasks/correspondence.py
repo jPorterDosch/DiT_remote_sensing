@@ -1,13 +1,16 @@
 from __future__ import annotations
-import os
+
 import json
+import os
+
+import numpy as np
 import torch
 import torch.nn as nn
-from torch.nn import functional as F
-import numpy as np
-from tqdm import tqdm
 from PIL import Image
+from torch.nn import functional as F
 from torchvision.transforms import PILToTensor
+from tqdm import tqdm
+
 from registry import register_task
 
 
@@ -24,7 +27,7 @@ class CorrespondenceTask:
 
         #### feature extraction
         print("saving all test images' features...")
-        os.makedirs(cfg.save_path, exist_ok=True)
+        os.makedirs(cfg.save_dir, exist_ok=True)
 
         for cat in tqdm(all_cats):
             feat_dict: dict[str, torch.Tensor] = {}
@@ -51,7 +54,7 @@ class CorrespondenceTask:
                 )
                 feat_dict[image_path] = feat.cpu()
 
-            torch.save(feat_dict, os.path.join(cfg.save_path, f"{cat}.pth"))
+            torch.save(feat_dict, os.path.join(cfg.save_dir, f"{cat}.pth"))
 
         #### evaluation
         total_pck = []
@@ -67,7 +70,7 @@ class CorrespondenceTask:
             cat_list = cat2json[cat]
 
             #### load data feature
-            feat_dict = torch.load(os.path.join(cfg.save_path, f"{cat}.pth"))
+            feat_dict = torch.load(os.path.join(cfg.save_dir, f"{cat}.pth"))
 
             cat_pck = []
             cat_correct = 0

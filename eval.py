@@ -1,7 +1,13 @@
 # ruff: noqa: E402  — sys.path must be mutated before any local imports
 from __future__ import annotations
+
+import hashlib
+import json
 import os
 import sys
+import warnings
+from dataclasses import asdict, dataclass, field, is_dataclass
+from typing import Any
 
 _root = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(_root, "src"))  # src.data, src.models.*
@@ -9,16 +15,14 @@ sys.path.insert(0, os.path.join(_root, "src", "models"))  # flux.* internal impo
 
 import torch
 import tyro
-import warnings
-from dataclasses import dataclass, field
 
 warnings.filterwarnings("ignore")
 
-import models  # noqa: F401  — resolves to src/models/, triggers @register_model decorators
 import datasets  # noqa: F401  — triggers @register_dataset decorators
+import models  # noqa: F401  — resolves to src/models/, triggers @register_model decorators
 import tasks  # noqa: F401  — triggers @register_task decorators
-
-from registry import MODELS, DATASETS, TASKS
+from registry import DATASETS, MODELS, TASKS
+from src.utils import seed_all
 
 
 @dataclass
@@ -33,15 +37,28 @@ class DatasetConfig:
     path: str = "/dataset/EuroSAT"
 
 
+def _to_jsonable(value: Any) -> Any:
+    if is_dataclass(value):
+        return {k: _to_jsonable(v) for k, v in asdict(value).items()}
+
+    if isinstance(value, dict):
+        return {str(k): _to_jsonable(v) for k, v in sorted(value.items())}
+
+    if isinstance(value, (list, tuple)):
+        return [_to_jsonable(v) for v in value]
+
+    return value
+
+
 @dataclass
 class EvalConfig:
     task: str = "classification"
     model: ModelConfig = field(default_factory=ModelConfig)
     dataset: DatasetConfig = field(default_factory=DatasetConfig)
 
-    device: int = 0
+    device: str = field(default_factory=lambda: "cuda" if torch.cuda.is_available() else "cpu")
 
-    save_path: str | None = None  # if not specified, f"features/{self.dataset.name}/{self.model.name}
+    save_dir: str | None = None  # if not specified, will be generated from config hash (see make_run_name())
     img_size: list[int] = field(default_factory=lambda: [224, 224])
     t: int = 260  ###调参[1,1000]
     k: int = 28  ###调参[0,57]
@@ -61,23 +78,43 @@ class EvalConfig:
     num_workers: int = 4
     overwrite_features: bool = False
 
+    def make_run_name(self) -> str:
+        payload = _to_jsonable(asdict(self))
+
+        dataset_name = payload["dataset"]["name"]
+        model_name = payload["model"]["name"]
+        seed = payload["seed"]
+
+        blacklist = {
+            # --- Irrelevant for feature extraction and training
+            "save_dir",
+            "device",
+            "num_workers",
+            "overwrite_features",
+        }
+
+        for k in blacklist:
+            payload.pop(k, None)
+
+        # Remove fields already represented in run name
+        payload["dataset"].pop("name", None)
+        payload["model"].pop("name", None)
+        payload.pop("seed", None)
+
+        # Hash config to get deterministic identifier for run.
+        serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        digest = hashlib.sha1(serialized.encode()).hexdigest()[:8]
+
+        return f"{dataset_name}_{model_name}_{digest}+{seed}"
+
     def __post_init__(self) -> None:
-        if not torch.cuda.is_available():
-            raise RuntimeError("CUDA is not available, and this script requires a GPU")
-        n_gpus = torch.cuda.device_count()
-        if self.device >= n_gpus:
-            raise ValueError(
-                f"{self.device} requested but only {n_gpus} GPU(s) available (valid indices: 0–{n_gpus - 1})."
-            )
-        if self.save_path is None:
-            self.save_path = os.path.join("features", self.dataset.name, self.model.name)
+        if self.save_dir is None:
+            self.save_dir = self.make_run_name()
 
 
 def main(cfg: EvalConfig) -> None:
-    torch.cuda.set_device(cfg.device)
-    torch.backends.cudnn.enabled = True
-    torch.backends.cudnn.benchmark = True
-
+    # Set global seed
+    seed_all(cfg.seed)
     # Registering a new dataset is still necessary, but this solution keeps the entrypoint generic.
     if cfg.dataset.name not in DATASETS:
         raise ValueError(f"Unknown dataset '{cfg.dataset.name}'. Registered: {list(DATASETS)}")
