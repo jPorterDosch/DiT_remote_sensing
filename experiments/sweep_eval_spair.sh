@@ -16,7 +16,7 @@ while [ "$_dir" != "/" ] && [ ! -d "$_dir/.git" ]; do _dir="$(dirname "$_dir")";
 PROJECT_ROOT="$_dir"
 
 source "$PROJECT_ROOT/experiments/_common.sh" || {
-	echo "FATAL: Failed to source common.sh" >&2; exit 1;
+	echo "FATAL: Failed to source experiments/_common.sh" >&2; exit 1;
 }
 setup_environment
 
