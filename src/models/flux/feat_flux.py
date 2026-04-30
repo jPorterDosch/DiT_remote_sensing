@@ -44,6 +44,7 @@ class Featurizer:
         model = load_flow_model(name, device=device)
         ae = load_ae(name, device=device)
 
+        # TODO: if captions are not needed for feature extraction (we currently are not including them), remove t5 and CLIP for memory savings
         self.t5 = t5
         self.clip = clip
         self.model = model
@@ -66,11 +67,17 @@ class Featurizer:
             prompt_embeds = self.null_prompt_embeds
         else:
             prompt_embeds = self.pipe._encode_prompt(
-                prompt=prompt, device="cuda", num_images_per_prompt=1, do_classifier_free_guidance=False
+                prompt=prompt,
+                device="cuda",
+                num_images_per_prompt=1,
+                do_classifier_free_guidance=False,
             )  # [1, 77, dim]
         prompt_embeds = prompt_embeds.repeat(ensemble_size, 1, 1)
         unet_ft_all = self.pipe(
-            img_tensor=img_tensor, t=t, up_ft_indices=[up_ft_index], prompt_embeds=prompt_embeds
+            img_tensor=img_tensor,
+            t=t,
+            up_ft_indices=[up_ft_index],
+            prompt_embeds=prompt_embeds,
         )
         unet_ft = unet_ft_all["up_ft"][up_ft_index]  # ensem, c, h, w
         unet_ft = unet_ft.mean(0, keepdim=True)  # 1,c,h,w
@@ -110,6 +117,10 @@ class Featurizer4Eval(Featurizer):
         ensemble_size=1,
         guidance=3.5,
     ):
+        if img_tensor.dim() != 3:
+            raise ValueError(
+                f"Expected img_tensor to have 3 dimensions (C, H, W), but got {img_tensor.shape}. If passing batched images, refactor this check, and make sure that this does not cause OOM."
+            )
 
         img_tensor = img_tensor.unsqueeze(0).cuda()  # 1, c, h, w
 
@@ -123,7 +134,11 @@ class Featurizer4Eval(Featurizer):
             prompt_embeds, text_ids, vec = prepare_txt(
                 bs=ensemble_size, t5=self.t5, clip=self.clip, prompt=caption
             )
-            self.caption_cache[cache_key] = (prompt_embeds.detach(), text_ids.detach(), vec.detach())
+            self.caption_cache[cache_key] = (
+                prompt_embeds.detach(),
+                text_ids.detach(),
+                vec.detach(),
+            )
         else:
             prompt_embeds, text_ids, vec = self.caption_cache[cache_key]
             prompt_embeds = prompt_embeds.to(img_tensor.device)
@@ -135,6 +150,8 @@ class Featurizer4Eval(Featurizer):
 
         dit_feats = []
         mods = []
+
+        block_indices = [block_idx] if isinstance(block_idx, int) else block_idx
 
         # Sequential to avoid OOM.
         for i in range(ensemble_size):
@@ -162,7 +179,7 @@ class Featurizer4Eval(Featurizer):
                 txt_ids=text_ids_i,
                 y=vec_i,
                 timesteps=t_vec,
-                ft_indices=block_idx,
+                ft_indices=block_indices,
                 cat=category,
                 guidance=guidance_vec,
             )
@@ -176,7 +193,18 @@ class Featurizer4Eval(Featurizer):
             dit_feats.append(dit_feat)
             mods.append(mod)
 
-            del latents, noise, latents_noisy, img, img_ids, t_vec, guidance_vec, model_output, mod, dit_feat
+            del (
+                latents,
+                noise,
+                latents_noisy,
+                img,
+                img_ids,
+                t_vec,
+                guidance_vec,
+                model_output,
+                mod,
+                dit_feat,
+            )
             torch.cuda.empty_cache()
 
         dit_feat = torch.cat(dit_feats, dim=0).mean(0, keepdim=True)  # 1, c, h, w

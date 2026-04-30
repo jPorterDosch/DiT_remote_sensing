@@ -137,7 +137,6 @@ class Flux(nn.Module):
         # running on sequences img
         img = self.img_in(img)
 
-        img_in_copy = img.clone()
         vec = self.time_in(timestep_embedding(timesteps, 256))
         if self.params.guidance_embed:
             if guidance is None:
