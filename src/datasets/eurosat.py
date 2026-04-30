@@ -1,11 +1,16 @@
 from __future__ import annotations
+
+from registry import register_dataset
+from src.data.eurosat_dataset import (
+    EUROSAT_CLASSES,
+    get_eurosat_categories,
+)
 from src.data.eurosat_dataset import (
     EuroSATDataset as _EuroSATDataset,
-    get_eurosat_categories,
-    EUROSAT_CLASSES,
 )
 from torch.utils.data import DataLoader
-from registry import register_dataset
+
+from ..utils import seed_worker
 
 
 @register_dataset("eurosat")
@@ -25,6 +30,7 @@ class EuroSATDatasetWrapper:
             shuffle=False,
             num_workers=cfg.num_workers,
             pin_memory=True,
+            worker_init_fn=seed_worker,
         )
         test_loader = DataLoader(
             test_ds,
@@ -32,5 +38,6 @@ class EuroSATDatasetWrapper:
             shuffle=False,
             num_workers=cfg.num_workers,
             pin_memory=True,
+            worker_init_fn=seed_worker,
         )
         return {"train": train_loader, "test": test_loader}

@@ -22,6 +22,7 @@ import datasets  # noqa: F401  — triggers @register_dataset decorators
 import models  # noqa: F401  — resolves to src/models/, triggers @register_model decorators
 import tasks  # noqa: F401  — triggers @register_task decorators
 from registry import DATASETS, MODELS, TASKS
+
 from src.utils import seed_all
 
 
@@ -130,7 +131,7 @@ def main(cfg: EvalConfig) -> None:
     results_dir = os.path.join("results", cfg.dataset.name, cfg.model.name)
     os.makedirs(results_dir, exist_ok=True)
 
-    task.run(cfg, model, dataset, results_dir)
+    task.run(cfg, model, dataset)
 
 
 if __name__ == "__main__":

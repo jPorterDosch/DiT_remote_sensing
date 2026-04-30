@@ -16,7 +16,9 @@ from registry import register_task
 
 @register_task("correspondence")
 class CorrespondenceTask:
-    def run(self, cfg, model, dataset, results_dir: str) -> dict:
+    def run(self, cfg, model, dataset) -> dict:
+        device = torch.device(cfg.device)
+
         data = dataset.get_data(cfg)
         dataset_path = data["dataset_path"]
         test_path = data["test_path"]
@@ -85,8 +87,8 @@ class CorrespondenceTask:
                 trg_img_size = pair["trg_imsize"][:2][::-1]
 
                 # B,C,H,W
-                src_ft = feat_dict[pair["src_imname"]].cuda()
-                trg_ft = feat_dict[pair["trg_imname"]].cuda()
+                src_ft = feat_dict[pair["src_imname"]].to(device)
+                trg_ft = feat_dict[pair["trg_imname"]].to(device)
                 B, C, H, W = src_ft.shape
 
                 src_ft = src_ft.to(torch.float16)
@@ -157,12 +159,12 @@ class CorrespondenceTask:
         result["point"]["Mean"] = round(mean_point_sum / len(all_cats), 2)
 
         # 判断目录是否存在
-        if not os.path.exists(results_dir):
+        if not os.path.exists(cfg.save_dir):
             # 如果目录不存在，则创建它
-            os.makedirs(results_dir)
+            os.makedirs(cfg.save_dir)
         # print(result)
         out_path = os.path.join(
-            results_dir,
+            cfg.save_dir,
             "t%s_b%s_e%s.json" % (cfg.t, cfg.k, cfg.model.ensemble_size),
         )
         with open(out_path, "w+") as f:

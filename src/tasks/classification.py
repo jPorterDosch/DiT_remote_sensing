@@ -7,13 +7,13 @@ import time
 import numpy as np
 import torch
 import torch.nn as nn
-from registry import register_task
 from sklearn.metrics import f1_score
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from ..utils import seed_worker
+from registry import register_task
+from utils import seed_worker
 
 
 class _LinearProbe(nn.Module):
@@ -39,10 +39,10 @@ def _extract_features(cfg, model, dataloader, split_name: str):
         img = batch["img"].to(device)  # B, 3, H, W
         label = batch["label"]  # B
 
-        for single_img in img:
+        for single_img, single_label in zip(img, label, strict=True):
             # TODO: if GPU can tolerate higher batch sizes, we can extract features for the whole batch at once instead of looping through images one by one.
             feat = model.extract(
-                img,
+                single_img,
                 timestep=cfg.t,
                 block_idx=cfg.k,
                 ensemble_size=cfg.model.ensemble_size,
@@ -52,7 +52,7 @@ def _extract_features(cfg, model, dataloader, split_name: str):
             feat_vec = F.normalize(feat_vec, dim=1)
 
             all_feats.append(feat_vec.cpu())
-            all_labels.append(label.cpu())
+            all_labels.append(single_label.cpu())
 
     feats = torch.cat(all_feats, dim=0).numpy()  # N, C
     labels = torch.cat(all_labels, dim=0).numpy()  # N
@@ -117,7 +117,9 @@ def _evaluate_probe(probe, test_feats, test_labels, device):
 
 @register_task("classification")
 class ClassificationTask:
-    def run(self, cfg, model, dataset, results_dir: str) -> dict:
+    def run(self, cfg, model, dataset) -> dict:
+        device = torch.device(cfg.device)
+
         loaders = dataset.get_data(cfg)
         train_loader = loaders["train"]
         test_loader = loaders["test"]
@@ -172,7 +174,7 @@ class ClassificationTask:
             # per-class accuracy and F1 breakdown
             probe.eval()
             with torch.no_grad():
-                X = torch.from_numpy(test_feats).float().cuda()
+                X = torch.from_numpy(test_feats).float().to(device)
                 preds = probe(X).cpu().numpy().argmax(axis=1)
             per_class_acc: dict[str, float] = {}
             per_class_f1_dict: dict[str, float] = {}
@@ -202,11 +204,11 @@ class ClassificationTask:
             torch.cuda.empty_cache()
 
         # 判断目录是否存在
-        if not os.path.exists(results_dir):
+        if not os.path.exists(cfg.save_dir):
             # 如果目录不存在，则创建它
-            os.makedirs(results_dir)
+            os.makedirs(cfg.save_dir)
         out_path = os.path.join(
-            results_dir,
+            cfg.save_dir,
             "t%s_b%s_e%s_seed%s.json" % (cfg.t, cfg.k, cfg.model.ensemble_size, cfg.seed),
         )
         with open(out_path, "w+") as json_file:

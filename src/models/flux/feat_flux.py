@@ -44,6 +44,7 @@ class Featurizer:
         model = load_flow_model(name, device=device)
         ae = load_ae(name, device=device)
 
+        # TODO: if captions are not needed for feature extraction (we currently are not including them), remove t5 and CLIP for memory savings
         self.t5 = t5
         self.clip = clip
         self.model = model
