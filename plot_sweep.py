@@ -21,16 +21,18 @@ import pandas as pd
 
 def parse_filename(path: Path) -> dict | None:
     """Extract t, k, ensemble_size from filename like t260_b[28]_e8.json"""
-    name = path.stem  # e.g. "t260_b[28]_e8"
+    name = path.stem
     m = re.match(r"t(\d+)_b\[?([^\]]+)\]?_e(\d+)", name)
     if not m:
         return None
     t = int(m.group(1))
-    # k may be "28" or "10, 28" (multi-block); use tuple for multi, int for single
     k_ints = [int(x.strip()) for x in m.group(2).split(",")]
-    k = k_ints[0] if len(k_ints) == 1 else tuple(k_ints)
+    # Always use a string for k so dtype is consistent across single- and multi-block
+    k = str(k_ints[0]) if len(k_ints) == 1 else str(tuple(k_ints))
     e = int(m.group(3))
-    return {"t": t, "k": k, "e": e}
+    # Keep a numeric k for sorting/plotting when single-block
+    k_numeric = k_ints[0] if len(k_ints) == 1 else None
+    return {"t": t, "k": k, "k_numeric": k_numeric, "e": e}
 
 
 def load_results(model: str, metric: str) -> pd.DataFrame:
@@ -116,25 +118,27 @@ def main():
     unique_t = df["t"].nunique()
     unique_k = df["k"].nunique()
 
+    show_heatmap = unique_t > 1 and unique_k > 1
+    show_lines_by_block = unique_t > 1
+    show_lines_by_timestep = unique_k > 1
+    n_axes = show_heatmap + show_lines_by_block + show_lines_by_timestep
+
     if unique_t == 1 and unique_k == 1:
         print("Only one (t, k) found — nothing to sweep over. Exiting.")
         return
 
-    n_axes = (unique_t > 1 and unique_k > 1) + (unique_t > 1) + (unique_k > 1)
     fig, axes = plt.subplots(1, n_axes, figsize=(6 * n_axes, 5))
     if n_axes == 1:
         axes = [axes]
 
     ax_idx = 0
-    if unique_t > 1 and unique_k > 1:
+    if show_heatmap:
         plot_heatmap(df, args.metric, axes[ax_idx])
         ax_idx += 1
-
-    if unique_t > 1:
+    if show_lines_by_block:
         plot_lines_by_block(df, args.metric, axes[ax_idx])
         ax_idx += 1
-
-    if unique_k > 1:
+    if show_lines_by_timestep:
         plot_lines_by_timestep(df, args.metric, axes[ax_idx])
         ax_idx += 1
 
