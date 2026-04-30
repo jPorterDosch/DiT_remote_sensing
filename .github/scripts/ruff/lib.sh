@@ -100,6 +100,12 @@ validate_json() {
   local file="$1"
   local desc="$2"
 
+  # Empty file = 0 issues from json-lines format = valid
+  if [ ! -s "$file" ]; then
+    log_ok "$desc: valid (no issues)"
+    return 0
+  fi
+
   if jq -e . "$file" >/dev/null 2>&1; then
     log_ok "$desc: valid JSON"
     return 0

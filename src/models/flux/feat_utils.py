@@ -218,7 +218,6 @@ def load_ap10k_data(path, size=768, category="cat", split="test", subsample=0):
     # if subsample is not None and subsample > 0:
     #     pairs = [pairs[ix] for ix in np.random.choice(len(pairs), subsample)]
     files = []
-    kps = []
     thresholds = []
     data_category = []
     for pair in pairs:
@@ -240,9 +239,6 @@ def load_ap10k_data(path, size=768, category="cat", split="test", subsample=0):
 
         source_json_path = "/mnt/nvme0n1/chaofan/" + source_json_path
         target_json_path = "/mnt/nvme0n1/chaofan/" + target_json_path
-
-        src_img_path = source_json_path.replace("json", "jpg").replace("ImageAnnotation", "JPEGImages")
-        trg_img_path = target_json_path.replace("json", "jpg").replace("ImageAnnotation", "JPEGImages")
 
         with open(source_json_path) as f:
             src_file = json.load(f)
@@ -458,7 +454,6 @@ def load_pascal_data(path="data/PF-dataset-PASCAL", size=256, category="cat", sp
     np.random.seed(42)
     files = []
     data_category = []
-    kps = []
     test_data = pd.read_csv(f"{path}/{split}_pairs_pf_pascal.csv")
     cls = [
         "aeroplane",
