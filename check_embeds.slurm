@@ -1,11 +1,11 @@
 #!/bin/bash
-#SBATCH --job-name=flux_mlp_eurosat
+#SBATCH --job-name=check_embeds
 #SBATCH -A acf-utk0011                 
-#SBATCH --time=02:00:00                
+#SBATCH --time=01:00:00                
 #SBATCH --nodes=1                      
 #SBATCH --ntasks-per-node=1            
-#SBATCH --cpus-per-task=4                                  
-#SBATCH --partition=campus-gpu      
+#SBATCH --cpus-per-task=4                       
+#SBATCH --partition=campus-gpu         
 #SBATCH --qos=campus-gpu               # <-- NEW: Explicitly define the QoS
 #SBATCH --gres=gpu:1                   
 #SBATCH --output=job_output_%j.txt     
@@ -21,4 +21,4 @@ module load anaconda3
 source activate DiTF
 
 # 3. Run your training script
-python train_mlp_eurosat.py
+python check_embeds.py

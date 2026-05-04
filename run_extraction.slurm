@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=flux_mlp_eurosat
+#SBATCH --job-name=run_extraction
 #SBATCH -A acf-utk0011                 
 #SBATCH --time=04:00:00                
 #SBATCH --nodes=1                      
