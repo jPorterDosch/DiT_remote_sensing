@@ -43,7 +43,7 @@ def extract_and_save_features():
                     img_tensor=image, 
                     caption=caption,
                     category="", 
-                    block_idx=[1]
+                    block_idx=[28]
                 )
                 
                 features = features.mean(dim=[2, 3]) 

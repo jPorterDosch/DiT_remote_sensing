@@ -5,7 +5,7 @@
 #SBATCH --nodes=1                      
 #SBATCH --ntasks-per-node=1            
 #SBATCH --cpus-per-task=4                                  
-#SBATCH --partition=campus-gpu      
+#SBATCH --partition=campus-gpu-bigmem      
 #SBATCH --qos=campus-gpu               # <-- NEW: Explicitly define the QoS
 #SBATCH --gres=gpu:1                   
 #SBATCH --output=job_output_%j.txt     

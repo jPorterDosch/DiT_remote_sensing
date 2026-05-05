@@ -2,6 +2,8 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import TensorDataset, DataLoader
+from sklearn.metrics import f1_score, confusion_matrix, ConfusionMatrixDisplay
+import matplotlib.pyplot as plt
 
 # ---------------------------------------------------------
 # Configuration
@@ -11,6 +13,13 @@ NUM_EPOCHS = 20
 LEARNING_RATE = 1e-3
 NUM_CLASSES = 10 
 HIDDEN_DIM = 2048
+
+# EuroSAT classes are typically sorted alphabetically by default in PyTorch
+EUROSAT_CLASSES = [
+    'AnnualCrop', 'Forest', 'HerbaceousVegetation', 'Highway',
+    'Industrial', 'Pasture', 'PermanentCrop', 'Residential',
+    'River', 'SeaLake'
+]
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
@@ -26,7 +35,7 @@ class EuroSAT_MLP(nn.Module):
             nn.Linear(input_dim, hidden_dim),
             nn.ReLU(),
             nn.Dropout(0.2),
-            # Second hidden layer (as requested!)
+            # Second hidden layer
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
             nn.Dropout(0.2),
@@ -92,6 +101,10 @@ def train_eval_mlp():
         correct = 0
         total = 0
         
+        # Lists to store labels and predictions for F1 and Confusion Matrix
+        all_preds = []
+        all_labels = []
+        
         with torch.no_grad():
             for batch_features, batch_labels in test_loader:
                 batch_features = batch_features.to(device)
@@ -103,9 +116,33 @@ def train_eval_mlp():
                 total += batch_labels.size(0)
                 correct += (predicted == batch_labels).sum().item()
                 
+                # Store predictions and true labels (move to CPU for scikit-learn)
+                all_preds.extend(predicted.cpu().numpy())
+                all_labels.extend(batch_labels.cpu().numpy())
+                
         test_accuracy = 100 * correct / total
         
-        print(f"Epoch {epoch+1}/{NUM_EPOCHS} | Train Loss: {avg_train_loss:.4f} | Test Accuracy: {test_accuracy:.2f}%")
+        # Calculate Macro F1 Score
+        macro_f1 = f1_score(all_labels, all_preds, average='macro')
+        
+        print(f"Epoch {epoch+1:02d}/{NUM_EPOCHS} | Train Loss: {avg_train_loss:.4f} | Test Acc: {test_accuracy:.2f}% | Test F1: {macro_f1:.4f}")
+
+        # --- PLOT CONFUSION MATRIX ON FINAL EPOCH ---
+        if epoch == NUM_EPOCHS - 1:
+            print("\nGenerating confusion matrix for final epoch...")
+            cm = confusion_matrix(all_labels, all_preds)
+            disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=EUROSAT_CLASSES)
+            
+            # Recreate the styling from the attached image
+            fig, ax = plt.subplots(figsize=(12, 10))
+            disp.plot(cmap='Blues', ax=ax, xticks_rotation=45, values_format='d')
+            
+            plt.title("EuroSAT Confusion Matrix (Final Epoch)", fontsize=16, fontweight='bold')
+            plt.tight_layout()
+            
+            save_path = "eurosat_confusion_matrix.png"
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+            print(f"Saved confusion matrix to '{save_path}'")
 
 if __name__ == "__main__":
     train_eval_mlp()
