@@ -18,11 +18,11 @@ import tyro
 
 warnings.filterwarnings("ignore")
 
-import datasets  # noqa: F401  — triggers @register_dataset decorators
-import models  # noqa: F401  — resolves to src/models/, triggers @register_model decorators
 import tasks  # noqa: F401  — triggers @register_task decorators
 from registry import DATASETS, MODELS, TASKS
 
+import datasets  # noqa: F401  — triggers @register_dataset decorators
+import models  # noqa: F401  — resolves to src/models/, triggers @register_model decorators
 from src.utils import seed_all
 
 
@@ -52,14 +52,17 @@ def _to_jsonable(value: Any) -> Any:
 
 
 @dataclass
-class EvalConfig:
+class RunConfig:
     task: str = "classification"
     model: ModelConfig = field(default_factory=ModelConfig)
     dataset: DatasetConfig = field(default_factory=DatasetConfig)
 
-    device: str = field(default_factory=lambda: "cuda" if torch.cuda.is_available() else "cpu")
+    device: str = field(
+        default_factory=lambda: "cuda" if torch.cuda.is_available() else "cpu"
+    )
 
-    save_dir: str | None = None  # if not specified, will be generated from config hash (see make_run_name())
+    # Root to save extracted features and trained classifiers. Name derived from config will be appended to this path so that multiple runs can be organized under the same directory.
+    save_dir: str = "./models"
     img_size: list[int] = field(default_factory=lambda: [224, 224])
     t: int = 260  ###调参[1,1000]
     k: int | list[int] = (
@@ -72,7 +75,9 @@ class EvalConfig:
     captions_path: str = "spair_detailed_captions.json"
 
     ## classification
-    label_fractions: list[float] = field(default_factory=lambda: [1.0, 5.0, 10.0, 50.0, 100.0])
+    label_fractions: list[float] = field(
+        default_factory=lambda: [1.0, 5.0, 10.0, 50.0, 100.0]
+    )
     clf_epochs: int = 50
     clf_lr: float = 1e-3
     clf_batch_size: int = 256
@@ -111,18 +116,23 @@ class EvalConfig:
         return f"{dataset_name}_{model_name}_{digest}+{seed}"
 
     def __post_init__(self) -> None:
-        if self.save_dir is None:
-            self.save_dir = self.make_run_name()
+        pass
 
 
-def main(cfg: EvalConfig) -> None:
+def main(cfg: RunConfig) -> None:
+    # Resolve save_dir for this run (after config is fully initialized and run name can be generated).
+    cfg.save_dir = os.path.join(cfg.save_dir, cfg.make_run_name())
     # Set global seed
     seed_all(cfg.seed)
     # Registering a new dataset is still necessary, but this solution keeps the entrypoint generic.
     if cfg.dataset.name not in DATASETS:
-        raise ValueError(f"Unknown dataset '{cfg.dataset.name}'. Registered: {list(DATASETS)}")
+        raise ValueError(
+            f"Unknown dataset '{cfg.dataset.name}'. Registered: {list(DATASETS)}"
+        )
     if cfg.model.name not in MODELS:
-        raise ValueError(f"Unknown model '{cfg.model.name}'. Registered: {list(MODELS)}")
+        raise ValueError(
+            f"Unknown model '{cfg.model.name}'. Registered: {list(MODELS)}"
+        )
     if cfg.task not in TASKS:
         raise ValueError(f"Unknown task '{cfg.task}'. Registered: {list(TASKS)}")
 
@@ -134,5 +144,5 @@ def main(cfg: EvalConfig) -> None:
 
 
 if __name__ == "__main__":
-    cfg = tyro.cli(EvalConfig)
+    cfg = tyro.cli(RunConfig)
     main(cfg)

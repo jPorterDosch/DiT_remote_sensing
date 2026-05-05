@@ -19,6 +19,7 @@ class FluxModel:
             cat_list=list(category_list),
             ensemble_size=cfg.model.ensemble_size,
         )
+        self.vae = self._inner.vae
 
     @torch.no_grad()
     def extract(
