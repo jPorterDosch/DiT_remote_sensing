@@ -67,6 +67,7 @@ def _save_lora_checkpoint(
     train_metrics: dict,
     val_metrics: dict,
     name: str,
+    mask_token: torch.nn.Parameter | None = None,
 ) -> None:
     checkpoint_dir = Path(cfg.save_dir) / "checkpoints"
     checkpoint_dir.mkdir(exist_ok=True)
@@ -77,6 +78,7 @@ def _save_lora_checkpoint(
         "epoch": epoch,
         "global_step": global_step,
         "lora_state_dict": _get_lora_state_dict(model),
+        "mask_token": mask_token.detach().cpu() if mask_token is not None else None,
         "optimizer_state_dict": optimizer.state_dict(),
         "train_metrics": train_metrics,
         "val_metrics": val_metrics,
@@ -126,6 +128,33 @@ def _flow_metrics(pred: torch.Tensor, target: torch.Tensor, prefix: str) -> dict
     return metrics
 
 
+def _random_masking(
+    x: torch.Tensor, mask_token: torch.nn.Parameter, mask_ratio: float
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Replace a random subset of tokens with mask_token. Similar to MAE but tokens are replaced
+    (not dropped) so length is correct for positional encoding.
+
+    x: (B, L, D)
+    Returns: x_masked (B, L, D), mask (B, L) with 1 = masked position.
+    """
+    B, L, D = x.shape
+    len_keep = int(L * (1 - mask_ratio))
+
+    noise = torch.rand(B, L, device=x.device)
+    ids_shuffle = torch.argsort(noise, dim=1)
+    ids_restore = torch.argsort(ids_shuffle, dim=1)
+
+    mask = torch.ones(B, L, device=x.device)
+    mask[:, :len_keep] = 0
+    mask = torch.gather(mask, dim=1, index=ids_restore)
+
+    mask_expanded = mask.unsqueeze(-1).to(dtype=x.dtype)
+    x_masked = x * (1 - mask_expanded) + mask_token.to(dtype=x.dtype) * mask_expanded
+
+    return x_masked, mask
+
+
 def _fine_tune_diffusion_one_epoch(
     cfg,
     featurizer: Featurizer4Eval,
@@ -134,6 +163,8 @@ def _fine_tune_diffusion_one_epoch(
     optimizer: torch.optim.Optimizer,
     device: torch.device,
     global_step: int,
+    mask_token: torch.nn.Parameter,
+    mask_ratio: float,
 ) -> tuple[dict, int]:
     """
     Main training loop for fine-tuning FLUX on diffusion/flow-matching objective with LoRA adapters. For each batch:
@@ -190,6 +221,9 @@ def _fine_tune_diffusion_one_epoch(
         img = img.to(device, dtype=latents.dtype)
         img_ids = img_ids.to(device)
 
+        if mask_ratio > 0:
+            img, _ = _random_masking(img, mask_token, mask_ratio)
+
         txt, txt_ids, y = _expand_null_embeddings(
             featurizer, batch_size=imgs.shape[0], device=device, dtype=latents.dtype
         )
@@ -209,7 +243,7 @@ def _fine_tune_diffusion_one_epoch(
         target, _ = prepare(target_flow)
         target = target.to(device=device, dtype=pred.dtype)
 
-        raw_loss = F.mse_loss(pred, target)
+        raw_loss = F.mse_loss(pred, target) # TODO extend for MIM loss
         loss = raw_loss / grad_accum_steps  # Normalize loss for gradient accumulation
         loss.backward()
 
@@ -241,6 +275,8 @@ def _validate_diffusion(
     timestep: int,
     dataloader: torch.utils.data.DataLoader,
     device: torch.device,
+    mask_token: torch.nn.Parameter,
+    mask_ratio: float,
 ) -> dict:
     model = featurizer.model
     vae = featurizer.ae
@@ -276,6 +312,9 @@ def _validate_diffusion(
         img, img_ids = prepare(img=latents_noisy)
         img = img.to(device, dtype=latents.dtype)
         img_ids = img_ids.to(device)
+
+        if mask_ratio > 0:
+            img, _ = _random_masking(img, mask_token, mask_ratio)
 
         txt, txt_ids, y = _expand_null_embeddings(
             featurizer, batch_size=imgs.shape[0], device=device, dtype=latents.dtype
@@ -330,6 +369,8 @@ class FinetuneDiffusionTask:
         flux.to(device)
         ae.to(device)
 
+        mask_token = torch.nn.Parameter(torch.zeros(1, 1, flux.in_channels, device=device))
+
         # Validate label fraction -- currently, due to length of fine-tuning, only length 1 is supported.
         if len(cfg.label_fractions) != 1:
             raise ValueError(
@@ -355,6 +396,7 @@ class FinetuneDiffusionTask:
                 param.requires_grad = True
 
         trainable_params = [param for param in flux.parameters() if param.requires_grad]
+        trainable_params.append(mask_token)
 
         # Sanity check
         if len(trainable_params) == 0:
@@ -387,6 +429,8 @@ class FinetuneDiffusionTask:
                 optimizer=optimizer,
                 device=device,
                 global_step=global_step,
+                mask_token=mask_token,
+                mask_ratio=cfg.mask_ratio,
             )
             val_metrics = _validate_diffusion(
                 cfg,
@@ -394,6 +438,8 @@ class FinetuneDiffusionTask:
                 timestep=cfg.t,
                 dataloader=test_loader,
                 device=device,
+                mask_token=mask_token,
+                mask_ratio=cfg.mask_ratio,
             )
 
             epoch_metrics = {
@@ -429,6 +475,7 @@ class FinetuneDiffusionTask:
                     train_metrics=train_metrics,
                     val_metrics=val_metrics,
                     name="lora_best",
+                    mask_token=mask_token,
                 )
 
         # Save final checkpoint at end of training as well
@@ -443,6 +490,7 @@ class FinetuneDiffusionTask:
                 train_metrics=train_metrics,
                 val_metrics=val_metrics,
                 name="lora_last",
+                mask_token=mask_token,
             )
 
         writer.close()
