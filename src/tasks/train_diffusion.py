@@ -8,6 +8,7 @@ from einops import repeat
 from torch.utils.tensorboard import SummaryWriter
 
 from models.flux.feat_flux import Featurizer4Eval, prepare
+from models.flux.adapter import FluxModel
 from models.lora import lora_wrap_flux
 from registry import register_task
 from utils import to_jsonable
@@ -316,7 +317,8 @@ def _validate_diffusion(
 
 @register_task("finetune-diffusion")
 class FinetuneDiffusionTask:
-    def run(self, cfg, model: Featurizer4Eval, dataset) -> dict:
+    def run(self, cfg, model: FluxModel, dataset) -> dict:
+        featurizer_model: Featurizer4Eval = model._inner
         device = torch.device(cfg.device)
 
         tb_dir = os.path.join(cfg.save_dir, "tensorboard_logs")
@@ -325,8 +327,8 @@ class FinetuneDiffusionTask:
         best_val_loss = float("inf")
 
         # Ensure model and VAE are on correct device before training.
-        flux = model.model
-        ae = model.ae
+        flux = featurizer_model.model
+        ae = featurizer_model.ae
         flux.to(device)
         ae.to(device)
 
@@ -381,7 +383,7 @@ class FinetuneDiffusionTask:
 
             train_metrics, global_step = _fine_tune_diffusion_one_epoch(
                 cfg,
-                featurizer=model,
+                featurizer=featurizer_model,
                 timestep=cfg.t,
                 dataloader=train_loader,
                 optimizer=optimizer,
@@ -390,7 +392,7 @@ class FinetuneDiffusionTask:
             )
             val_metrics = _validate_diffusion(
                 cfg,
-                featurizer=model,
+                featurizer=featurizer_model,
                 timestep=cfg.t,
                 dataloader=test_loader,
                 device=device,
