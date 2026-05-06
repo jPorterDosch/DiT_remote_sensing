@@ -1,4 +1,6 @@
 import random
+from dataclasses import asdict, is_dataclass
+from typing import Any
 
 import numpy as np
 import torch
@@ -31,3 +33,31 @@ def seed_worker(worker_id) -> None:
     # Our code SHOULD NOT be using the NumPy global seed, but older dependencies might.
     np.random.seed(worker_seed % 2**32)
     random.seed(worker_seed)
+
+
+def to_jsonable(value: Any) -> Any:
+    """
+    Recursively convert dataclasses, dicts, lists, and tuples to JSON-serializable structures.
+     - Dataclasses are converted to dicts using `asdict()`.
+     - Dicts have their keys converted to strings and values processed recursively.
+     - Lists and tuples have their elements processed recursively.
+     - Other types are returned as-is (assuming they are already JSON-serializable).
+     This function is useful for preparing complex nested data structures for JSON serialization,
+     ensuring that all components are in a format that can be serialized by the `json` module.
+     Note: This function does not handle all possible types (e.g., sets, custom objects without dataclass support),
+     so additional handling may be needed for those cases.
+     Args:
+         value: The input value to convert to a JSON-serializable structure.
+     Returns:
+         A JSON-serializable version of the input value.
+    """
+    if is_dataclass(value):
+        return {k: to_jsonable(v) for k, v in asdict(value).items()}
+
+    if isinstance(value, dict):
+        return {str(k): to_jsonable(v) for k, v in sorted(value.items())}
+
+    if isinstance(value, (list, tuple)):
+        return [to_jsonable(v) for v in value]
+
+    return value

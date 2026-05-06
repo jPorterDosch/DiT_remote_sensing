@@ -6,8 +6,7 @@ import json
 import os
 import sys
 import warnings
-from dataclasses import asdict, dataclass, field, is_dataclass
-from typing import Any
+from dataclasses import asdict, dataclass, field
 
 _root = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(_root, "src"))  # src.data, src.models.*
@@ -23,7 +22,7 @@ from registry import DATASETS, MODELS, TASKS
 
 import datasets  # noqa: F401  — triggers @register_dataset decorators
 import models  # noqa: F401  — resolves to src/models/, triggers @register_model decorators
-from src.utils import seed_all
+from src.utils import seed_all, to_jsonable
 
 
 @dataclass
@@ -38,28 +37,13 @@ class DatasetConfig:
     path: str = "/dataset/EuroSAT"
 
 
-def _to_jsonable(value: Any) -> Any:
-    if is_dataclass(value):
-        return {k: _to_jsonable(v) for k, v in asdict(value).items()}
-
-    if isinstance(value, dict):
-        return {str(k): _to_jsonable(v) for k, v in sorted(value.items())}
-
-    if isinstance(value, (list, tuple)):
-        return [_to_jsonable(v) for v in value]
-
-    return value
-
-
 @dataclass
 class RunConfig:
     task: str = "classification"
     model: ModelConfig = field(default_factory=ModelConfig)
     dataset: DatasetConfig = field(default_factory=DatasetConfig)
 
-    device: str = field(
-        default_factory=lambda: "cuda" if torch.cuda.is_available() else "cpu"
-    )
+    device: str = field(default_factory=lambda: "cuda" if torch.cuda.is_available() else "cpu")
 
     # Root to save extracted features and trained classifiers. Name derived from config will be appended to this path so that multiple runs can be organized under the same directory.
     save_dir: str = "./models"
@@ -75,9 +59,7 @@ class RunConfig:
     captions_path: str = "spair_detailed_captions.json"
 
     ## classification
-    label_fractions: list[float] = field(
-        default_factory=lambda: [1.0, 5.0, 10.0, 50.0, 100.0]
-    )
+    label_fractions: list[float] = field(default_factory=lambda: [1.0, 5.0, 10.0, 50.0, 100.0])
     clf_epochs: int = 50
     clf_lr: float = 1e-3
     clf_batch_size: int = 256
@@ -87,7 +69,15 @@ class RunConfig:
     overwrite_features: bool = False
 
     ## Diffusion/flow-matching training with LoRA
-    lora_lr: float = 1e-3
+    finetune_max_epochs: int = 10
+    finetune_bs: int = 1
+    use_gradient_accumulation: bool = True
+    gradient_accumulation_steps: int = 4
+    finetune_lr: float = 1e-3
+    # TODO: test higher values of max_train_steps, setting default low so we can get it running.
+    max_train_steps: int = 1000
+
+    # LoRA hyperparameters
     lora_wd: float = 0.0
     lora_rank: int = 4
     lora_alpha: float = 16.0
@@ -96,7 +86,7 @@ class RunConfig:
     guidance_scale: float = 3.5
 
     def make_run_name(self) -> str:
-        payload = _to_jsonable(asdict(self))
+        payload = to_jsonable(asdict(self))
 
         dataset_name = payload["dataset"]["name"]
         model_name = payload["model"]["name"]
@@ -135,13 +125,9 @@ def main(cfg: RunConfig) -> None:
     seed_all(cfg.seed)
     # Registering a new dataset is still necessary, but this solution keeps the entrypoint generic.
     if cfg.dataset.name not in DATASETS:
-        raise ValueError(
-            f"Unknown dataset '{cfg.dataset.name}'. Registered: {list(DATASETS)}"
-        )
+        raise ValueError(f"Unknown dataset '{cfg.dataset.name}'. Registered: {list(DATASETS)}")
     if cfg.model.name not in MODELS:
-        raise ValueError(
-            f"Unknown model '{cfg.model.name}'. Registered: {list(MODELS)}"
-        )
+        raise ValueError(f"Unknown model '{cfg.model.name}'. Registered: {list(MODELS)}")
     if cfg.task not in TASKS:
         raise ValueError(f"Unknown task '{cfg.task}'. Registered: {list(TASKS)}")
 
