@@ -30,9 +30,7 @@ class _LinearProbe(nn.Module):
 
 
 @torch.no_grad()
-def _extract_features(
-    cfg, model, dataloader, split_name: str
-) -> tuple[np.ndarray, np.ndarray]:
+def _extract_features(cfg, model, dataloader, split_name: str) -> tuple[np.ndarray, np.ndarray]:
     """Extract and return (features, labels) for all images in dataloader."""
     all_feats: list[torch.Tensor] = []
     all_labels: list[torch.Tensor] = []
@@ -63,9 +61,7 @@ def _extract_features(
     return feats, labels
 
 
-def _train_linear_probe(
-    train_feats, train_labels, num_epochs, lr, batch_size, device, num_classes: int
-):
+def _train_linear_probe(train_feats, train_labels, num_epochs, lr, batch_size, device, num_classes: int):
     X = torch.from_numpy(train_feats).float().to(device)
     y = torch.from_numpy(train_labels).long().to(device)
 
@@ -127,9 +123,7 @@ class ClassificationTask:
             d = np.load(train_feat_path)
             train_feats, train_labels = d["feats"], d["labels"]
         else:
-            train_feats, train_labels = _extract_features(
-                cfg, model, train_loader, "train"
-            )
+            train_feats, train_labels = _extract_features(cfg, model, train_loader, "train")
             np.savez(train_feat_path, feats=train_feats, labels=train_labels)
 
         if os.path.exists(test_feat_path) and not cfg.overwrite_features:
@@ -200,8 +194,7 @@ class ClassificationTask:
 
         out_path = os.path.join(
             cfg.save_dir,
-            "t%s_b%s_e%s_seed%s.json"
-            % (cfg.t, cfg.k, cfg.model.ensemble_size, cfg.seed),
+            "t%s_b%s_e%s_seed%s.json" % (cfg.t, cfg.k, cfg.model.ensemble_size, cfg.seed),
         )
         with open(out_path, "w+") as json_file:
             json.dump(result, json_file, indent=4, ensure_ascii=False)
