@@ -2,14 +2,13 @@ from __future__ import annotations
 
 from torch.utils.data import DataLoader
 
-from registry import register_dataset
-from utils import seed_worker
-
-from src.data.eurosat_dataset import (
+from data.eurosat_dataset import (
     EUROSAT_CLASSES,
     EuroSATDataset as _EuroSATDataset,
     get_eurosat_categories,
 )
+from registry import register_dataset
+from utils import seed_worker
 
 
 @register_dataset("eurosat")

@@ -5,12 +5,12 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from einops import repeat
-from registry import register_task
 from torch.utils.tensorboard import SummaryWriter
 
-from ..models.flux.feat_flux import Featurizer4Eval, prepare
-from ..models.lora import lora_wrap_flux
-from ..utils import to_jsonable
+from models.flux.feat_flux import Featurizer4Eval, prepare
+from models.lora import lora_wrap_flux
+from registry import register_task
+from utils import to_jsonable
 
 
 def _expand_null_embeddings(featurizer: Featurizer4Eval, batch_size: int, device, dtype):

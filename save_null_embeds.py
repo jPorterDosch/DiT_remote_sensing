@@ -1,8 +1,8 @@
 import torch
-from src.flux.util import load_t5, load_clip
 
 # Adjust this import if prepare_txt lives in a different file!
-from src.flux.feat_flux import prepare_txt
+from flux.feat_flux import prepare_txt
+from flux.util import load_clip, load_t5
 
 
 def main():

@@ -14,7 +14,7 @@ from torch.nn import functional as F
 from torchvision.transforms import PILToTensor
 from tqdm import tqdm
 
-from src.models.flux.feat_flux import Featurizer4Eval
+from models.flux.feat_flux import Featurizer4Eval
 
 warnings.filterwarnings("ignore")
 
