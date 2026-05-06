@@ -68,6 +68,7 @@ def _save_lora_checkpoint(
     val_metrics: dict,
     name: str,
     mask_token: torch.nn.Parameter | None = None,
+    decoder: MIMDecoder | None = None,
 ) -> None:
     checkpoint_dir = Path(cfg.save_dir) / "checkpoints"
     checkpoint_dir.mkdir(exist_ok=True)
@@ -79,6 +80,7 @@ def _save_lora_checkpoint(
         "global_step": global_step,
         "lora_state_dict": _get_lora_state_dict(model),
         "mask_token": mask_token.detach().cpu() if mask_token is not None else None,
+        "decoder_state_dict": decoder.state_dict() if decoder is not None else None,
         "optimizer_state_dict": optimizer.state_dict(),
         "train_metrics": train_metrics,
         "val_metrics": val_metrics,
@@ -128,6 +130,81 @@ def _flow_metrics(pred: torch.Tensor, target: torch.Tensor, prefix: str) -> dict
     return metrics
 
 
+def _mim_metrics(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    mask: torch.Tensor,
+    prefix: str,
+) -> dict:
+    """
+    pred/target: (B, L, D) in clean latent space.
+    mask: (B, L), 1 = masked position.
+    Logs masked loss (optimization objective) and unmasked loss (diagnostic).
+    """
+    pred_f = pred.float()
+    target_f = target.float()
+    mask_f = mask.float()
+
+    per_token = ((pred_f - target_f) ** 2).mean(dim=-1)  # (B, L)
+    n_masked = mask_f.sum().clamp(min=1)
+    n_unmasked = (1 - mask_f).sum().clamp(min=1)
+
+    masked_loss = (per_token * mask_f).sum() / n_masked
+    unmasked_loss = (per_token * (1 - mask_f)).sum() / n_unmasked
+
+    return {
+        f"{prefix}/mim_loss": float(masked_loss.detach().cpu()),
+        f"{prefix}/mim_rmse": float(masked_loss.sqrt().detach().cpu()),
+        f"{prefix}/mim_unmasked_loss": float(unmasked_loss.detach().cpu()),
+        f"{prefix}/mask_ratio": float(mask_f.mean().detach().cpu()),
+    }
+
+
+class MIMDecoder(torch.nn.Module):
+    """
+    Projects intermediate Flux block features to clean latent token space.
+    Training-only: not used during inference / feature extraction.
+    hidden_size -> in_channels (e.g. 3072 -> 64 for flux-dev).
+    """
+
+    def __init__(self, hidden_size: int, out_channels: int):
+        super().__init__()
+        self.net = torch.nn.Sequential(
+            torch.nn.LayerNorm(hidden_size),
+            torch.nn.Linear(hidden_size, hidden_size),
+            torch.nn.GELU(),
+            torch.nn.Linear(hidden_size, out_channels),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:  # (B, L, hidden) -> (B, L, out_channels)
+        return self.net(x)
+
+
+class _FeatureCapture:
+    """
+    Captures intermediate block output during the forward pass via a registered hook.
+    DoubleStreamBlock returns (img, txt); SingleStreamBlock returns concatenated (txt || img).
+    txt_len is needed to slice off text tokens in the single-stream case.
+    """
+
+    def __init__(self):
+        self.features: torch.Tensor | None = None
+        self._handle = None
+
+    def register(self, block: torch.nn.Module, txt_len: int) -> None:
+        def _hook(module, inp, output):
+            if isinstance(output, tuple):
+                self.features = output[0]                # DoubleStreamBlock: (img, txt)
+            else:
+                self.features = output[:, txt_len:, :]   # SingleStreamBlock: slice off txt
+        self._handle = block.register_forward_hook(_hook)
+
+    def remove(self) -> None:
+        if self._handle is not None:
+            self._handle.remove()
+            self._handle = None
+
+
 def _random_masking(
     x: torch.Tensor, mask_token: torch.nn.Parameter, mask_ratio: float
 ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -165,18 +242,20 @@ def _fine_tune_diffusion_one_epoch(
     global_step: int,
     mask_token: torch.nn.Parameter,
     mask_ratio: float,
+    decoder: MIMDecoder,
+    capture: _FeatureCapture,
 ) -> tuple[dict, int]:
     """
-    Main training loop for fine-tuning FLUX on diffusion/flow-matching objective with LoRA adapters. For each batch:
+    Fine-tunes FLUX with a MIM auxiliary objective using LoRA adapters. For each batch:
         - encodes images into VAE latent space
-        - creates noisy/interpolated latents based on given timestep
-        - computes target flow as straight-line derivative
-        - optimizes MSE between FLUX predictions and target flow.
-    Computes and logs various flow metrics for analysis.
+        - randomly masks a subset of tokens (replaced with mask_token)
+        - runs FLUX forward pass; a hook captures intermediate features at block cfg.k
+        - a small MIMDecoder projects those features to clean latent space
+        - optimizes MSE between decoded predictions and clean latents at masked positions only
 
     Returns:
-        - train_metrics: dict of averaged flow metrics over the epoch
-        - global_step: updated global step count after training on this epoch, used for logging and checkpointing purposes.
+        - train_metrics: dict of averaged metrics over the epoch
+        - global_step: updated global step count
     """
     model = featurizer.model
     vae = featurizer.ae
@@ -221,8 +300,7 @@ def _fine_tune_diffusion_one_epoch(
         img = img.to(device, dtype=latents.dtype)
         img_ids = img_ids.to(device)
 
-        if mask_ratio > 0:
-            img, _ = _random_masking(img, mask_token, mask_ratio)
+        img, mask = _random_masking(img, mask_token, mask_ratio)
 
         txt, txt_ids, y = _expand_null_embeddings(
             featurizer, batch_size=imgs.shape[0], device=device, dtype=latents.dtype
@@ -230,7 +308,7 @@ def _fine_tune_diffusion_one_epoch(
 
         guidance_vec = torch.full((imgs.shape[0],), guidance_scale, device=device, dtype=latents.dtype)
 
-        pred = model(
+        model(
             img=img,
             img_ids=img_ids,
             txt=txt,
@@ -239,15 +317,27 @@ def _fine_tune_diffusion_one_epoch(
             timesteps=torch.full((imgs.shape[0],), t, device=device, dtype=latents.dtype),
             guidance=guidance_vec,
         )
-        # Patchify target to match FLUX output shape.
-        target, _ = prepare(target_flow)
-        target = target.to(device=device, dtype=pred.dtype)
 
-        raw_loss = F.mse_loss(pred, target) # TODO extend for MIM loss
+        # Decode captured intermediate features to clean latent space.
+        if capture.features is None:
+            raise RuntimeError(
+                f"Feature capture returned None — check that block_idx={cfg.k} is valid "
+                "and the hook was registered before model.forward() was called."
+            )
+        pred_clean = decoder(capture.features)
+
+        # Clean latent tokens as reconstruction target.
+        target_clean, _ = prepare(latents)
+        target_clean = target_clean.to(device=device, dtype=pred_clean.dtype)
+
+        # MSE on masked positions only.
+        per_token = ((pred_clean - target_clean) ** 2).mean(dim=-1)  # (B, L)
+        raw_loss = (per_token * mask).sum() / mask.sum().clamp(min=1)
+
         loss = raw_loss / grad_accum_steps  # Normalize loss for gradient accumulation
         loss.backward()
 
-        batch_metrics = _flow_metrics(pred, target, prefix="train")
+        batch_metrics = _mim_metrics(pred_clean, target_clean, mask, prefix="train")
 
         for key, value in batch_metrics.items():
             if key not in train_metrics:
@@ -277,6 +367,8 @@ def _validate_diffusion(
     device: torch.device,
     mask_token: torch.nn.Parameter,
     mask_ratio: float,
+    decoder: MIMDecoder,
+    capture: _FeatureCapture,
 ) -> dict:
     model = featurizer.model
     vae = featurizer.ae
@@ -313,8 +405,7 @@ def _validate_diffusion(
         img = img.to(device, dtype=latents.dtype)
         img_ids = img_ids.to(device)
 
-        if mask_ratio > 0:
-            img, _ = _random_masking(img, mask_token, mask_ratio)
+        img, mask = _random_masking(img, mask_token, mask_ratio)
 
         txt, txt_ids, y = _expand_null_embeddings(
             featurizer, batch_size=imgs.shape[0], device=device, dtype=latents.dtype
@@ -328,7 +419,7 @@ def _validate_diffusion(
 
         guidance_vec = torch.full((imgs.shape[0],), guidance_scale, device=device, dtype=latents.dtype)
 
-        pred = model(
+        model(
             img=img,
             img_ids=img_ids,
             txt=txt,
@@ -337,11 +428,18 @@ def _validate_diffusion(
             timesteps=torch.full((imgs.shape[0],), t, device=device, dtype=latents.dtype),
             guidance=guidance_vec,
         )
-        # Patchify target to match FLUX output shape.
-        target, _ = prepare(target_flow)
-        target = target.to(device=device, dtype=pred.dtype)
 
-        batch_metrics = _flow_metrics(pred, target, prefix="val")
+        if capture.features is None:
+            raise RuntimeError(
+                f"Feature capture returned None — check that block_idx={cfg.k} is valid "
+                "and the hook was registered before model.forward() was called."
+            )
+        pred_clean = decoder(capture.features)
+
+        target_clean, _ = prepare(latents)
+        target_clean = target_clean.to(device=device, dtype=pred_clean.dtype)
+
+        batch_metrics = _mim_metrics(pred_clean, target_clean, mask, prefix="val")
         for k, v in batch_metrics.items():
             if k not in val_metrics:
                 val_metrics[k] = []
@@ -371,6 +469,22 @@ class FinetuneDiffusionTask:
 
         mask_token = torch.nn.Parameter(torch.zeros(1, 1, flux.in_channels, device=device))
 
+        # MIM decoder: projects block-k features (hidden_size) to clean latent space (in_channels).
+        # Discarded at inference — only the LoRA-adapted backbone is kept.
+        decoder = MIMDecoder(flux.hidden_size, flux.in_channels).to(device=device, dtype=torch.bfloat16)
+
+        # Hook captures the output of the trained block without modifying model.forward().
+        n_double = len(flux.double_blocks)
+        block_idx_int = cfg.k if isinstance(cfg.k, int) else cfg.k[0]
+        hooked_block = (
+            flux.double_blocks[block_idx_int]
+            if block_idx_int < n_double
+            else flux.single_blocks[block_idx_int - n_double]
+        )
+        txt_len = model.null_prompt_embeds.shape[1]
+        capture = _FeatureCapture()
+        capture.register(hooked_block, txt_len)
+
         # Validate label fraction -- currently, due to length of fine-tuning, only length 1 is supported.
         if len(cfg.label_fractions) != 1:
             raise ValueError(
@@ -397,6 +511,7 @@ class FinetuneDiffusionTask:
 
         trainable_params = [param for param in flux.parameters() if param.requires_grad]
         trainable_params.append(mask_token)
+        trainable_params.extend(decoder.parameters())
 
         # Sanity check
         if len(trainable_params) == 0:
@@ -431,6 +546,8 @@ class FinetuneDiffusionTask:
                 global_step=global_step,
                 mask_token=mask_token,
                 mask_ratio=cfg.mask_ratio,
+                decoder=decoder,
+                capture=capture,
             )
             val_metrics = _validate_diffusion(
                 cfg,
@@ -440,6 +557,8 @@ class FinetuneDiffusionTask:
                 device=device,
                 mask_token=mask_token,
                 mask_ratio=cfg.mask_ratio,
+                decoder=decoder,
+                capture=capture,
             )
 
             epoch_metrics = {
@@ -451,8 +570,8 @@ class FinetuneDiffusionTask:
 
             print(
                 f"[finetune-diffusion] epoch={epoch} "
-                f"train_loss={train_metrics['train/flow_mse_loss']:.6f} "
-                f"val_loss={val_metrics['val/flow_mse_loss']:.6f}"
+                f"train_loss={train_metrics['train/mim_loss']:.6f} "
+                f"val_loss={val_metrics['val/mim_loss']:.6f}"
             )
 
             # Tensorboard logging
@@ -462,8 +581,8 @@ class FinetuneDiffusionTask:
             for key, value in val_metrics.items():
                 writer.add_scalar(key, value, global_step)
 
-            # Best checkpoint by validation flow MSE
-            val_loss = val_metrics["val/flow_mse_loss"]
+            # Best checkpoint by validation MIM loss
+            val_loss = val_metrics["val/mim_loss"]
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
                 _save_lora_checkpoint(
@@ -476,6 +595,7 @@ class FinetuneDiffusionTask:
                     val_metrics=val_metrics,
                     name="lora_best",
                     mask_token=mask_token,
+                    decoder=decoder,
                 )
 
         # Save final checkpoint at end of training as well
@@ -491,8 +611,10 @@ class FinetuneDiffusionTask:
                 val_metrics=val_metrics,
                 name="lora_last",
                 mask_token=mask_token,
+                decoder=decoder,
             )
 
+        capture.remove()
         writer.close()
 
         return {
