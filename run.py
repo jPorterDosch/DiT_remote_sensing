@@ -68,10 +68,8 @@ class RunConfig:
     num_workers: int = 4
     overwrite_features: bool = False
 
-    # masking config
-    mask_ratio: float = 0
-
     ## Diffusion/flow-matching training with LoRA
+    mask_ratio: float = 0.75
     finetune_max_epochs: int = 10
     finetune_bs: int = 1
     use_gradient_accumulation: bool = True
