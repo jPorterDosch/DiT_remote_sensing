@@ -7,13 +7,15 @@ import time
 import numpy as np
 import torch
 import torch.nn as nn
+from registry import register_task
 from sklearn.metrics import f1_score
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from registry import register_task
 from utils import seed_worker
+
+from .utils import _subsample_by_fraction
 
 
 class _LinearProbe(nn.Module):
@@ -28,7 +30,9 @@ class _LinearProbe(nn.Module):
 
 
 @torch.no_grad()
-def _extract_features(cfg, model, dataloader, split_name: str):
+def _extract_features(
+    cfg, model, dataloader, split_name: str
+) -> tuple[np.ndarray, np.ndarray]:
     """Extract and return (features, labels) for all images in dataloader."""
     all_feats: list[torch.Tensor] = []
     all_labels: list[torch.Tensor] = []
@@ -59,20 +63,9 @@ def _extract_features(cfg, model, dataloader, split_name: str):
     return feats, labels
 
 
-def _subsample_by_fraction(feats, labels, fraction: float, seed: int, num_classes: int):
-    # class-balanced subsample: take `fraction` percent of each class independently
-    rng = np.random.default_rng(seed)
-    keep_idx: list[int] = []
-    for cls in range(num_classes):
-        cls_idx = np.where(labels == cls)[0]
-        n_keep = max(1, int(len(cls_idx) * fraction / 100.0))
-        chosen = rng.choice(cls_idx, size=n_keep, replace=False)
-        keep_idx.extend(chosen.tolist())
-    keep_idx = np.array(keep_idx)
-    return feats[keep_idx], labels[keep_idx]
-
-
-def _train_linear_probe(train_feats, train_labels, num_epochs, lr, batch_size, device, num_classes: int):
+def _train_linear_probe(
+    train_feats, train_labels, num_epochs, lr, batch_size, device, num_classes: int
+):
     X = torch.from_numpy(train_feats).float().to(device)
     y = torch.from_numpy(train_labels).long().to(device)
 
@@ -134,7 +127,9 @@ class ClassificationTask:
             d = np.load(train_feat_path)
             train_feats, train_labels = d["feats"], d["labels"]
         else:
-            train_feats, train_labels = _extract_features(cfg, model, train_loader, "train")
+            train_feats, train_labels = _extract_features(
+                cfg, model, train_loader, "train"
+            )
             np.savez(train_feat_path, feats=train_feats, labels=train_labels)
 
         if os.path.exists(test_feat_path) and not cfg.overwrite_features:
@@ -205,7 +200,8 @@ class ClassificationTask:
 
         out_path = os.path.join(
             cfg.save_dir,
-            "t%s_b%s_e%s_seed%s.json" % (cfg.t, cfg.k, cfg.model.ensemble_size, cfg.seed),
+            "t%s_b%s_e%s_seed%s.json"
+            % (cfg.t, cfg.k, cfg.model.ensemble_size, cfg.seed),
         )
         with open(out_path, "w+") as json_file:
             json.dump(result, json_file, indent=4, ensure_ascii=False)

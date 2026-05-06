@@ -86,6 +86,15 @@ class RunConfig:
     num_workers: int = 4
     overwrite_features: bool = False
 
+    ## Diffusion/flow-matching training with LoRA
+    lora_lr: float = 1e-3
+    lora_wd: float = 0.0
+    lora_rank: int = 4
+    lora_alpha: float = 16.0
+    lora_dropout: float = 0.0
+    wrap_output: bool = True  # whether to wrap the output projection in attention and/or MLP blocks with LoRA (in addition to the input projections, which are always wrapped). Future work could explore more flexible options for which projections to wrap.
+    guidance_scale: float = 3.5
+
     def make_run_name(self) -> str:
         payload = _to_jsonable(asdict(self))
 

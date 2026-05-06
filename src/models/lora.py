@@ -60,7 +60,7 @@ class LoRALinear(torch.nn.Module):
         return base_out + self.scaling * lora_out
 
 
-def lora_wrap_attn(
+def lora_wrap_flux(
     model: torch.nn.Module,
     block_idx: int | list[int],
     rank: int,
