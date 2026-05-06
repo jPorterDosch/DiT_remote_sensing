@@ -17,12 +17,11 @@ import tyro
 
 warnings.filterwarnings("ignore")
 
-import tasks  # noqa: F401  — triggers @register_task decorators
-from registry import DATASETS, MODELS, TASKS
-
 import datasets  # noqa: F401  — triggers @register_dataset decorators
 import models  # noqa: F401  — resolves to src/models/, triggers @register_model decorators
-from src.utils import seed_all, to_jsonable
+import tasks  # noqa: F401  — triggers @register_task decorators
+from registry import DATASETS, MODELS, TASKS
+from utils import seed_all, to_jsonable
 
 
 @dataclass
