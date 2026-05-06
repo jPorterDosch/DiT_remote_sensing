@@ -33,7 +33,7 @@ class ModelConfig:
 @dataclass
 class DatasetConfig:
     name: str = "eurosat"
-    path: str = "/dataset/EuroSAT"
+    path: str = "/lustre/isaac24/scratch/jdosch1/DeepLearning/datasets/EuroSAT"
 
 
 @dataclass

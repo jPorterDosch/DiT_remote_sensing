@@ -25,7 +25,7 @@ class EuroSATDatasetWrapper:
         train_loader = DataLoader(
             train_ds,
             batch_size=cfg.batch_size,
-            shuffle=False,
+            shuffle=True,
             num_workers=cfg.num_workers,
             pin_memory=True,
             worker_init_fn=seed_worker,
