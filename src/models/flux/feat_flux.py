@@ -62,7 +62,7 @@ class Featurizer(ABC):
         else:
             self.t5 = None
             self.clip = None
-            null_embed = torch.load(null_embed_path, weights_only=False)
+            null_embed = torch.load(null_embed_path, weights_only=True)
             self.null_prompt_embeds = null_embed["prompt_embeds"].to(device)
             self.text_ids = null_embed["text_ids"].to(device)
             self.vec = null_embed["vec"].to(device)
@@ -79,10 +79,13 @@ class Featurizer4Eval(Featurizer):
         self,
         flux_id="flux-dev",
         null_prompt="",
-        cat_list=[],
+        cat_list=None,
         ensemble_size=1,
     ):
         super().__init__(name=flux_id, null_prompt=null_prompt)
+
+        if cat_list is None:
+            cat_list = []
 
         with torch.no_grad():
             cat2prompt_embeds = {}

@@ -70,7 +70,7 @@ def _save_lora_checkpoint(
     name: str,
 ) -> None:
     checkpoint_dir = Path(cfg.save_dir) / "checkpoints"
-    checkpoint_dir.mkdir(exist_ok=True)
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
     checkpoint_path = checkpoint_dir / f"{name}_epoch{epoch}_step{global_step}.pt"
 
@@ -258,12 +258,11 @@ def _validate_diffusion(
     for batch in dataloader:
         # Encode images into VAE latent space
         imgs = batch["img"].to(device)
-        with torch.no_grad():
-            latents = vae.encode(imgs)
-            latents = latents.to(
-                torch.bfloat16
-            )  # FLUX is trained in bfloat16, so we convert the latents to bfloat16 before feeding into FLUX for fine-tuning.
-            # Future work could explore whether training in full fp32 or using mixed precision with gradient scaling would improve performance at the cost of increased VRAM usage.
+        latents = vae.encode(imgs)
+        latents = latents.to(
+            torch.bfloat16
+        )  # FLUX is trained in bfloat16, so we convert the latents to bfloat16 before feeding into FLUX for fine-tuning.
+        # Future work could explore whether training in full fp32 or using mixed precision with gradient scaling would improve performance at the cost of increased VRAM usage.
         # Create noisy/interpolated latent from given timestep
 
         noise = torch.randn_like(latents).to(device)
@@ -281,12 +280,6 @@ def _validate_diffusion(
         txt, txt_ids, y = _expand_null_embeddings(
             featurizer, batch_size=imgs.shape[0], device=device, dtype=latents.dtype
         )
-
-        if any(v is None for v in [txt, txt_ids, y]):
-            raise ValueError(
-                "Null prompt embeddings (txt, txt_ids, y) must be provided in featurizer for training. Received: txt=%s, txt_ids=%s, y=%s"
-                % (txt, txt_ids, y)
-            )
 
         guidance_vec = torch.full((imgs.shape[0],), guidance_scale, device=device, dtype=latents.dtype)
 
