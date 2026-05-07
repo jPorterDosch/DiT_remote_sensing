@@ -151,7 +151,7 @@ def test_overfit(
     trainable_params.extend(decoder.parameters())
     optimizer = torch.optim.AdamW(trainable_params, lr=lr)
     scheduler = torch.optim.lr_scheduler.LinearLR(
-        optimizer, start_factor=1e-8, end_factor=1.0, total_iters=max(1, warmup_steps)
+        optimizer, start_factor=0.01, end_factor=1.0, total_iters=max(1, warmup_steps)
     )
 
     print(
@@ -222,6 +222,7 @@ def test_overfit(
 
         total_loss = flow_loss + mim_loss_weight * mim_loss
         total_loss.backward()
+        torch.nn.utils.clip_grad_norm_(trainable_params, max_norm=1.0)
         optimizer.step()
         scheduler.step()
 
