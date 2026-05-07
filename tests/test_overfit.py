@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import sys
 
+
 def _find_project_root(start: str) -> str:
     d = os.path.abspath(start)
     while True:
@@ -25,6 +26,7 @@ import matplotlib
 matplotlib.use("Agg")  # non-interactive backend — safe for headless SLURM nodes
 import matplotlib.pyplot as plt
 import torch
+import torch.nn.functional as F
 
 from models.flux.feat_flux import Featurizer4Eval, prepare
 from models.lora import lora_wrap_flux
@@ -57,9 +59,9 @@ class _FeatureCapture:
     def register(self, block: torch.nn.Module, txt_len: int) -> None:
         def _hook(module, inp, output):
             if isinstance(output, tuple):
-                self.features = output[0]            # DoubleStreamBlock: (img, txt)
+                self.features = output[0]               # DoubleStreamBlock: (img, txt)
             else:
-                self.features = output[:, txt_len:, :]  # SingleStreamBlock: slice txt
+                self.features = output[:, txt_len:, :]  # SingleStreamBlock: slice off txt prefix
 
         self._handle = block.register_forward_hook(_hook)
 
@@ -86,21 +88,22 @@ def _random_masking(
 
 
 # ---------------------------------------------------------------------------
-# T3: Single-batch overfit test
+# T3: Single-batch overfit test (two-head: flow + MIM)
 # ---------------------------------------------------------------------------
 
 
 def test_overfit(
-    block_idx_global: int = 28,   # global block index matching run.py default k=28
+    block_idx_global: int = 28,
     lora_rank: int = 4,
     lora_alpha: float = 16.0,
     lora_dropout: float = 0.0,
     mask_ratio: float = 0.75,
+    mim_loss_weight: float = 1.0,
     lr: float = 1e-2,
     n_steps: int = 100,
     guidance_scale: float = 3.5,
     timestep: int = 260,
-    min_reduction: float = 0.5,   # require >=50% loss drop
+    min_reduction: float = 0.5,   # require >=50% combined loss drop
     out_path: str | None = None,
 ) -> list[float]:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -120,8 +123,8 @@ def test_overfit(
     with torch.no_grad():
         latents = vae.encode(imgs).to(torch.bfloat16)
 
-    # --- MIM components ---
-    mask_token = torch.nn.Parameter(torch.zeros(1, 1, flux.in_channels, device=device))
+    # mask_token lives in feature space (hidden_size), not token space (in_channels).
+    mask_token = torch.nn.Parameter(torch.zeros(1, 1, flux.hidden_size, device=device))
     decoder = MIMDecoder(flux.hidden_size, flux.in_channels).to(device=device, dtype=torch.bfloat16)
 
     n_double = len(flux.double_blocks)
@@ -152,7 +155,7 @@ def test_overfit(
         f"({len(trainable_params)} tensors)"
     )
 
-    # Precompute fixed inputs — noisy latent and target are constant across steps.
+    # Precompute fixed inputs — noisy latent and targets are constant across steps.
     t = timestep / 1000.0
     noise = torch.randn_like(latents)
     latents_noisy = t * noise + (1.0 - t) * latents
@@ -166,23 +169,31 @@ def test_overfit(
     guidance_vec = torch.full((1,), guidance_scale, device=device, dtype=latents.dtype)
     timesteps_vec = torch.full((1,), t, device=device, dtype=latents.dtype)
 
+    # Flow target: velocity = noise - clean_latent (flow matching).
+    v_target, _ = prepare(noise - latents)
+    v_target = v_target.to(device=device, dtype=latents.dtype)
+
     target_clean, _ = prepare(latents)
     target_clean = target_clean.to(device=device, dtype=torch.float32)
 
     flux.train()
     vae.eval()
 
-    losses: list[float] = []
-    print(f"[overfit] running {n_steps} steps  block={block_idx_global}  lr={lr}  mask_ratio={mask_ratio}")
+    total_losses: list[float] = []
+    flow_losses: list[float] = []
+    mim_losses: list[float] = []
+
+    print(
+        f"[overfit] running {n_steps} steps  block={block_idx_global}  "
+        f"lr={lr}  mask_ratio={mask_ratio}  mim_loss_weight={mim_loss_weight}"
+    )
 
     for step in range(n_steps):
         optimizer.zero_grad(set_to_none=True)
 
-        # New random mask each step — tests reconstruction from any masked subset.
-        img_masked, mask = _random_masking(img_tokens, mask_token, mask_ratio)
-
-        flux(
-            img=img_masked,
+        # Flow head: Flux sees clean unmasked tokens.
+        v_pred = flux(
+            img=img_tokens,
             img_ids=img_ids,
             txt=txt,
             txt_ids=txt_ids,
@@ -197,16 +208,27 @@ def test_overfit(
                 f"is valid (n_double={n_double}, n_single={len(flux.single_blocks)})."
             )
 
-        pred_clean = decoder(capture.features)
-        per_token = ((pred_clean.float() - target_clean) ** 2).mean(dim=-1)
-        loss = (per_token * mask).sum() / mask.sum().clamp(min=1)
+        flow_loss = F.mse_loss(v_pred.float(), v_target.float())
 
-        loss.backward()
+        # MIM head: mask captured features, decode, MSE at masked positions only.
+        features_masked, mask = _random_masking(capture.features, mask_token, mask_ratio)
+        pred_clean = decoder(features_masked)
+        per_token = ((pred_clean.float() - target_clean) ** 2).mean(dim=-1)
+        mim_loss = (per_token * mask).sum() / mask.sum().clamp(min=1)
+
+        total_loss = flow_loss + mim_loss_weight * mim_loss
+        total_loss.backward()
         optimizer.step()
 
-        losses.append(float(loss.detach().cpu()))
+        total_losses.append(float(total_loss.detach().cpu()))
+        flow_losses.append(float(flow_loss.detach().cpu()))
+        mim_losses.append(float(mim_loss.detach().cpu()))
+
         if step % 10 == 0 or step == n_steps - 1:
-            print(f"  step {step:3d}: mim_loss={losses[-1]:.6f}")
+            print(
+                f"  step {step:3d}: total={total_losses[-1]:.6f}  "
+                f"flow={flow_losses[-1]:.6f}  mim={mim_losses[-1]:.6f}"
+            )
 
     capture.remove()
 
@@ -214,19 +236,25 @@ def test_overfit(
     if out_path is None:
         out_path = os.path.join(_root, "overfit_loss_curve.png")
     fig, ax = plt.subplots(figsize=(8, 4))
-    ax.plot(losses, linewidth=1.2)
+    ax.plot(total_losses, linewidth=1.2, label="total")
+    ax.plot(flow_losses, linewidth=1.0, linestyle="--", label="flow")
+    ax.plot(mim_losses, linewidth=1.0, linestyle=":", label="mim")
     ax.set_xlabel("Step")
-    ax.set_ylabel("MIM Loss (masked positions)")
-    ax.set_title(f"Single-batch overfit — block {block_idx_global}, lr={lr}, mask_ratio={mask_ratio}")
+    ax.set_ylabel("Loss")
+    ax.set_title(
+        f"Two-head overfit — block {block_idx_global}, lr={lr}, "
+        f"mask_ratio={mask_ratio}, mim_w={mim_loss_weight}"
+    )
+    ax.legend()
     ax.grid(True, alpha=0.3)
     fig.savefig(out_path, dpi=100, bbox_inches="tight")
     plt.close(fig)
     print(f"[overfit] loss curve saved → {out_path}")
 
-    # Smooth initial / final to reduce noise from random masking patterns.
+    # Assert combined loss drops by at least min_reduction.
     window = min(5, n_steps // 10)
-    initial_loss = sum(losses[:window]) / window
-    final_loss = sum(losses[-window:]) / window
+    initial_loss = sum(total_losses[:window]) / window
+    final_loss = sum(total_losses[-window:]) / window
     reduction = (initial_loss - final_loss) / (initial_loss + 1e-12)
     print(
         f"[overfit] initial(avg {window})={initial_loss:.6f}  "
@@ -235,12 +263,12 @@ def test_overfit(
     )
 
     assert reduction >= min_reduction, (
-        f"Loss did not decrease by >={min_reduction*100:.0f}% "
+        f"Combined loss did not decrease by >={min_reduction*100:.0f}% "
         f"(got {reduction*100:.1f}%). "
         f"initial={initial_loss:.4f}, final={final_loss:.4f}"
     )
-    print(f"[overfit] PASS — loss reduced by {reduction*100:.1f}% (>={min_reduction*100:.0f}% required)")
-    return losses
+    print(f"[overfit] PASS — combined loss reduced by {reduction*100:.1f}% (>={min_reduction*100:.0f}% required)")
+    return total_losses
 
 
 if __name__ == "__main__":
