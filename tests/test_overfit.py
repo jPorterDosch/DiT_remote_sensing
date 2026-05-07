@@ -173,8 +173,8 @@ def test_overfit(
     v_target, _ = prepare(noise - latents)
     v_target = v_target.to(device=device, dtype=latents.dtype)
 
-    target_clean, _ = prepare(latents)
-    target_clean = target_clean.to(device=device, dtype=torch.float32)
+    # MIM target: noisy tokens — same domain as features, no denoising required.
+    target_noisy = img_tokens.to(device=device, dtype=torch.float32)
 
     flux.train()
     vae.eval()
@@ -210,10 +210,10 @@ def test_overfit(
 
         flow_loss = F.mse_loss(v_pred.float(), v_target.float())
 
-        # MIM head: mask captured features, decode, MSE at masked positions only.
+        # MIM head: mask captured features, decode, MSE vs noisy tokens at masked positions only.
         features_masked, mask = _random_masking(capture.features, mask_token, mask_ratio)
-        pred_clean = decoder(features_masked)
-        per_token = ((pred_clean.float() - target_clean) ** 2).mean(dim=-1)
+        pred_noisy = decoder(features_masked)
+        per_token = ((pred_noisy.float() - target_noisy) ** 2).mean(dim=-1)
         mim_loss = (per_token * mask).sum() / mask.sum().clamp(min=1)
 
         total_loss = flow_loss + mim_loss_weight * mim_loss
