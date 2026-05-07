@@ -91,6 +91,9 @@ class RunConfig:
     # total_loss = flow_loss + mim_loss_weight * mim_loss. mim_loss_weight = the alpha
     mim_loss_weight: float = 1.0
 
+    # Linear LR warmup to mitigate spikes early on 
+    warmup_steps: int = 100
+
     def make_run_name(self) -> str:
         payload = to_jsonable(asdict(self))
 

@@ -474,6 +474,9 @@ class FinetuneDiffusionTask:
             )
 
         optimizer = torch.optim.AdamW(trainable_params, lr=cfg.finetune_lr, weight_decay=cfg.lora_wd)
+        scheduler = torch.optim.lr_scheduler.LinearLR(
+            optimizer, start_factor=1e-8, end_factor=1.0, total_iters=max(1, cfg.warmup_steps)
+        )
 
         loaders = dataset.get_data(cfg)
         train_loader = loaders["train"]
@@ -517,6 +520,7 @@ class FinetuneDiffusionTask:
                 continue
 
             optimizer.step()
+            scheduler.step()
             optimizer.zero_grad(set_to_none=True)
             global_step += 1
 

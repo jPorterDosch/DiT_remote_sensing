@@ -100,6 +100,7 @@ def test_overfit(
     mask_ratio: float = 0.75,
     mim_loss_weight: float = 1.0,
     lr: float = 1e-2,
+    warmup_steps: int = 20,
     n_steps: int = 100,
     guidance_scale: float = 3.5,
     timestep: int = 260,
@@ -149,6 +150,9 @@ def test_overfit(
     trainable_params.append(mask_token)
     trainable_params.extend(decoder.parameters())
     optimizer = torch.optim.AdamW(trainable_params, lr=lr)
+    scheduler = torch.optim.lr_scheduler.LinearLR(
+        optimizer, start_factor=1e-8, end_factor=1.0, total_iters=max(1, warmup_steps)
+    )
 
     print(
         f"[overfit] trainable params: {sum(p.numel() for p in trainable_params):,} "
@@ -219,15 +223,18 @@ def test_overfit(
         total_loss = flow_loss + mim_loss_weight * mim_loss
         total_loss.backward()
         optimizer.step()
+        scheduler.step()
 
         total_losses.append(float(total_loss.detach().cpu()))
         flow_losses.append(float(flow_loss.detach().cpu()))
         mim_losses.append(float(mim_loss.detach().cpu()))
 
         if step % 10 == 0 or step == n_steps - 1:
+            current_lr = scheduler.get_last_lr()[0]
             print(
                 f"  step {step:3d}: total={total_losses[-1]:.6f}  "
-                f"flow={flow_losses[-1]:.6f}  mim={mim_losses[-1]:.6f}"
+                f"flow={flow_losses[-1]:.6f}  mim={mim_losses[-1]:.6f}  "
+                f"lr={current_lr:.2e}"
             )
 
     capture.remove()
