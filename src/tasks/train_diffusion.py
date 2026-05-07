@@ -293,6 +293,8 @@ def _fine_tune_diffusion_microbatch(
     )
     guidance_vec = torch.full((imgs.shape[0],), cfg.guidance_scale, device=device, dtype=latents.dtype)
 
+    capture.features = None
+
     # Flux sees clean unmasked tokens — standard flow-matching forward.
     v_pred = model(
         img=img,
@@ -315,12 +317,11 @@ def _fine_tune_diffusion_microbatch(
     v_target = v_target.to(device=device, dtype=v_pred.dtype)
     flow_loss = F.mse_loss(v_pred.float(), v_target.float())
 
-    # MIM head: mask features, decode, MSE vs noisy tokens at masked positions only.
-    # Target is the noisy input (img) — same domain as the features, no denoising required.
     features_masked, mask = _random_masking(capture.features, mask_token, mask_ratio)
-    pred_noisy = decoder(features_masked)
-    target_noisy = img.to(device=device, dtype=pred_noisy.dtype)
-    per_token = ((pred_noisy - target_noisy) ** 2).mean(dim=-1)
+    pred_clean = decoder(features_masked)
+    target_clean, _ = prepare(latents)
+    target_clean = target_clean.to(device=device, dtype=pred_clean.dtype)
+    per_token = ((pred_clean - target_clean) ** 2).mean(dim=-1)
     mim_loss = (per_token * mask).sum() / mask.sum().clamp(min=1)
 
     total_loss = flow_loss + cfg.mim_loss_weight * mim_loss
@@ -328,7 +329,7 @@ def _fine_tune_diffusion_microbatch(
 
     return {
         **_flow_metrics(v_pred, v_target, prefix="train"),
-        **_mim_metrics(pred_noisy, target_noisy, mask, prefix="train"),
+        **_mim_metrics(pred_clean, target_clean, mask, prefix="train"),
         "train/total_loss": float(total_loss.detach().cpu()),
     }
 
@@ -369,6 +370,8 @@ def _validate_diffusion(
         )
         guidance_vec = torch.full((imgs.shape[0],), cfg.guidance_scale, device=device, dtype=latents.dtype)
 
+        capture.features = None
+
         v_pred = model(
             img=img,
             img_ids=img_ids,
@@ -390,14 +393,15 @@ def _validate_diffusion(
         flow_loss = F.mse_loss(v_pred.float(), v_target.float())
 
         features_masked, mask = _random_masking(capture.features, mask_token, mask_ratio)
-        pred_noisy = decoder(features_masked)
-        target_noisy = img.to(device=device, dtype=pred_noisy.dtype)
-        per_token = ((pred_noisy - target_noisy) ** 2).mean(dim=-1)
+        pred_clean = decoder(features_masked)
+        target_clean, _ = prepare(latents)
+        target_clean = target_clean.to(device=device, dtype=pred_clean.dtype)
+        per_token = ((pred_clean - target_clean) ** 2).mean(dim=-1)
         mim_loss = (per_token * mask).sum() / mask.sum().clamp(min=1)
 
         batch_metrics = {
             **_flow_metrics(v_pred, v_target, prefix="val"),
-            **_mim_metrics(pred_noisy, target_noisy, mask, prefix="val"),
+            **_mim_metrics(pred_clean, target_clean, mask, prefix="val"),
             "val/total_loss": float((flow_loss + cfg.mim_loss_weight * mim_loss).detach().cpu()),
         }
         for k, v in batch_metrics.items():
