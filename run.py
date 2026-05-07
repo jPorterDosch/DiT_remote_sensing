@@ -88,6 +88,9 @@ class RunConfig:
     wrap_output: bool = True  # whether to wrap the output projection in attention and/or MLP blocks with LoRA (in addition to the input projections, which are always wrapped). Future work could explore more flexible options for which projections to wrap.
     guidance_scale: float = 3.5
 
+    # total_loss = flow_loss + mim_loss_weight * mim_loss. mim_loss_weight = the alpha
+    mim_loss_weight: float = 1.0
+
     def make_run_name(self) -> str:
         payload = to_jsonable(asdict(self))
 

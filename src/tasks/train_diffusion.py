@@ -288,14 +288,13 @@ def _fine_tune_diffusion_microbatch(
     img = img.to(device, dtype=latents.dtype)
     img_ids = img_ids.to(device)
 
-    img, mask = _random_masking(img, mask_token, mask_ratio)
-
     txt, txt_ids, y = _expand_null_embeddings(
         featurizer, batch_size=imgs.shape[0], device=device, dtype=latents.dtype
     )
     guidance_vec = torch.full((imgs.shape[0],), cfg.guidance_scale, device=device, dtype=latents.dtype)
 
-    model(
+    # Flux sees clean unmasked tokens — standard flow-matching forward.
+    v_pred = model(
         img=img,
         img_ids=img_ids,
         txt=txt,
@@ -311,15 +310,27 @@ def _fine_tune_diffusion_microbatch(
             "and the hook was registered before model.forward() was called."
         )
 
-    pred_clean = decoder(capture.features)
+    # Flow head: velocity prediction over all tokens.
+    v_target, _ = prepare(noise - latents)
+    v_target = v_target.to(device=device, dtype=v_pred.dtype)
+    flow_loss = F.mse_loss(v_pred.float(), v_target.float())
+
+    # MIM head: mask features (not Flux input), decode, MSE at masked positions only.
+    features_masked, mask = _random_masking(capture.features, mask_token, mask_ratio)
+    pred_clean = decoder(features_masked)
     target_clean, _ = prepare(latents)
     target_clean = target_clean.to(device=device, dtype=pred_clean.dtype)
-
     per_token = ((pred_clean - target_clean) ** 2).mean(dim=-1)
-    raw_loss = (per_token * mask).sum() / mask.sum().clamp(min=1)
-    (raw_loss / grad_accum_steps).backward()
+    mim_loss = (per_token * mask).sum() / mask.sum().clamp(min=1)
 
-    return _mim_metrics(pred_clean, target_clean, mask, prefix="train")
+    total_loss = flow_loss + cfg.mim_loss_weight * mim_loss
+    (total_loss / grad_accum_steps).backward()
+
+    return {
+        **_flow_metrics(v_pred, v_target, prefix="train"),
+        **_mim_metrics(pred_clean, target_clean, mask, prefix="train"),
+        "train/total_loss": float(total_loss.detach().cpu()),
+    }
 
 
 @torch.no_grad()
@@ -353,14 +364,12 @@ def _validate_diffusion(
         img = img.to(device, dtype=latents.dtype)
         img_ids = img_ids.to(device)
 
-        img, mask = _random_masking(img, mask_token, mask_ratio)
-
         txt, txt_ids, y = _expand_null_embeddings(
             featurizer, batch_size=imgs.shape[0], device=device, dtype=latents.dtype
         )
         guidance_vec = torch.full((imgs.shape[0],), cfg.guidance_scale, device=device, dtype=latents.dtype)
 
-        model(
+        v_pred = model(
             img=img,
             img_ids=img_ids,
             txt=txt,
@@ -376,11 +385,22 @@ def _validate_diffusion(
                 "and the hook was registered before model.forward() was called."
             )
 
-        pred_clean = decoder(capture.features)
+        v_target, _ = prepare(noise - latents)
+        v_target = v_target.to(device=device, dtype=v_pred.dtype)
+        flow_loss = F.mse_loss(v_pred.float(), v_target.float())
+
+        features_masked, mask = _random_masking(capture.features, mask_token, mask_ratio)
+        pred_clean = decoder(features_masked)
         target_clean, _ = prepare(latents)
         target_clean = target_clean.to(device=device, dtype=pred_clean.dtype)
+        per_token = ((pred_clean - target_clean) ** 2).mean(dim=-1)
+        mim_loss = (per_token * mask).sum() / mask.sum().clamp(min=1)
 
-        batch_metrics = _mim_metrics(pred_clean, target_clean, mask, prefix="val")
+        batch_metrics = {
+            **_flow_metrics(v_pred, v_target, prefix="val"),
+            **_mim_metrics(pred_clean, target_clean, mask, prefix="val"),
+            "val/total_loss": float((flow_loss + cfg.mim_loss_weight * mim_loss).detach().cpu()),
+        }
         for k, v in batch_metrics.items():
             if k not in val_metrics:
                 val_metrics[k] = []
@@ -410,8 +430,9 @@ class FinetuneDiffusionTask:
         flux.to(device)
         ae.to(device)
 
-        # MIM components: mask_token (learnable) and a shallow projection head.
-        mask_token = torch.nn.Parameter(torch.zeros(1, 1, flux.in_channels, device=device))
+        # MIM components: mask_token replaces feature vectors (hidden_size dim, not token dim)
+        # before the decoder so Flux itself always sees clean unmasked tokens.
+        mask_token = torch.nn.Parameter(torch.zeros(1, 1, flux.hidden_size, device=device))
         decoder = MIMDecoder(flux.hidden_size, flux.in_channels).to(device=device, dtype=torch.bfloat16)
 
         # Register feature hook on the target block.
@@ -533,11 +554,13 @@ class FinetuneDiffusionTask:
 
                 print(
                     f"[finetune-diffusion] step={global_step} "
-                    f"train_loss={step_train_metrics['train/mim_loss']:.6f} "
-                    f"val_loss={val_metrics['val/mim_loss']:.6f}"
+                    f"train_total={step_train_metrics['train/total_loss']:.6f} "
+                    f"train_flow={step_train_metrics['train/flow_mse_loss']:.6f} "
+                    f"train_mim={step_train_metrics['train/mim_loss']:.6f} "
+                    f"val_total={val_metrics['val/total_loss']:.6f}"
                 )
 
-                val_loss = val_metrics["val/mim_loss"]
+                val_loss = val_metrics["val/total_loss"]
                 if val_loss < best_val_loss:
                     best_val_loss = val_loss
                     _save_lora_checkpoint(
