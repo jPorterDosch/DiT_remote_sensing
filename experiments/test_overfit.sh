@@ -21,9 +21,8 @@
 #SBATCH --gpus-per-task=1
 #SBATCH --cpus-per-gpu=8
 #SBATCH --mem=64G
-#SBATCH --constraint=a100
 #SBATCH --qos=campus-gpu
-#SBATCH --partition=campus-gpu
+#SBATCH --partition=campus-gpu-large
 #SBATCH --time=01:00:00
 #SBATCH --output=logs/%x/%j.out
 #SBATCH --error=logs/%x/%j.err
@@ -58,7 +57,7 @@ mkdir -p "$OUT_DIR"
 # --- Run ---
 print_delim "## START"
 set -x
-python3 "$PROJECT_ROOT/test_overfit.py" \
+python3 "$PROJECT_ROOT/tests/test_overfit.py" \
     2>&1 | tee "$OUT_DIR/overfit.log"
 
 # Copy loss curve to output directory regardless of test exit code.

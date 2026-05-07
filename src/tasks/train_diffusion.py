@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import os
 from pathlib import Path
 
@@ -453,7 +455,12 @@ def _validate_diffusion(
 
 @register_task("finetune-diffusion")
 class FinetuneDiffusionTask:
-    def run(self, cfg, model: Featurizer4Eval, dataset) -> dict:
+    def run(self, cfg, model, dataset) -> dict:
+        # run.py passes a FluxModel adapter; unwrap to the underlying Featurizer4Eval
+        # which exposes .model (Flux transformer), .ae (VAE), and null embeddings.
+        featurizer: Featurizer4Eval = model._inner if hasattr(model, "_inner") else model
+        model = featurizer
+
         device = torch.device(cfg.device)
 
         tb_dir = os.path.join(cfg.save_dir, "tensorboard_logs")

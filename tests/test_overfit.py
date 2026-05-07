@@ -4,9 +4,21 @@ from __future__ import annotations
 import os
 import sys
 
-_root = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(_root, "src"))
-sys.path.insert(0, os.path.join(_root, "src", "models"))
+def _find_project_root(start: str) -> str:
+    d = os.path.abspath(start)
+    while True:
+        if os.path.isdir(os.path.join(d, "src")):
+            return d
+        parent = os.path.dirname(d)
+        if parent == d:
+            raise RuntimeError(f"Could not locate project root (src/) from {start}")
+        d = parent
+
+
+_root = _find_project_root(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, _root)                              # registry.py lives here
+sys.path.insert(0, os.path.join(_root, "src"))         # datasets, tasks, utils, …
+sys.path.insert(0, os.path.join(_root, "src", "models"))  # flux.* internal imports
 
 import matplotlib
 
