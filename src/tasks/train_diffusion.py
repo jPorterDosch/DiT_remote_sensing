@@ -9,6 +9,7 @@ import torch.nn.functional as F
 from einops import repeat
 from torch.utils.tensorboard import SummaryWriter
 
+from models.flux.adapter import FluxModel
 from models.flux.feat_flux import Featurizer4Eval, prepare
 from models.lora import lora_wrap_flux
 from registry import register_task
@@ -64,7 +65,6 @@ def _save_lora_checkpoint(
     cfg,
     model: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
-    epoch: int,
     global_step: int,
     train_metrics: dict,
     val_metrics: dict,
@@ -73,12 +73,11 @@ def _save_lora_checkpoint(
     decoder: MIMDecoder | None = None,
 ) -> None:
     checkpoint_dir = Path(cfg.save_dir) / "checkpoints"
-    checkpoint_dir.mkdir(exist_ok=True)
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
-    checkpoint_path = checkpoint_dir / f"{name}_epoch{epoch}_step{global_step}.pt"
+    checkpoint_path = checkpoint_dir / f"{name}_step{global_step}.pt"
 
     ckpt = {
-        "epoch": epoch,
         "global_step": global_step,
         "lora_state_dict": _get_lora_state_dict(model),
         "mask_token": mask_token.detach().cpu() if mask_token is not None else None,
@@ -113,23 +112,20 @@ def _flow_metrics(pred: torch.Tensor, target: torch.Tensor, prefix: str) -> dict
     residual_flat = residual_f.flatten(1)
 
     mse = F.mse_loss(pred_f, target_f)
-
     target_norm = target_flat.norm(dim=1)
     residual_norm = residual_flat.norm(dim=1)
 
-    metrics = {
+    return {
         f"{prefix}/flow_mse_loss": float(mse.detach().cpu()),
         f"{prefix}/flow_rmse": float(torch.sqrt(mse).detach().cpu()),
         f"{prefix}/pred_norm_mean": float(pred_flat.norm(dim=1).mean().detach().cpu()),
         f"{prefix}/target_norm_mean": float(target_norm.mean().detach().cpu()),
-        f"{prefix}/residual_norm_mean": float(residual_norm.mean().detach().cpu()),
+        f"{prefix}/residual_norm_mean": float(residual_flat.norm(dim=1).mean().detach().cpu()),
         f"{prefix}/relative_flow_error": float((residual_norm / (target_norm + 1e-8)).mean().detach().cpu()),
         f"{prefix}/cosine_pred_target": float(
             F.cosine_similarity(pred_flat, target_flat, dim=1).mean().detach().cpu()
         ),
     }
-
-    return metrics
 
 
 def _mim_metrics(
@@ -147,7 +143,7 @@ def _mim_metrics(
     target_f = target.float()
     mask_f = mask.float()
 
-    per_token = ((pred_f - target_f) ** 2).mean(dim=-1)  # (B, L)
+    per_token = ((pred_f - target_f) ** 2).mean(dim=-1)
     n_masked = mask_f.sum().clamp(min=1)
     n_unmasked = (1 - mask_f).sum().clamp(min=1)
 
@@ -178,7 +174,7 @@ class MIMDecoder(torch.nn.Module):
             torch.nn.Linear(hidden_size, out_channels),
         )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:  # (B, L, hidden) -> (B, L, out_channels)
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.net(x)
 
 
@@ -196,9 +192,10 @@ class _FeatureCapture:
     def register(self, block: torch.nn.Module, txt_len: int) -> None:
         def _hook(module, inp, output):
             if isinstance(output, tuple):
-                self.features = output[0]                # DoubleStreamBlock: (img, txt)
+                self.features = output[0]               # DoubleStreamBlock: (img, txt)
             else:
-                self.features = output[:, txt_len:, :]   # SingleStreamBlock: slice off txt
+                self.features = output[:, txt_len:, :]  # SingleStreamBlock: slice off txt prefix
+
         self._handle = block.register_forward_hook(_hook)
 
     def remove(self) -> None:
@@ -217,7 +214,7 @@ def _random_masking(
     x: (B, L, D)
     Returns: x_masked (B, L, D), mask (B, L) with 1 = masked position.
     """
-    B, L, D = x.shape
+    B, L, _ = x.shape
     len_keep = int(L * (1 - mask_ratio))
 
     noise = torch.rand(B, L, device=x.device)
@@ -234,130 +231,95 @@ def _random_masking(
     return x_masked, mask
 
 
-def _fine_tune_diffusion_one_epoch(
+def _cycle_loader(dataloader: torch.utils.data.DataLoader):
+    """Yield batches from dataloader indefinitely, re-shuffling each epoch."""
+    while True:
+        for batch in dataloader:
+            yield batch
+
+
+def _add_batch_metrics(accum_metrics: dict, batch_metrics: dict) -> dict:
+    """Append scalar values from batch_metrics into per-key lists in accum_metrics."""
+    for key, value in batch_metrics.items():
+        if key not in accum_metrics:
+            accum_metrics[key] = []
+        accum_metrics[key].append(value)
+    return accum_metrics
+
+
+def _average_batch_metrics(accum_metrics: dict) -> dict:
+    """Average the per-key lists produced by _add_batch_metrics into scalar floats."""
+    return {k: float(np.mean(np.array(v))) for k, v in accum_metrics.items()}
+
+
+def _fine_tune_diffusion_microbatch(
     cfg,
     featurizer: Featurizer4Eval,
     timestep: int,
-    dataloader: torch.utils.data.DataLoader,
-    optimizer: torch.optim.Optimizer,
+    batch: dict,
     device: torch.device,
-    global_step: int,
+    grad_accum_steps: int,
     mask_token: torch.nn.Parameter,
     mask_ratio: float,
     decoder: MIMDecoder,
     capture: _FeatureCapture,
-) -> tuple[dict, int]:
+) -> dict:
     """
-    Fine-tunes FLUX with a MIM auxiliary objective using LoRA adapters. For each batch:
-        - encodes images into VAE latent space
-        - randomly masks a subset of tokens (replaced with mask_token)
-        - runs FLUX forward pass; a hook captures intermediate features at block cfg.k
-        - a small MIMDecoder projects those features to clean latent space
-        - optimizes MSE between decoded predictions and clean latents at masked positions only
+    One MIM training microbatch. Caller handles gradient accumulation, optimizer step,
+    logging, and checkpointing.
 
-    Returns:
-        - train_metrics: dict of averaged metrics over the epoch
-        - global_step: updated global step count
+    Returns batch_metrics dict (train/mim_loss and diagnostics).
     """
     model = featurizer.model
     vae = featurizer.ae
     model.train()
     vae.eval()
 
-    train_metrics: dict = {}
+    t = timestep / 1000.0
 
-    guidance_scale = cfg.guidance_scale
+    imgs = batch["img"].to(device)
+    with torch.no_grad():
+        latents = vae.encode(imgs).to(torch.bfloat16)
 
-    # Normalize timestep
-    t = timestep / 1000.0  # assuming 1000 total diffusion steps (same as feat_flux.py)
+    noise = torch.randn_like(latents).to(device)
+    latents_noisy = t * noise + (1.0 - t) * latents
 
-    grad_accum_steps = cfg.gradient_accumulation_steps if cfg.use_gradient_accumulation else 1
+    img, img_ids = prepare(img=latents_noisy)
+    img = img.to(device, dtype=latents.dtype)
+    img_ids = img_ids.to(device)
 
-    optimizer.zero_grad(set_to_none=True)
+    img, mask = _random_masking(img, mask_token, mask_ratio)
 
-    for batch_idx, batch in enumerate(dataloader):
-        if global_step >= cfg.max_train_steps:
-            break
+    txt, txt_ids, y = _expand_null_embeddings(
+        featurizer, batch_size=imgs.shape[0], device=device, dtype=latents.dtype
+    )
+    guidance_vec = torch.full((imgs.shape[0],), cfg.guidance_scale, device=device, dtype=latents.dtype)
 
-        # Encode images into VAE latent space
-        imgs = batch["img"].to(device)
+    model(
+        img=img,
+        img_ids=img_ids,
+        txt=txt,
+        txt_ids=txt_ids,
+        y=y,
+        timesteps=torch.full((imgs.shape[0],), t, device=device, dtype=latents.dtype),
+        guidance=guidance_vec,
+    )
 
-        with torch.no_grad():
-            latents = vae.encode(imgs)
-            latents = latents.to(
-                torch.bfloat16
-            )  # FLUX is trained in bfloat16, so we convert the latents to bfloat16 before feeding into FLUX for fine-tuning.
-            # Future work could explore whether training in full fp32 or using mixed precision with gradient scaling would improve performance at the cost of increased VRAM usage.
-        # Create noisy/interpolated latent from given timestep
-
-        noise = torch.randn_like(latents).to(device)
-
-        latents_noisy = t * noise + (1.0 - t) * latents
-
-        # Straight-line derivative wrt t
-        target_flow = noise - latents
-
-        # Patchify latents for FLUX transformer
-        img, img_ids = prepare(img=latents_noisy)
-        img = img.to(device, dtype=latents.dtype)
-        img_ids = img_ids.to(device)
-
-        img, mask = _random_masking(img, mask_token, mask_ratio)
-
-        txt, txt_ids, y = _expand_null_embeddings(
-            featurizer, batch_size=imgs.shape[0], device=device, dtype=latents.dtype
+    if capture.features is None:
+        raise RuntimeError(
+            f"Feature capture returned None — check that block_idx={cfg.k} is valid "
+            "and the hook was registered before model.forward() was called."
         )
 
-        guidance_vec = torch.full((imgs.shape[0],), guidance_scale, device=device, dtype=latents.dtype)
+    pred_clean = decoder(capture.features)
+    target_clean, _ = prepare(latents)
+    target_clean = target_clean.to(device=device, dtype=pred_clean.dtype)
 
-        model(
-            img=img,
-            img_ids=img_ids,
-            txt=txt,
-            txt_ids=txt_ids,
-            y=y,
-            timesteps=torch.full((imgs.shape[0],), t, device=device, dtype=latents.dtype),
-            guidance=guidance_vec,
-        )
+    per_token = ((pred_clean - target_clean) ** 2).mean(dim=-1)
+    raw_loss = (per_token * mask).sum() / mask.sum().clamp(min=1)
+    (raw_loss / grad_accum_steps).backward()
 
-        # Decode captured intermediate features to clean latent space.
-        if capture.features is None:
-            raise RuntimeError(
-                f"Feature capture returned None — check that block_idx={cfg.k} is valid "
-                "and the hook was registered before model.forward() was called."
-            )
-        pred_clean = decoder(capture.features)
-
-        # Clean latent tokens as reconstruction target.
-        target_clean, _ = prepare(latents)
-        target_clean = target_clean.to(device=device, dtype=pred_clean.dtype)
-
-        # MSE on masked positions only.
-        per_token = ((pred_clean - target_clean) ** 2).mean(dim=-1)  # (B, L)
-        raw_loss = (per_token * mask).sum() / mask.sum().clamp(min=1)
-
-        loss = raw_loss / grad_accum_steps  # Normalize loss for gradient accumulation
-        loss.backward()
-
-        batch_metrics = _mim_metrics(pred_clean, target_clean, mask, prefix="train")
-
-        for key, value in batch_metrics.items():
-            if key not in train_metrics:
-                train_metrics[key] = []
-            train_metrics[key].append(value)
-
-        # only step every accum_steps batches since we are accumulating gradients
-        should_step = (batch_idx + 1) % grad_accum_steps == 0 or (batch_idx + 1) == len(dataloader)
-        if should_step:
-            optimizer.step()
-            optimizer.zero_grad(set_to_none=True)
-            global_step += 1
-
-    # Average over batch values for each metric
-    for k in train_metrics:
-        train_metrics[k] = float(np.mean(np.array(train_metrics[k])))
-
-    return train_metrics, global_step
+    return _mim_metrics(pred_clean, target_clean, mask, prefix="train")
 
 
 @torch.no_grad()
@@ -377,32 +339,16 @@ def _validate_diffusion(
     model.eval()
     vae.eval()
 
-    guidance_scale = cfg.guidance_scale
-
+    t = timestep / 1000.0
     val_metrics: dict = {}
 
-    # Normalize timestep
-    t = timestep / 1000.0  # assuming 1000 total diffusion steps (same as feat_flux.py)
-
     for batch in dataloader:
-        # Encode images into VAE latent space
         imgs = batch["img"].to(device)
-        with torch.no_grad():
-            latents = vae.encode(imgs)
-            latents = latents.to(
-                torch.bfloat16
-            )  # FLUX is trained in bfloat16, so we convert the latents to bfloat16 before feeding into FLUX for fine-tuning.
-            # Future work could explore whether training in full fp32 or using mixed precision with gradient scaling would improve performance at the cost of increased VRAM usage.
-        # Create noisy/interpolated latent from given timestep
+        latents = vae.encode(imgs).to(torch.bfloat16)
 
         noise = torch.randn_like(latents).to(device)
-
         latents_noisy = t * noise + (1.0 - t) * latents
 
-        # Straight-line derivative wrt t
-        target_flow = noise - latents
-
-        # Patchify latents for FLUX transformer
         img, img_ids = prepare(img=latents_noisy)
         img = img.to(device, dtype=latents.dtype)
         img_ids = img_ids.to(device)
@@ -412,14 +358,7 @@ def _validate_diffusion(
         txt, txt_ids, y = _expand_null_embeddings(
             featurizer, batch_size=imgs.shape[0], device=device, dtype=latents.dtype
         )
-
-        if any(v is None for v in [txt, txt_ids, y]):
-            raise ValueError(
-                "Null prompt embeddings (txt, txt_ids, y) must be provided in featurizer for training. Received: txt=%s, txt_ids=%s, y=%s"
-                % (txt, txt_ids, y)
-            )
-
-        guidance_vec = torch.full((imgs.shape[0],), guidance_scale, device=device, dtype=latents.dtype)
+        guidance_vec = torch.full((imgs.shape[0],), cfg.guidance_scale, device=device, dtype=latents.dtype)
 
         model(
             img=img,
@@ -436,8 +375,8 @@ def _validate_diffusion(
                 f"Feature capture returned None — check that block_idx={cfg.k} is valid "
                 "and the hook was registered before model.forward() was called."
             )
-        pred_clean = decoder(capture.features)
 
+        pred_clean = decoder(capture.features)
         target_clean, _ = prepare(latents)
         target_clean = target_clean.to(device=device, dtype=pred_clean.dtype)
 
@@ -455,12 +394,9 @@ def _validate_diffusion(
 
 @register_task("finetune-diffusion")
 class FinetuneDiffusionTask:
-    def run(self, cfg, model, dataset) -> dict:
-        # run.py passes a FluxModel adapter; unwrap to the underlying Featurizer4Eval
-        # which exposes .model (Flux transformer), .ae (VAE), and null embeddings.
-        featurizer: Featurizer4Eval = model._inner if hasattr(model, "_inner") else model
-        model = featurizer
-
+    def run(self, cfg, model: FluxModel, dataset) -> dict:
+        # Unwrap registered adapter to get the raw Featurizer4Eval.
+        featurizer_model: Featurizer4Eval = model._inner
         device = torch.device(cfg.device)
 
         tb_dir = os.path.join(cfg.save_dir, "tensorboard_logs")
@@ -468,19 +404,17 @@ class FinetuneDiffusionTask:
 
         best_val_loss = float("inf")
 
-        # Ensure model and VAE are on correct device before training.
-        flux = model.model
-        ae = model.ae
+        # Move Flux and VAE to GPU; VAE stays in eval and its weights stay frozen.
+        flux = featurizer_model.model
+        ae = featurizer_model.ae
         flux.to(device)
         ae.to(device)
 
+        # MIM components: mask_token (learnable) and a shallow projection head.
         mask_token = torch.nn.Parameter(torch.zeros(1, 1, flux.in_channels, device=device))
-
-        # MIM decoder: projects block-k features (hidden_size) to clean latent space (in_channels).
-        # Discarded at inference — only the LoRA-adapted backbone is kept.
         decoder = MIMDecoder(flux.hidden_size, flux.in_channels).to(device=device, dtype=torch.bfloat16)
 
-        # Hook captures the output of the trained block without modifying model.forward().
+        # Register feature hook on the target block.
         n_double = len(flux.double_blocks)
         block_idx_int = cfg.k if isinstance(cfg.k, int) else cfg.k[0]
         hooked_block = (
@@ -488,134 +422,144 @@ class FinetuneDiffusionTask:
             if block_idx_int < n_double
             else flux.single_blocks[block_idx_int - n_double]
         )
-        txt_len = model.null_prompt_embeds.shape[1]
+        txt_len = featurizer_model.null_prompt_embeds.shape[1]
         capture = _FeatureCapture()
         capture.register(hooked_block, txt_len)
 
-        # Validate label fraction -- currently, due to length of fine-tuning, only length 1 is supported.
         if len(cfg.label_fractions) != 1:
             raise ValueError(
-                "Currently, only a single label fraction is supported for FinetuneDiffusionTask. Received: %s"
-                % cfg.label_fractions
+                "Currently, only a single label fraction is supported for FinetuneDiffusionTask. "
+                "Received: %s" % cfg.label_fractions
             )
 
-        # Freeze base FLUX weights
+        # Freeze base weights, then insert LoRA adapters at the target block.
         for param in flux.parameters():
             param.requires_grad = False
 
-        # Insert LoRA adapters into selected blocks
-        block_idx = cfg.k
-        rank = cfg.lora_rank
-        alpha = cfg.lora_alpha
-        dropout = cfg.lora_dropout
+        lora_wrap_flux(flux, cfg.k, cfg.lora_rank, cfg.lora_alpha, cfg.lora_dropout, wrap_o=cfg.wrap_output)
 
-        lora_wrap_flux(flux, block_idx, rank, alpha, dropout, wrap_o=cfg.wrap_output)
-
-        # Explicitly set lora parameters to be trainable and add to/create optimizer
+        # Only the LoRA A/B matrices should be trainable.
         for name, param in flux.named_parameters():
             if name.endswith(".A") or name.endswith(".B"):
                 param.requires_grad = True
 
-        trainable_params = [param for param in flux.parameters() if param.requires_grad]
+        trainable_params = [p for p in flux.parameters() if p.requires_grad]
         trainable_params.append(mask_token)
         trainable_params.extend(decoder.parameters())
 
-        # Sanity check
         if len(trainable_params) == 0:
             raise ValueError(
-                "No trainable parameters found in FLUX after LoRA wrapping. Please check configuration and LoRA wrapping logic."
+                "No trainable parameters found in FLUX after LoRA wrapping. "
+                "Please check configuration and LoRA wrapping logic."
             )
 
         optimizer = torch.optim.AdamW(trainable_params, lr=cfg.finetune_lr, weight_decay=cfg.lora_wd)
 
-        # Create loaders
         loaders = dataset.get_data(cfg)
         train_loader = loaders["train"]
         test_loader = loaders["test"]
 
         history = []
         global_step = 0
+        micro_step = 0
+        train_iter = _cycle_loader(train_loader)
 
-        for epoch in range(cfg.finetune_max_epochs):
-            if global_step >= cfg.max_train_steps:
-                print(
-                    f"Reached max_train_steps={cfg.max_train_steps}, stopping training. Final global_step={global_step}."
-                )
-                break
+        grad_accum_steps = cfg.gradient_accumulation_steps if cfg.use_gradient_accumulation else 1
+        log_train_steps = cfg.log_train_steps
+        log_val_steps = cfg.log_val_steps
 
-            train_metrics, global_step = _fine_tune_diffusion_one_epoch(
-                cfg,
-                featurizer=model,
+        accum_metrics: dict = {}
+        last_train_metrics: dict = {}
+        last_val_metrics: dict = {}
+
+        optimizer.zero_grad(set_to_none=True)
+
+        while global_step < cfg.max_train_steps:
+            batch = next(train_iter)
+
+            batch_metrics = _fine_tune_diffusion_microbatch(
+                cfg=cfg,
+                featurizer=featurizer_model,
                 timestep=cfg.t,
-                dataloader=train_loader,
-                optimizer=optimizer,
+                batch=batch,
                 device=device,
-                global_step=global_step,
+                grad_accum_steps=grad_accum_steps,
                 mask_token=mask_token,
                 mask_ratio=cfg.mask_ratio,
                 decoder=decoder,
                 capture=capture,
             )
-            val_metrics = _validate_diffusion(
-                cfg,
-                featurizer=model,
-                timestep=cfg.t,
-                dataloader=test_loader,
-                device=device,
-                mask_token=mask_token,
-                mask_ratio=cfg.mask_ratio,
-                decoder=decoder,
-                capture=capture,
-            )
 
-            epoch_metrics = {
-                "epoch": epoch,
-                "train_metrics": train_metrics,
-                "val_metrics": val_metrics,
-            }
-            history.append(epoch_metrics)
+            accum_metrics = _add_batch_metrics(accum_metrics, batch_metrics)
+            micro_step += 1
 
-            print(
-                f"[finetune-diffusion] epoch={epoch} "
-                f"train_loss={train_metrics['train/mim_loss']:.6f} "
-                f"val_loss={val_metrics['val/mim_loss']:.6f}"
-            )
+            if micro_step % grad_accum_steps != 0:
+                continue
 
-            # Tensorboard logging
-            for key, value in train_metrics.items():
-                writer.add_scalar(key, value, global_step)
+            optimizer.step()
+            optimizer.zero_grad(set_to_none=True)
+            global_step += 1
 
-            for key, value in val_metrics.items():
-                writer.add_scalar(key, value, global_step)
+            step_train_metrics = _average_batch_metrics(accum_metrics)
+            accum_metrics = {}
+            last_train_metrics = step_train_metrics
 
-            # Best checkpoint by validation MIM loss
-            val_loss = val_metrics["val/mim_loss"]
-            if val_loss < best_val_loss:
-                best_val_loss = val_loss
-                _save_lora_checkpoint(
-                    cfg=cfg,
-                    model=flux,
-                    optimizer=optimizer,
-                    epoch=epoch,
-                    global_step=global_step,
-                    train_metrics=train_metrics,
-                    val_metrics=val_metrics,
-                    name="lora_best",
+            if global_step % log_train_steps == 0:
+                for key, value in last_train_metrics.items():
+                    writer.add_scalar(key, value, global_step)
+
+            if global_step % log_val_steps == 0 or global_step == cfg.max_train_steps:
+                val_metrics = _validate_diffusion(
+                    cfg,
+                    featurizer=featurizer_model,
+                    timestep=cfg.t,
+                    dataloader=test_loader,
+                    device=device,
                     mask_token=mask_token,
+                    mask_ratio=cfg.mask_ratio,
                     decoder=decoder,
+                    capture=capture,
+                )
+                last_val_metrics = val_metrics
+
+                for key, value in val_metrics.items():
+                    writer.add_scalar(key, value, global_step)
+
+                history.append({
+                    "global_step": global_step,
+                    "train_metrics": step_train_metrics,
+                    "val_metrics": val_metrics,
+                })
+
+                print(
+                    f"[finetune-diffusion] step={global_step} "
+                    f"train_loss={step_train_metrics['train/mim_loss']:.6f} "
+                    f"val_loss={val_metrics['val/mim_loss']:.6f}"
                 )
 
-        # Save final checkpoint at end of training as well
-        # Guard against epoch, train_metrics, or val_metrics being unbound.
+                val_loss = val_metrics["val/mim_loss"]
+                if val_loss < best_val_loss:
+                    best_val_loss = val_loss
+                    _save_lora_checkpoint(
+                        cfg=cfg,
+                        model=flux,
+                        optimizer=optimizer,
+                        global_step=global_step,
+                        train_metrics=step_train_metrics,
+                        val_metrics=val_metrics,
+                        name="lora_best",
+                        mask_token=mask_token,
+                        decoder=decoder,
+                    )
+
         if history:
             _save_lora_checkpoint(
                 cfg=cfg,
                 model=flux,
                 optimizer=optimizer,
-                epoch=epoch,
                 global_step=global_step,
-                train_metrics=train_metrics,
-                val_metrics=val_metrics,
+                train_metrics=last_train_metrics,
+                val_metrics=last_val_metrics,
                 name="lora_last",
                 mask_token=mask_token,
                 decoder=decoder,
