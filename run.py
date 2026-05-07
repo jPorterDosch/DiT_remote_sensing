@@ -71,6 +71,7 @@ class RunConfig:
     mask_ratio: float = 0.75
     finetune_max_epochs: int = 10
     finetune_bs: int = 1
+    use_gradient_accumulation: bool = True
     gradient_accumulation_steps: int = 4
     finetune_lr: float = 1e-3
     # TODO: test higher values of max_train_steps, setting default low so we can get it running.
