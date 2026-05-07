@@ -70,11 +70,14 @@ class RunConfig:
     ## Diffusion/flow-matching training with LoRA
     finetune_max_epochs: int = 10
     finetune_bs: int = 1
-    use_gradient_accumulation: bool = True
     gradient_accumulation_steps: int = 4
     finetune_lr: float = 1e-3
     # TODO: test higher values of max_train_steps, setting default low so we can get it running.
     max_train_steps: int = 1000
+
+    # Timesteps for train and val logging
+    log_train_steps: int = 10
+    log_val_steps: int = 50
 
     # LoRA hyperparameters
     lora_wd: float = 0.0
