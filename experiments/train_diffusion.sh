@@ -4,8 +4,8 @@
 #
 # Timing estimate (A100, bfloat16, batch=1, grad_accum=4):
 #   ~17 s per batch forward+backward
-#   max_train_steps=1000  →  4000 batches  →  ~19 h compute + ~15 min load
-#   Request 1 day to be safe; checkpoints saved so progress is not lost if preempted.
+#   max_train_steps=7000    20000 batches    ~94 h compute + ~15 min load
+#   Request 1 day (checkpoints saved on best val loss so progress is not lost if preempted).
 #
 #SBATCH -A acf-utk0011
 #SBATCH --nodes=1
@@ -69,7 +69,7 @@ params=(
     [mask-ratio]="0.75"
     [finetune-max-epochs]="10"
     [finetune-lr]="1e-3"
-    [max-train-steps]="1000"
+    [max-train-steps]="5000"
     [gradient-accumulation-steps]="4"
     [lora-rank]="4"
     [lora-alpha]="16.0"
