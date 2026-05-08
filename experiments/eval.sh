@@ -51,6 +51,11 @@ setup_environment
 #     [model.ensemble-size]="1"
 #     -- remove clf-* and seed, drop --label-fractions from parallel command --
 # ============================================================================
+# To eval a fine-tuned model, add to params:
+#   [lora-checkpoint]="/lustre/isaac24/scratch/aabdelr5/diffusion-mim-ssl-fp_dl_s26/train_diffusion.sh/<run>/checkpoints/lora_best_stepN.pt"
+#   [lora-rank]="4"
+#   [lora-alpha]="16.0"
+#   [wrap-output]="true"
 declare -A params
 params=(
     [task]="classification"
@@ -66,6 +71,10 @@ params=(
     [clf-lr]="1e-3"
     [clf-batch-size]="256"
     [seed]="42"
+    [lora-checkpoint]="/lustre/isaac24/scratch/aabdelr5/diffusion-mim-ssl-fp_dl_s26/train_diffusion.sh/eurosat_flux_5394c2cb+42/checkpoints/lora_best_step3400.pt"
+    [lora-rank]="4"
+    [lora-alpha]="16.0"
+    [wrap-output]="true"
 )
 # ============================================================================
 # BUILD AND SUMMARIZE

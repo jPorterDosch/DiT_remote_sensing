@@ -81,6 +81,9 @@ class RunConfig:
     log_train_steps: int = 10
     log_val_steps: int = 50
 
+    # Path to a saved LoRA checkpoint to load before eval/training (empty = base model)
+    lora_checkpoint: str = ""
+
     # LoRA hyperparameters
     lora_wd: float = 0.0
     lora_rank: int = 4

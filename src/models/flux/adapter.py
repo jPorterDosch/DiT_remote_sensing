@@ -20,6 +20,31 @@ class FluxModel:
             ensemble_size=cfg.model.ensemble_size,
         )
 
+        if getattr(cfg, "lora_checkpoint", ""):
+            from models.lora import lora_wrap_flux
+
+            flux = self._inner.model
+
+            lora_wrap_flux(
+                flux,
+                cfg.k,
+                cfg.lora_rank,
+                cfg.lora_alpha,
+                cfg.lora_dropout,
+                wrap_o=cfg.wrap_output,
+            )
+
+            # load all tensors onto cpu first regardless of where they were saved from
+            ckpt = torch.load(cfg.lora_checkpoint, map_location="cpu", weights_only=False)
+            missing, unexpected = flux.load_state_dict(ckpt["lora_state_dict"], strict=False)
+            
+            print(f"Loaded LoRA checkpoint: {cfg.lora_checkpoint}")
+
+            if missing:
+                print(f"\tMissing keys: {missing}")
+            if unexpected:
+                print(f"\tUnexpected keys: {unexpected}")
+
     @torch.no_grad()
     def extract(
         self,
