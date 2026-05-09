@@ -58,7 +58,7 @@ mkdir -p "$PROJECT_ROOT/logs/${SLURM_JOB_NAME:-train_diffusion}"
 # ============================================================================
 declare -A params
 params=(
-    [task]="finetune-diffusion"
+    [task]="finetune-diffusion-input-mask"
     [dataset.name]="eurosat"
     [dataset.path]="/lustre/isaac24/scratch/jdosch1/DeepLearning/datasets/EuroSAT"
     [model.name]="flux"
@@ -78,6 +78,7 @@ params=(
     [batch-size]="1"
     [num-workers]="4"
     [seed]="42"
+    [mim-loss-weight]="0.1 0.5 1.0"
 )
 
 expand_params_for_parallel
