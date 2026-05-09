@@ -34,12 +34,19 @@ def _extract_features(cfg, model, dataloader, split_name: str):
     all_labels: list[torch.Tensor] = []
     device = torch.device(cfg.device)
 
+    max_samples = getattr(cfg, "max_samples", None)
+    n_seen = 0
     print("saving %s images' features..." % split_name)
     for batch in tqdm(dataloader):
+        if max_samples is not None and n_seen >= max_samples:
+            break
         img = batch["img"].to(device)  # B, 3, H, W
         label = batch["label"]  # B
 
         for single_img, single_label in zip(img, label, strict=True):
+            if max_samples is not None and n_seen >= max_samples:
+                break
+            n_seen += 1
             # TODO: if GPU can tolerate higher batch sizes, we can extract features for the whole batch at once instead of looping through images one by one.
             feat = model.extract(
                 single_img,
@@ -52,9 +59,9 @@ def _extract_features(cfg, model, dataloader, split_name: str):
             feat_vec = F.normalize(feat_vec, dim=1)
 
             all_feats.append(feat_vec.cpu())
-            all_labels.append(single_label.cpu())
+            all_labels.append(single_label.cpu().unsqueeze(0))
 
-    feats = torch.cat(all_feats, dim=0).numpy()  # N, C
+    feats = torch.cat(all_feats, dim=0).float().numpy()  # N, C
     labels = torch.cat(all_labels, dim=0).numpy()  # N
     return feats, labels
 
@@ -65,6 +72,8 @@ def _subsample_by_fraction(feats, labels, fraction: float, seed: int, num_classe
     keep_idx: list[int] = []
     for cls in range(num_classes):
         cls_idx = np.where(labels == cls)[0]
+        if len(cls_idx) == 0:
+            continue
         n_keep = max(1, int(len(cls_idx) * fraction / 100.0))
         chosen = rng.choice(cls_idx, size=n_keep, replace=False)
         keep_idx.extend(chosen.tolist())
@@ -108,10 +117,12 @@ def _evaluate_probe(probe, test_feats, test_labels, device):
     probe.eval()
     X = torch.from_numpy(test_feats).float().to(device)
     preds = probe(X).cpu().numpy().argmax(axis=1)
+    num_classes = probe.fc.out_features
+    all_labels = list(range(num_classes))
     top1 = (preds == test_labels).mean() * 100.0
-    macro_f1 = f1_score(test_labels, preds, average="macro") * 100.0
-    weighted_f1 = f1_score(test_labels, preds, average="weighted") * 100.0
-    per_class_f1 = f1_score(test_labels, preds, average=None) * 100.0
+    macro_f1 = f1_score(test_labels, preds, average="macro", labels=all_labels, zero_division=0) * 100.0
+    weighted_f1 = f1_score(test_labels, preds, average="weighted", labels=all_labels, zero_division=0) * 100.0
+    per_class_f1 = f1_score(test_labels, preds, average=None, labels=all_labels, zero_division=0) * 100.0
     return top1, macro_f1, weighted_f1, per_class_f1
 
 

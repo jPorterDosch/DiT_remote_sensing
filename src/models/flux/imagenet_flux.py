@@ -8,7 +8,6 @@ from .util import load_ae, load_clip, load_flow_model, load_t5
 
 
 def prepare_txt(bs, t5, clip, prompt, device="cuda"):
-
     if isinstance(prompt, str):
         prompt = [prompt]
     txt = t5(prompt)
@@ -40,7 +39,6 @@ def prepare(img):
 
 class Featurizer:
     def __init__(self, name="flux-dev", null_prompt="", device="cuda"):
-
         t5 = load_t5(device, max_length=512)
         clip = load_clip(device)
         model = load_flow_model(name, device=device)
@@ -131,7 +129,6 @@ class Featurizer4Eval(Featurizer):
         guidance=3.5,
         neg_catory="person",
     ):
-
         # if img_size is not None:
         #     img = img.resize(img_size)
         img_tensor = (img / 255.0 - 0.5) * 2
