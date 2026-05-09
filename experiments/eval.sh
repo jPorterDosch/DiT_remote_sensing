@@ -92,7 +92,7 @@ params=(
     [clf-lr]="1e-3"
     [clf-batch-size]="256"
     [seed]="42"
-    [lora-checkpoint]="/lustre/isaac24/scratch/aabdelr5/diffusion-mim-ssl-fp_dl_s26/train_diffusion.sh/eurosat_flux_5394c2cb+42/checkpoints/lora_best_step3400.pt"
+    [lora-checkpoint]="/lustre/isaac24/scratch/aabdelr5/diffusion-mim-ssl-fp_dl_s26/train_diffusion.sh/eurosat_flux_5394c2cb+42/checkpoints/lora_best_step3950.pt"
     [lora-rank]="4"
     [lora-alpha]="16.0"
 )

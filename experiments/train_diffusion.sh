@@ -15,7 +15,7 @@
 #SBATCH --mem=64G
 #SBATCH --qos=campus-gpu
 #SBATCH --partition=campus-gpu-bigmem
-#SBATCH --time=1-00:00:00
+#SBATCH --time=2-00:00:00
 #SBATCH --output=logs/%x/%j.out
 #SBATCH --error=logs/%x/%j.err
 

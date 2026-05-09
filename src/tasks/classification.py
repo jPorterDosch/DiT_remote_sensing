@@ -56,7 +56,7 @@ def _extract_features(cfg, model, dataloader, split_name: str) -> tuple[np.ndarr
             all_feats.append(feat_vec.cpu())
             all_labels.append(single_label.cpu())
 
-    feats = torch.cat(all_feats, dim=0).numpy()  # N, C
+    feats = torch.cat(all_feats, dim=0).float().numpy()  # N, C
     labels = torch.cat(all_labels, dim=0).numpy()  # N
     return feats, labels
 
