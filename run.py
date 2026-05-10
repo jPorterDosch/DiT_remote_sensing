@@ -35,6 +35,10 @@ class DatasetConfig:
     name: str = "eurosat"
     path: str = "/lustre/isaac24/scratch/jdosch1/DeepLearning/datasets/EuroSAT"
 
+    def __post_init__(self) -> None:
+        if not os.path.exists(self.path):
+            raise ValueError(f"Dataset path '{self.path}' does not exist.")
+
 
 @dataclass
 class RunConfig:
