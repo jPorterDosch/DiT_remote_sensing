@@ -41,7 +41,9 @@ class MLPProbe(nn.Module):
 @torch.inference_mode()
 def extract_features(cfg, model, dataloader, split_name: str) -> tuple[np.ndarray, np.ndarray]:
     """Extract and return (features, labels) for all images in dataloader."""
-    model.eval()
+    # TODO: change call sites to pass in underlying Flux model directly instead of wrapper,
+    # which adds extra unnecessary calls to access underlying model.
+    model._inner.model.eval()
     all_feats: list[torch.Tensor] = []
     all_labels: list[torch.Tensor] = []
     device = torch.device(cfg.device)
