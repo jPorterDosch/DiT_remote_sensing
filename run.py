@@ -47,7 +47,7 @@ class RunConfig:
     # Root to save extracted features and trained classifiers. Name derived from config will be appended to this path so that multiple runs can be organized under the same directory.
     save_dir: str = "./models"
     img_size: list[int] = field(default_factory=lambda: [224, 224])
-    t: int = 260  ###调参[1,1000]
+    t: int = 260  # Timestep index in range [1,1000]
     k: int | list[int] = (
         28  # [0, 57], for now, we can currently extract from multiple blocks, but have no aggregation methods implemented yet. Future work could explore this direction (e.g. concatenation, attention-based fusion, etc.
     )
@@ -58,7 +58,7 @@ class RunConfig:
     captions_path: str = "spair_detailed_captions.json"
 
     ## classification
-    label_fractions: list[float] = field(default_factory=lambda: [1.0, 5.0, 10.0, 50.0, 100.0])
+    label_fraction: float = 1.0
     clf_epochs: int = 50
     clf_lr: float = 1e-3
     clf_batch_size: int = 256
@@ -95,7 +95,7 @@ class RunConfig:
     # total_loss = flow_loss + mim_loss_weight * mim_loss. mim_loss_weight = the alpha
     mim_loss_weight: float = 1.0
 
-    # Linear LR warmup to mitigate spikes early on 
+    # Linear LR warmup to mitigate spikes early on
     warmup_steps: int = 100
 
     def make_run_name(self) -> str:
