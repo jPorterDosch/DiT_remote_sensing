@@ -49,7 +49,7 @@ class ClassificationTask:
         class_names = getattr(dataset, "class_names", dataset.category_list)
         num_classes = len(class_names)
 
-        print("Label fraction: %s" % cfg.label_fraction)
+        print("Label fraction: %s%%" % (cfg.label_fraction * 100))
         frac = cfg.label_fraction
         probe, steps, elapsed = train_linear_probe(
             train_feats,

@@ -630,14 +630,14 @@ class FinetuneDiffusionTask:
             )
 
         # After model tuning, evaluate frozen model with small classifier head to evaluate feature quality.
-        # Freeze current model weights (including LoRA adapters) and train a small MLP on top of captured features
+        # Freeze current model weights (including LoRA adapters) and train a small classifier head on top of captured features
         # for classification. This probes whether the adapted features are more linearly separable for the downstream task.
         for param in flux.parameters():
             param.requires_grad = False
 
         # Use the same train/test loader to prevent data leakage.
-        train_feats, train_labels = extract_features(cfg, featurizer_model, train_loader, "train")
-        test_feats, test_labels = extract_features(cfg, featurizer_model, test_loader, "test")
+        train_feats, train_labels = extract_features(cfg, model, train_loader, "train")
+        test_feats, test_labels = extract_features(cfg, model, test_loader, "test")
 
         if not hasattr(dataset, "category_list"):
             raise ValueError("Dataset must have category_list attribute for classification probe evaluation.")
@@ -681,6 +681,11 @@ class FinetuneDiffusionTask:
             "per_class_accuracy": per_class_acc,
             "per_class_f1": per_class_f1_dict,
         }
+
+        # Log to TensorBoard under "probe/" prefix for easy comparison across runs with different label fractions.
+        # NOTE: these will only have 1 timestep.
+        for result in probe_results:
+            writer.add_scalar(f"probe/{result}", probe_results[result])
 
         capture.remove()
         writer.close()

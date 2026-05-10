@@ -128,7 +128,8 @@ class RunConfig:
         return f"{dataset_name}_{model_name}_{digest}+{seed}"
 
     def __post_init__(self) -> None:
-        pass
+        if self.label_fraction <= 0 or self.label_fraction > 1:
+            raise ValueError(f"label_fraction must be in the range (0, 1], got {self.label_fraction}")
 
 
 def main(cfg: RunConfig) -> None:
