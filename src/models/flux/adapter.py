@@ -37,7 +37,7 @@ class FluxModel:
             # load all tensors onto cpu first regardless of where they were saved from
             ckpt = torch.load(cfg.lora_checkpoint, map_location="cpu", weights_only=False)
             missing, unexpected = flux.load_state_dict(ckpt["lora_state_dict"], strict=False)
-            
+
             print(f"Loaded LoRA checkpoint: {cfg.lora_checkpoint}")
 
             if missing:

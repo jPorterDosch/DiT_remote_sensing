@@ -15,6 +15,8 @@ from models.lora import lora_wrap_flux
 from registry import register_task
 from utils import to_jsonable
 
+from .utils import evaluate_probe, extract_features, log_scalars_recursive, train_linear_probe
+
 
 def _expand_null_embeddings(featurizer: Featurizer4Eval, batch_size: int, device, dtype):
     txt, txt_ids, y = (
@@ -91,10 +93,12 @@ def _save_lora_checkpoint(
     torch.save(ckpt, checkpoint_path)
 
 
-def _flow_metrics(pred: torch.Tensor, target: torch.Tensor, prefix: str) -> dict:
+def _flow_metrics(pred: torch.Tensor, target: torch.Tensor, mask: torch.Tensor, prefix: str) -> dict:
     """
     Helper to compute shared flow metrics for train/val loops. Computes MSE, RMSE,
     mean norms of pred/target/residual, relative flow error, and cosine similarity between pred and target.
+
+    All metrics are computed on unmasked regions.
 
     Interpretation:
         - MSE/RMSE: overall error magnitude. MSE is optimization objective, RMSE is more interpretable in flow units.
@@ -103,27 +107,39 @@ def _flow_metrics(pred: torch.Tensor, target: torch.Tensor, prefix: str) -> dict
         - Relative flow error: error normalized by true flow magnitude, which can help identify if model is performing worse on smaller or larger flows.
         - Cosine similarity: directional alignment between predicted and true flow, independent of magnitude.
     """
+    visible = (1 - mask).bool()
+
+    # Edge case check for degenerate mask that hides all positions
+    if visible.sum() == 0:
+        return {
+            f"{prefix}/flow_mse_loss": float("nan"),
+            f"{prefix}/flow_rmse": float("nan"),
+            f"{prefix}/pred_norm_mean": float("nan"),
+            f"{prefix}/target_norm_mean": float("nan"),
+            f"{prefix}/residual_norm_mean": float("nan"),
+            f"{prefix}/relative_flow_error": float("nan"),
+            f"{prefix}/cosine_pred_target": float("nan"),
+        }
+
+    pred = pred[visible]
+    target = target[visible]
     pred_f = pred.float()
     target_f = target.float()
     residual_f = pred_f - target_f
 
-    pred_flat = pred_f.flatten(1)
-    target_flat = target_f.flatten(1)
-    residual_flat = residual_f.flatten(1)
-
     mse = F.mse_loss(pred_f, target_f)
-    target_norm = target_flat.norm(dim=1)
-    residual_norm = residual_flat.norm(dim=1)
+    target_norm = target_f.norm(dim=1)
+    residual_norm = residual_f.norm(dim=1)
 
     return {
         f"{prefix}/flow_mse_loss": float(mse.detach().cpu()),
         f"{prefix}/flow_rmse": float(torch.sqrt(mse).detach().cpu()),
-        f"{prefix}/pred_norm_mean": float(pred_flat.norm(dim=1).mean().detach().cpu()),
+        f"{prefix}/pred_norm_mean": float(pred_f.norm(dim=1).mean().detach().cpu()),
         f"{prefix}/target_norm_mean": float(target_norm.mean().detach().cpu()),
-        f"{prefix}/residual_norm_mean": float(residual_flat.norm(dim=1).mean().detach().cpu()),
+        f"{prefix}/residual_norm_mean": float(residual_f.norm(dim=1).mean().detach().cpu()),
         f"{prefix}/relative_flow_error": float((residual_norm / (target_norm + 1e-8)).mean().detach().cpu()),
         f"{prefix}/cosine_pred_target": float(
-            F.cosine_similarity(pred_flat, target_flat, dim=1).mean().detach().cpu()
+            F.cosine_similarity(pred_f, target_f, dim=1).mean().detach().cpu()
         ),
     }
 
@@ -192,7 +208,7 @@ class _FeatureCapture:
     def register(self, block: torch.nn.Module, txt_len: int) -> None:
         def _hook(module, inp, output):
             if isinstance(output, tuple):
-                self.features = output[0]               # DoubleStreamBlock: (img, txt)
+                self.features = output[0]  # DoubleStreamBlock: (img, txt)
             else:
                 self.features = output[:, txt_len:, :]  # SingleStreamBlock: slice off txt prefix
 
@@ -266,9 +282,12 @@ def _fine_tune_diffusion_microbatch(
 ) -> dict:
     """
     One MIM training microbatch. Caller handles gradient accumulation, optimizer step,
-    logging, and checkpointing.
+    logging, and checkpointing. mask_token is applied to img tokens before
+    the Flux forward so attention can propagate context into masked positions.
+    Flow loss is computed only at unmasked positions.
 
     Returns batch_metrics dict (train/mim_loss and diagnostics).
+    Input-masked MIM microbatch.
     """
     model = featurizer.model
     vae = featurizer.ae
@@ -293,11 +312,13 @@ def _fine_tune_diffusion_microbatch(
     )
     guidance_vec = torch.full((imgs.shape[0],), cfg.guidance_scale, device=device, dtype=latents.dtype)
 
+    # Mask input tokens before the Flux forward.
+    img_masked, mask = _random_masking(img, mask_token, mask_ratio)
+
     capture.features = None
 
-    # Flux sees clean unmasked tokens — standard flow-matching forward.
     v_pred = model(
-        img=img,
+        img=img_masked,
         img_ids=img_ids,
         txt=txt,
         txt_ids=txt_ids,
@@ -312,23 +333,26 @@ def _fine_tune_diffusion_microbatch(
             "and the hook was registered before model.forward() was called."
         )
 
-    # Flow head: velocity prediction over all tokens.
     v_target, _ = prepare(noise - latents)
     v_target = v_target.to(device=device, dtype=v_pred.dtype)
-    flow_loss = F.mse_loss(v_pred.float(), v_target.float())
 
-    features_masked, mask = _random_masking(capture.features, mask_token, mask_ratio)
-    pred_clean = decoder(features_masked)
+    # Flow loss: unmasked positions only — masked positions have no reliable target.
+    per_token_flow = ((v_pred.float() - v_target.float()) ** 2).mean(dim=-1)
+    flow_loss = (per_token_flow * (1 - mask)).sum() / (1 - mask).sum().clamp(min=1)
+
+    # MIM head: decode directly from captured features.
+    # Features at masked positions carry context from Flux attention — no second masking needed.
+    pred_clean = decoder(capture.features)
     target_clean, _ = prepare(latents)
     target_clean = target_clean.to(device=device, dtype=pred_clean.dtype)
-    per_token = ((pred_clean - target_clean) ** 2).mean(dim=-1)
-    mim_loss = (per_token * mask).sum() / mask.sum().clamp(min=1)
+    per_token_mim = ((pred_clean - target_clean) ** 2).mean(dim=-1)
+    mim_loss = (per_token_mim * mask).sum() / mask.sum().clamp(min=1)
 
     total_loss = flow_loss + cfg.mim_loss_weight * mim_loss
     (total_loss / grad_accum_steps).backward()
 
     return {
-        **_flow_metrics(v_pred, v_target, prefix="train"),
+        **_flow_metrics(v_pred, v_target, mask=mask, prefix="train"),
         **_mim_metrics(pred_clean, target_clean, mask, prefix="train"),
         "train/total_loss": float(total_loss.detach().cpu()),
     }
@@ -370,10 +394,12 @@ def _validate_diffusion(
         )
         guidance_vec = torch.full((imgs.shape[0],), cfg.guidance_scale, device=device, dtype=latents.dtype)
 
+        img_masked, mask = _random_masking(img, mask_token, mask_ratio)
+
         capture.features = None
 
         v_pred = model(
-            img=img,
+            img=img_masked,
             img_ids=img_ids,
             txt=txt,
             txt_ids=txt_ids,
@@ -390,17 +416,18 @@ def _validate_diffusion(
 
         v_target, _ = prepare(noise - latents)
         v_target = v_target.to(device=device, dtype=v_pred.dtype)
-        flow_loss = F.mse_loss(v_pred.float(), v_target.float())
 
-        features_masked, mask = _random_masking(capture.features, mask_token, mask_ratio)
-        pred_clean = decoder(features_masked)
+        per_token_flow = ((v_pred.float() - v_target.float()) ** 2).mean(dim=-1)
+        flow_loss = (per_token_flow * (1 - mask)).sum() / (1 - mask).sum().clamp(min=1)
+
+        pred_clean = decoder(capture.features)
         target_clean, _ = prepare(latents)
         target_clean = target_clean.to(device=device, dtype=pred_clean.dtype)
-        per_token = ((pred_clean - target_clean) ** 2).mean(dim=-1)
-        mim_loss = (per_token * mask).sum() / mask.sum().clamp(min=1)
+        per_token_mim = ((pred_clean - target_clean) ** 2).mean(dim=-1)
+        mim_loss = (per_token_mim * mask).sum() / mask.sum().clamp(min=1)
 
         batch_metrics = {
-            **_flow_metrics(v_pred, v_target, prefix="val"),
+            **_flow_metrics(v_pred, v_target, mask=mask, prefix="val"),
             **_mim_metrics(pred_clean, target_clean, mask, prefix="val"),
             "val/total_loss": float((flow_loss + cfg.mim_loss_weight * mim_loss).detach().cpu()),
         }
@@ -433,9 +460,9 @@ class FinetuneDiffusionTask:
         flux.to(device)
         ae.to(device)
 
-        # MIM components: mask_token replaces feature vectors (hidden_size dim, not token dim)
-        # before the decoder so Flux itself always sees clean unmasked tokens.
-        mask_token = torch.nn.Parameter(torch.zeros(1, 1, flux.hidden_size, device=device))
+        # MIM components: mask_token replaces FLUX input latent tokens
+        # before the FLUX forward, so trainable attention cannot directly see masked tokens.
+        mask_token = torch.nn.Parameter(torch.zeros(1, 1, flux.in_channels, device=device))
         decoder = MIMDecoder(flux.hidden_size, flux.in_channels).to(device=device, dtype=torch.bfloat16)
 
         # Register feature hook on the target block.
@@ -450,17 +477,18 @@ class FinetuneDiffusionTask:
         capture = _FeatureCapture()
         capture.register(hooked_block, txt_len)
 
-        if len(cfg.label_fractions) != 1:
-            raise ValueError(
-                "Currently, only a single label fraction is supported for FinetuneDiffusionTask. "
-                "Received: %s" % cfg.label_fractions
-            )
-
         # Freeze base weights, then insert LoRA adapters at the target block.
         for param in flux.parameters():
             param.requires_grad = False
 
-        lora_wrap_flux(flux, cfg.k, cfg.lora_rank, cfg.lora_alpha, cfg.lora_dropout, wrap_o=cfg.wrap_output)
+        lora_wrap_flux(
+            flux,
+            cfg.k,
+            cfg.lora_rank,
+            cfg.lora_alpha,
+            cfg.lora_dropout,
+            wrap_o=cfg.wrap_output,
+        )
 
         # Only the LoRA A/B matrices should be trainable.
         for name, param in flux.named_parameters():
@@ -479,7 +507,10 @@ class FinetuneDiffusionTask:
 
         optimizer = torch.optim.AdamW(trainable_params, lr=cfg.finetune_lr, weight_decay=cfg.lora_wd)
         scheduler = torch.optim.lr_scheduler.LinearLR(
-            optimizer, start_factor=0.01, end_factor=1.0, total_iters=max(1, cfg.warmup_steps)
+            optimizer,
+            start_factor=0.01,
+            end_factor=1.0,
+            total_iters=max(1, cfg.warmup_steps),
         )
 
         loaders = dataset.get_data(cfg)
@@ -554,11 +585,13 @@ class FinetuneDiffusionTask:
                 for key, value in val_metrics.items():
                     writer.add_scalar(key, value, global_step)
 
-                history.append({
-                    "global_step": global_step,
-                    "train_metrics": step_train_metrics,
-                    "val_metrics": val_metrics,
-                })
+                history.append(
+                    {
+                        "global_step": global_step,
+                        "train_metrics": step_train_metrics,
+                        "val_metrics": val_metrics,
+                    }
+                )
 
                 print(
                     f"[finetune-diffusion] step={global_step} "
@@ -596,11 +629,69 @@ class FinetuneDiffusionTask:
                 decoder=decoder,
             )
 
+        # After model tuning, evaluate frozen model with small classifier head to evaluate feature quality.
+        # Freeze current model weights (including LoRA adapters) and train a small classifier head on top of captured features
+        # for classification. This probes whether the adapted features are more linearly separable for the downstream task.
+        for param in flux.parameters():
+            param.requires_grad = False
+
+        # Use the same train/test loader to prevent data leakage.
+        train_feats, train_labels = extract_features(cfg, model, train_loader, "train")
+        test_feats, test_labels = extract_features(cfg, model, test_loader, "test")
+
+        if not hasattr(dataset, "category_list"):
+            raise ValueError("Dataset must have category_list attribute for classification probe evaluation.")
+
+        class_names = dataset.category_list
+        num_classes = len(class_names)
+
+        probe, steps, elapsed = train_linear_probe(
+            train_feats,
+            train_labels,
+            num_epochs=cfg.clf_epochs,
+            lr=cfg.clf_lr,
+            batch_size=cfg.clf_batch_size,
+            device=torch.device(cfg.device),
+            num_classes=num_classes,
+        )
+        top1, macro_f1, weighted_f1, per_class_f1 = evaluate_probe(
+            probe, test_feats, test_labels, torch.device(cfg.device)
+        )
+
+        # per-class accuracy and F1 breakdown
+        probe.eval()
+        with torch.no_grad():
+            X = torch.from_numpy(test_feats).float().to(device)
+            preds = probe(X).cpu().numpy().argmax(axis=1)
+        per_class_acc: dict[str, float] = {}
+        per_class_f1_dict: dict[str, float] = {}
+        for cls_idx, cls_name in enumerate(class_names):
+            mask = test_labels == cls_idx
+            cls_acc = (preds[mask] == test_labels[mask]).mean() * 100.0
+            per_class_acc[cls_name] = round(float(cls_acc), 2)
+            per_class_f1_dict[cls_name] = round(float(per_class_f1[cls_idx]), 2)
+
+        probe_results = {
+            "label_fraction_pct": cfg.label_fraction,
+            "top1_accuracy": round(float(top1), 2),
+            "macro_f1": round(float(macro_f1), 2),
+            "weighted_f1": round(float(weighted_f1), 2),
+            "training_steps": steps,
+            "wall_clock_seconds": round(elapsed, 2),
+            "per_class_accuracy": per_class_acc,
+            "per_class_f1": per_class_f1_dict,
+        }
+
+        # Log to TensorBoard under "probe/" prefix for easy comparison across runs with different label fractions.
+        # NOTE: these will only have 1 timestep.
+        log_scalars_recursive(writer, "probe", probe_results, step=0)
+
         capture.remove()
         writer.close()
 
         return {
             "history": history,
+            "probe_results": probe_results,
             "global_step": global_step,
             "best_val_loss": best_val_loss,
             "num_trainable_params": sum(p.numel() for p in trainable_params),
