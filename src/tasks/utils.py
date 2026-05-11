@@ -38,6 +38,16 @@ class MLPProbe(nn.Module):
         return self.net(x)
 
 
+def log_scalars_recursive(writer, prefix, values, step=0):
+    for key, value in values.items():
+        tag = f"{prefix}/{key}"
+
+        if isinstance(value, dict):
+            log_scalars_recursive(writer, tag, value, step)
+        else:
+            writer.add_scalar(tag, value, step)
+
+
 @torch.inference_mode()
 def extract_features(cfg, model, dataloader, split_name: str) -> tuple[np.ndarray, np.ndarray]:
     """Extract and return (features, labels) for all images in dataloader."""

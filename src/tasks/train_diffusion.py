@@ -15,7 +15,7 @@ from models.lora import lora_wrap_flux
 from registry import register_task
 from utils import to_jsonable
 
-from .utils import evaluate_probe, extract_features, train_linear_probe
+from .utils import evaluate_probe, extract_features, log_scalars_recursive, train_linear_probe
 
 
 def _expand_null_embeddings(featurizer: Featurizer4Eval, batch_size: int, device, dtype):
@@ -684,8 +684,7 @@ class FinetuneDiffusionTask:
 
         # Log to TensorBoard under "probe/" prefix for easy comparison across runs with different label fractions.
         # NOTE: these will only have 1 timestep.
-        for result in probe_results:
-            writer.add_scalar(f"probe/{result}", probe_results[result])
+        log_scalars_recursive(writer, "probe", probe_results, step=0)
 
         capture.remove()
         writer.close()
