@@ -41,6 +41,7 @@ import pandas as pd
 # Filename parsing
 # ---------------------------------------------------------------------------
 
+
 def parse_filename(path: Path) -> dict | None:
     """
     Extract (t, k, ensemble_size, seed) from filenames like:
@@ -64,6 +65,7 @@ def parse_filename(path: Path) -> dict | None:
 # ---------------------------------------------------------------------------
 # Task detection and metric extraction
 # ---------------------------------------------------------------------------
+
 
 def detect_task(data: dict) -> str:
     """Infer task type from JSON structure."""
@@ -104,6 +106,7 @@ def extract_value(data: dict, task: str, metric: str, frac: float) -> float | No
 # ---------------------------------------------------------------------------
 # Data loading
 # ---------------------------------------------------------------------------
+
 
 def load_results(
     results_dir: str,
@@ -164,6 +167,7 @@ def load_results(
 # Plot helpers
 # ---------------------------------------------------------------------------
 
+
 def plot_heatmap(df: pd.DataFrame, ylabel: str, ax: plt.Axes) -> None:
     pivot = df.pivot_table(index="t", columns="k", values="value", aggfunc="mean")
     pivot = pivot.sort_index(ascending=False)
@@ -222,6 +226,7 @@ def plot_lines_by_timestep(df: pd.DataFrame, ylabel: str, ax: plt.Axes) -> None:
 # Entry point
 # ---------------------------------------------------------------------------
 
+
 def main():
     parser = argparse.ArgumentParser(
         description="Plot sweep results (correspondence or classification) over t × k.",
@@ -229,34 +234,40 @@ def main():
         epilog=__doc__,
     )
     parser.add_argument(
-        "--results-dir", default="layers_cat/flux",
-        help="Directory (searched recursively) containing result JSON files. "
-             "Default: layers_cat/flux",
+        "--results-dir",
+        default="layers_cat/flux",
+        help="Directory (searched recursively) containing result JSON files. Default: layers_cat/flux",
     )
     parser.add_argument(
-        "--task", default="auto", choices=["auto", "correspondence", "classification"],
+        "--task",
+        default="auto",
+        choices=["auto", "correspondence", "classification"],
         help="Force task type, or 'auto' to detect from JSON structure.",
     )
     parser.add_argument(
-        "--metric", default="image",
+        "--metric",
+        default="image",
         help="Metric to plot. "
-             "Correspondence: 'image' or 'point' (→ Mean PCK@0.1). "
-             "Classification: 'top1_accuracy', 'macro_f1', 'weighted_f1'. "
-             "Default: image",
+        "Correspondence: 'image' or 'point' (→ Mean PCK@0.1). "
+        "Classification: 'top1_accuracy', 'macro_f1', 'weighted_f1'. "
+        "Default: image",
     )
     parser.add_argument(
-        "--frac", type=float, default=100.0,
+        "--frac",
+        type=float,
+        default=100.0,
         help="Label fraction %% for classification results (e.g. 10, 50, 100). "
-             "Ignored for correspondence. Default: 100.0",
+        "Ignored for correspondence. Default: 100.0",
     )
     parser.add_argument(
-        "--title", default="",
+        "--title",
+        default="",
         help="Override the figure suptitle. If empty, auto-generated from --results-dir.",
     )
     parser.add_argument(
-        "--out", default="sweep_plot",
-        help="Output filename prefix (no extension). "
-             "Final file: <out>_<metric>.png. Default: sweep_plot",
+        "--out",
+        default="sweep_plot",
+        help="Output filename prefix (no extension). Final file: <out>_<metric>.png. Default: sweep_plot",
     )
     args = parser.parse_args()
 
@@ -285,11 +296,14 @@ def main():
 
     ax_idx = 0
     if show_heatmap:
-        plot_heatmap(df, ylabel, axes[ax_idx]); ax_idx += 1
+        plot_heatmap(df, ylabel, axes[ax_idx])
+        ax_idx += 1
     if show_by_block:
-        plot_lines_by_block(df, ylabel, axes[ax_idx]); ax_idx += 1
+        plot_lines_by_block(df, ylabel, axes[ax_idx])
+        ax_idx += 1
     if show_by_timestep:
-        plot_lines_by_timestep(df, ylabel, axes[ax_idx]); ax_idx += 1
+        plot_lines_by_timestep(df, ylabel, axes[ax_idx])
+        ax_idx += 1
 
     suptitle = args.title if args.title else f"{Path(args.results_dir).name} sweep"
     fig.suptitle(suptitle, fontsize=13)

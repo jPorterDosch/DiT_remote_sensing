@@ -5,7 +5,7 @@
 #SBATCH --gpus-per-task=1
 #SBATCH --cpus-per-gpu=16
 #SBATCH --qos=campus-gpu
-#SBATCH --partition=campus-gpu
+#SBATCH --partition=campus-gpu-bigmem
 #SBATCH --time=1-00:00:00               # Wall time (days-hh:mm:ss)
 #SBATCH --job-name=sweep_eval_eurosat
 #SBATCH --output=logs/%x/%j.out
@@ -38,8 +38,8 @@ mkdir -p "$RESULTS_DIR"
 # t : [200, 260, 300, 400] — covers the expected peak and shoulders
 # k : [26, 27, 28, 29, 30] — neighbourhood of SPair's optimal k=28
 # ============================================================================
-T_VALUES=(260 300 400)
-K_VALUES=(28)
+T_VALUES=(200)
+K_VALUES=(26)
 
 TOTAL=$(( ${#T_VALUES[@]} * ${#K_VALUES[@]} ))
 echo "RESULTS_DIR: $RESULTS_DIR"
