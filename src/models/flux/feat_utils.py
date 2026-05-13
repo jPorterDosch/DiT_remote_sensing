@@ -434,7 +434,6 @@ def process_kps_pascal(kps):
 
 
 def load_pascal_data(path="data/PF-dataset-PASCAL", size=256, category="cat", split="test", subsample=None):
-
     def get_points(point_coords_list, idx):
         X = np.fromstring(point_coords_list.iloc[idx, 0], sep=";")
         Y = np.fromstring(point_coords_list.iloc[idx, 1], sep=";")

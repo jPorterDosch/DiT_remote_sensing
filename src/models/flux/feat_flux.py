@@ -38,7 +38,6 @@ def prepare(img):
 
 class Featurizer:
     def __init__(self, name="flux-dev", null_prompt="", device="cuda"):
-
         t5 = load_t5(device, max_length=512)
         clip = load_clip(device)
         model = load_flow_model(name, device=device)

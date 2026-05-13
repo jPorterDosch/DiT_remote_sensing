@@ -7,7 +7,7 @@
 #SBATCH --qos=campus-gpu
 #SBATCH --partition=campus-gpu-bigmem
 #SBATCH --time=1-00:00:00               # Wall time (days-hh:mm:ss)
-#SBATCH --job-name=sweep_eval_spair
+#SBATCH --job-name=sweep_eval
 #SBATCH --output=logs/%x/%j.out
 #SBATCH --error=logs/%x/%j.out
 
@@ -22,12 +22,14 @@ source "$PROJECT_ROOT/experiments/_common.sh" || {
 setup_environment
 
 echo "SAVE_DIR: $SAVE_DIR"
-echo "COMBINATIONS: 24  (6 timesteps × 4 block indices)"
+echo "COMBINATIONS: 16  (4 timesteps × 4 block indices, fine-grained around peak at k=28, t>=420)"
 countdown
 print_delim "## START"
 
-for t in 20 100 180 260 340 420; do
-    for k in 19 28 37 46; do
+# Coarse sweep showed peak at k=28, t=420 (accuracy still rising). Fine sweep: k∈[23,33] step 1,
+# t∈[300,550] step 50 to find where (if) accuracy plateaus or peaks above t=420.
+for t in 200 260 300; do
+    for k in 28; do
         echo "--- t=$t k=$k ---"
         python3 "$PROJECT_ROOT/eval.py" \
             --cd \
