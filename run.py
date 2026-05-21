@@ -6,8 +6,7 @@ import json
 import os
 import sys
 import warnings
-from dataclasses import asdict, dataclass, field, is_dataclass
-from typing import Any
+from dataclasses import asdict, dataclass, field
 
 _root = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(_root, "src"))  # src.data, src.models.*
@@ -22,8 +21,7 @@ import datasets  # noqa: F401  — triggers @register_dataset decorators
 import models  # noqa: F401  — resolves to src/models/, triggers @register_model decorators
 import tasks  # noqa: F401  — triggers @register_task decorators
 from registry import DATASETS, MODELS, TASKS
-
-from src.utils import seed_all
+from utils import seed_all, to_jsonable
 
 
 @dataclass
@@ -35,33 +33,25 @@ class ModelConfig:
 @dataclass
 class DatasetConfig:
     name: str = "eurosat"
-    path: str = "/dataset/EuroSAT"
+    path: str = "/lustre/isaac24/scratch/jdosch1/DeepLearning/datasets/EuroSAT"
 
-
-def _to_jsonable(value: Any) -> Any:
-    if is_dataclass(value):
-        return {k: _to_jsonable(v) for k, v in asdict(value).items()}
-
-    if isinstance(value, dict):
-        return {str(k): _to_jsonable(v) for k, v in sorted(value.items())}
-
-    if isinstance(value, (list, tuple)):
-        return [_to_jsonable(v) for v in value]
-
-    return value
+    def __post_init__(self) -> None:
+        if not os.path.exists(self.path):
+            raise ValueError(f"Dataset path '{self.path}' does not exist.")
 
 
 @dataclass
-class EvalConfig:
+class RunConfig:
     task: str = "classification"
     model: ModelConfig = field(default_factory=ModelConfig)
     dataset: DatasetConfig = field(default_factory=DatasetConfig)
 
     device: str = field(default_factory=lambda: "cuda" if torch.cuda.is_available() else "cpu")
 
-    save_dir: str | None = None  # if not specified, will be generated from config hash (see make_run_name())
+    # Root to save extracted features and trained classifiers. Name derived from config will be appended to this path so that multiple runs can be organized under the same directory.
+    save_dir: str = "./models"
     img_size: list[int] = field(default_factory=lambda: [224, 224])
-    t: int = 260  ###调参[1,1000]
+    t: int = 260  # Timestep index in range [1,1000]
     k: int | list[int] = (
         28  # [0, 57], for now, we can currently extract from multiple blocks, but have no aggregation methods implemented yet. Future work could explore this direction (e.g. concatenation, attention-based fusion, etc.
     )
@@ -72,7 +62,7 @@ class EvalConfig:
     captions_path: str = "spair_detailed_captions.json"
 
     ## classification
-    label_fractions: list[float] = field(default_factory=lambda: [1.0, 5.0, 10.0, 50.0, 100.0])
+    label_fraction: float = 1.0
     clf_epochs: int = 50
     clf_lr: float = 1e-3
     clf_batch_size: int = 256
@@ -82,8 +72,39 @@ class EvalConfig:
     overwrite_features: bool = False
     max_samples: int | None = None  # cap images per split for smoke tests; None = no limit
 
+    ## Diffusion/flow-matching training with LoRA
+    mask_ratio: float = 0.75
+    finetune_max_epochs: int = 10
+    finetune_bs: int = 1
+    use_gradient_accumulation: bool = True
+    gradient_accumulation_steps: int = 4
+    finetune_lr: float = 1e-3
+    # TODO: test higher values of max_train_steps, setting default low so we can get it running.
+    max_train_steps: int = 1000
+
+    # Timesteps for train and val logging
+    log_train_steps: int = 10
+    log_val_steps: int = 50
+
+    # Path to a saved LoRA checkpoint to load before eval/training (empty = base model)
+    lora_checkpoint: str = ""
+
+    # LoRA hyperparameters
+    lora_wd: float = 0.0
+    lora_rank: int = 4
+    lora_alpha: float = 16.0
+    lora_dropout: float = 0.0
+    wrap_output: bool = True  # whether to wrap the output projection in attention and/or MLP blocks with LoRA (in addition to the input projections, which are always wrapped). Future work could explore more flexible options for which projections to wrap.
+    guidance_scale: float = 3.5
+
+    # total_loss = flow_loss + mim_loss_weight * mim_loss. mim_loss_weight = the alpha
+    mim_loss_weight: float = 1.0
+
+    # Linear LR warmup to mitigate spikes early on
+    warmup_steps: int = 100
+
     def make_run_name(self) -> str:
-        payload = _to_jsonable(asdict(self))
+        payload = to_jsonable(asdict(self))
 
         dataset_name = payload["dataset"]["name"]
         model_name = payload["model"]["name"]
@@ -112,11 +133,13 @@ class EvalConfig:
         return f"{dataset_name}_{model_name}_{digest}+{seed}"
 
     def __post_init__(self) -> None:
-        if self.save_dir is None:
-            self.save_dir = self.make_run_name()
+        if self.label_fraction <= 0 or self.label_fraction > 1:
+            raise ValueError(f"label_fraction must be in the range (0, 1], got {self.label_fraction}")
 
 
-def main(cfg: EvalConfig) -> None:
+def main(cfg: RunConfig) -> None:
+    # Resolve save_dir for this run (after config is fully initialized and run name can be generated).
+    cfg.save_dir = os.path.join(cfg.save_dir, cfg.make_run_name())
     # Set global seed
     seed_all(cfg.seed)
     # Registering a new dataset is still necessary, but this solution keeps the entrypoint generic.
@@ -135,5 +158,5 @@ def main(cfg: EvalConfig) -> None:
 
 
 if __name__ == "__main__":
-    cfg = tyro.cli(EvalConfig)
+    cfg = tyro.cli(RunConfig)
     main(cfg)

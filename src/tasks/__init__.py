@@ -1,1 +1,1 @@
-from . import correspondence, classification  # noqa: F401
+from . import classification, correspondence, train_diffusion  # noqa: F401

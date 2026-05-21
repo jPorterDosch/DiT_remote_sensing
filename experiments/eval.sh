@@ -3,9 +3,10 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-task=1
-#SBATCH --cpus-per-gpu=16
+#SBATCH --cpus-per-gpu=8
+#SBATCH --mem=64G
 #SBATCH --qos=campus-gpu
-#SBATCH --partition=campus-gpu
+#SBATCH --partition=campus-gpu-bigmem
 #SBATCH --time=1-00:00:00               # Wall time (days-hh:mm:ss)
 #SBATCH --output=logs/%x/%j.out
 #SBATCH --error=logs/%x/%j.out
@@ -17,6 +18,26 @@ source "$PROJECT_ROOT/experiments/_common.sh" || {
 	echo "FATAL: Failed to source _common.sh" >&2; exit 1;
 }
 setup_environment
+
+# --- Conda ---
+if command -v conda &>/dev/null; then
+    eval "$(conda shell.bash hook 2>/dev/null)"
+else
+    for _conda_sh in \
+        "$HOME/miniconda3/etc/profile.d/conda.sh" \
+        "$HOME/anaconda3/etc/profile.d/conda.sh" \
+        "/opt/conda/etc/profile.d/conda.sh"; do
+        if [ -f "$_conda_sh" ]; then source "$_conda_sh"; break; fi
+    done
+fi
+conda activate DiTF
+
+PYTHON=$(which python3)
+echo "Python: $PYTHON  ($(${PYTHON} --version 2>&1))"
+${PYTHON} -c "import tyro" || { echo "FATAL: tyro not found in $PYTHON — check conda env" >&2; exit 1; }
+
+mkdir -p "$PROJECT_ROOT/logs/${SLURM_JOB_NAME:-eval}"
+
 # ============================================================================
 # SWEEP GRID
 # ============================================================================
@@ -51,6 +72,11 @@ setup_environment
 #     [model.ensemble-size]="1"
 #     -- remove clf-* and seed, drop --label-fractions from parallel command --
 # ============================================================================
+# To eval a fine-tuned model, add to params:
+#   [lora-checkpoint]="/lustre/isaac24/scratch/aabdelr5/diffusion-mim-ssl-fp_dl_s26/train_diffusion.sh/<run>/checkpoints/lora_best_stepN.pt"
+#   [lora-rank]="4"
+#   [lora-alpha]="16.0"
+#   [wrap-output]="true"
 declare -A params
 params=(
     [task]="classification"
@@ -66,6 +92,9 @@ params=(
     [clf-lr]="1e-3"
     [clf-batch-size]="256"
     [seed]="42"
+    [lora-checkpoint]="/lustre/isaac24/scratch/aabdelr5/diffusion-mim-ssl-fp_dl_s26/train_diffusion.sh/eurosat_flux_5394c2cb+42/checkpoints/lora_best_step3950.pt"
+    [lora-rank]="4"
+    [lora-alpha]="16.0"
 )
 # ============================================================================
 # BUILD AND SUMMARIZE
@@ -94,8 +123,9 @@ print_delim "## START"
 set -x
 # Baseline
 parallel -j $PARALLEL_JOBS --delay 15 --shuf --verbose \
-	python3 "$PROJECT_ROOT/eval.py" \
+	"$PYTHON" "$PROJECT_ROOT/run.py" \
         --cd \
+        --wrap-output \
         --label-fractions 1 5 10 50 100 \
         $SWEEP_PLACEHOLDERS \
     $SWEEP_VALUES

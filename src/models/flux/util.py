@@ -38,6 +38,7 @@ configs = {
         repo_flow="flux1-dev.safetensors",
         repo_ae="ae.safetensors",
         ckpt_path="/lustre/isaac24/scratch/jdosch1/DeepLearning/FLUX.1-dev/flux1-dev.safetensors",
+        # ckpt_path="/home/jdosch1/personal/DiTF/ditf_models/FLUX.1-dev/flux1-dev.safetensors",
         params=FluxParams(
             in_channels=64,
             vec_in_dim=768,
@@ -53,6 +54,7 @@ configs = {
             guidance_embed=True,
         ),
         ae_path="/lustre/isaac24/scratch/jdosch1/DeepLearning/FLUX.1-dev/ae.safetensors",
+        # ae_path="/home/jdosch1/personal/DiTF/ditf_models/FLUX.1-dev/ae.safetensors",
         ae_params=AutoEncoderParams(
             resolution=256,
             in_channels=3,
@@ -140,6 +142,7 @@ def load_t5(device: str | torch.device = "cuda", max_length: int = 512) -> HFEmb
     # TODO: update these paths to shared ISAAC directory when available.
     return HFEmbedder(
         "/lustre/isaac24/scratch/jdosch1/DeepLearning/t5-v1_1-xxl",
+        # "/home/jdosch1/personal/DiTF/ditf_models/t5-v1_1-xxl",
         max_length=max_length,
         torch_dtype=torch.bfloat16,
     ).to(device)
@@ -149,6 +152,7 @@ def load_clip(device: str | torch.device = "cuda") -> HFEmbedder:
     # TODO: update these paths to shared ISAAC directory when available.
     return HFEmbedder(
         "/lustre/isaac24/scratch/jdosch1/DeepLearning/clip-vit-large-patch14",
+        # "/home/jdosch1/personal/DiTF/ditf_models/clip-vit-large-patch14",
         max_length=77,
         torch_dtype=torch.bfloat16,
     ).to(device)

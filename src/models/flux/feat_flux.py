@@ -1,4 +1,5 @@
 import gc
+from abc import ABC, abstractmethod
 
 import torch
 from einops import rearrange, repeat
@@ -36,70 +37,72 @@ def prepare(img):
     return img, img_ids.to(img.device)
 
 
-class Featurizer:
-    def __init__(self, name="flux-dev", null_prompt="", device="cuda"):
-        t5 = load_t5(device, max_length=512)
-        clip = load_clip(device)
+# Refactor this as base class for Featurizer4Eval. Code copied from old repo deleted to avoid confusion.
+class Featurizer(ABC):
+    def __init__(
+        self,
+        name: str = "flux-dev",
+        null_prompt: str = "",
+        device: str = "cuda",
+        null_embed_path: str
+        | None = "./src/models/flux/null_embeddings.pt",  # TODO: cwd should be project root, but this could be made more robust.
+    ):
         model = load_flow_model(name, device=device)
         ae = load_ae(name, device=device)
-
-        # TODO: if captions are not needed for feature extraction (we currently are not including them), remove t5 and CLIP for memory savings
-        self.t5 = t5
-        self.clip = clip
         self.model = model
         self.ae = ae
 
-    @torch.no_grad()
-    def forward(self, img_tensor, prompt="", t=261, up_ft_index=1, ensemble_size=8):
-        """
-        Args:
-            img_tensor: should be a single torch tensor in the shape of [1, C, H, W] or [C, H, W]
-            prompt: the prompt to use, a string
-            t: the time step to use, should be an int in the range of [0, 1000]
-            up_ft_index: which upsampling block of the U-Net to extract feature, you can choose [0, 1, 2, 3]
-            ensemble_size: the number of repeated images used in the batch to extract features
-        Return:
-            unet_ft: a torch tensor in the shape of [1, c, h, w]
-        """
-        img_tensor = img_tensor.repeat(ensemble_size, 1, 1, 1).cuda()  # ensem, c, h, w
-        if prompt == self.null_prompt:
-            prompt_embeds = self.null_prompt_embeds
+        # TODO: if captions are not needed for feature extraction (we currently are not including them), remove t5 and CLIP for memory savings
+        if null_embed_path is None:
+            t5 = load_t5(device, max_length=512)
+            clip = load_clip(device)
+            self.t5 = t5
+            self.clip = clip
+            self.null_prompt_embeds = None
         else:
-            prompt_embeds = self.pipe._encode_prompt(
-                prompt=prompt,
-                device="cuda",
-                num_images_per_prompt=1,
-                do_classifier_free_guidance=False,
-            )  # [1, 77, dim]
-        prompt_embeds = prompt_embeds.repeat(ensemble_size, 1, 1)
-        unet_ft_all = self.pipe(
-            img_tensor=img_tensor,
-            t=t,
-            up_ft_indices=[up_ft_index],
-            prompt_embeds=prompt_embeds,
-        )
-        unet_ft = unet_ft_all["up_ft"][up_ft_index]  # ensem, c, h, w
-        unet_ft = unet_ft.mean(0, keepdim=True)  # 1,c,h,w
-        return unet_ft
+            self.t5 = None
+            self.clip = None
+            null_embed = torch.load(null_embed_path, weights_only=True)
+            self.null_prompt_embeds = null_embed["prompt_embeds"].to(device)
+            self.text_ids = null_embed["text_ids"].to(device)
+            self.vec = null_embed["vec"].to(device)
+
+        self.null_prompt = null_prompt
+
+    @abstractmethod
+    def forward(self, *args, **kwargs):
+        raise NotImplementedError
 
 
 class Featurizer4Eval(Featurizer):
-    def __init__(self, flux_id="flux-dev", null_prompt="", cat_list=[], ensemble_size=1):
-        super().__init__(flux_id, null_prompt)
+    def __init__(
+        self,
+        flux_id="flux-dev",
+        null_prompt="",
+        cat_list=None,
+        ensemble_size=1,
+    ):
+        super().__init__(name=flux_id, null_prompt=null_prompt)
 
-        ###For davis, we adopt prompt="a photo of a image."
-        cat_list.append("image")
+        if cat_list is None:
+            cat_list = []
 
         with torch.no_grad():
             cat2prompt_embeds = {}
             for cat in cat_list:
                 prompt = f"a photo of a {cat}"
-                prompt_embeds, text_ids, vec = prepare_txt(
-                    bs=ensemble_size, t5=self.t5, clip=self.clip, prompt=prompt
-                )
+
+                # Only run text encoder if null embeddings are not provided.
+                if self.null_prompt_embeds is not None:
+                    prompt_embeds = self.null_prompt_embeds
+                    text_ids = self.text_ids
+                    vec = self.vec
+                else:
+                    prompt_embeds, text_ids, vec = prepare_txt(
+                        bs=ensemble_size, t5=self.t5, clip=self.clip, prompt=prompt
+                    )
                 cat2prompt_embeds[cat] = (prompt_embeds, text_ids, vec)
             self.cat2prompt_embeds = cat2prompt_embeds
-            self.caption_cache = {}
 
         gc.collect()
         torch.cuda.empty_cache()
@@ -109,7 +112,7 @@ class Featurizer4Eval(Featurizer):
         self,
         args,
         img_tensor,
-        caption="a photo of a image",
+        caption="",
         category="image",
         timestep=261,
         block_idx=1,
@@ -125,24 +128,29 @@ class Featurizer4Eval(Featurizer):
 
         ############ caption "a photo of a {cat}" #####################
         # prompt_embeds, text_ids, vec = self.cat2prompt_embeds[category]
-
-        cache_key = (caption, ensemble_size)
-
-        if cache_key not in self.caption_cache:
+        if self.null_prompt_embeds is None:
             # detailed caption generated by pretrained MLLM. Bring about 0.3% gain for flux
             prompt_embeds, text_ids, vec = prepare_txt(
                 bs=ensemble_size, t5=self.t5, clip=self.clip, prompt=caption
             )
-            self.caption_cache[cache_key] = (
-                prompt_embeds.detach(),
-                text_ids.detach(),
-                vec.detach(),
-            )
+        # Should save significant memory
         else:
-            prompt_embeds, text_ids, vec = self.caption_cache[cache_key]
-            prompt_embeds = prompt_embeds.to(img_tensor.device)
-            text_ids = text_ids.to(img_tensor.device)
-            vec = vec.to(img_tensor.device)
+            prompt_embeds, text_ids, vec = (
+                self.null_prompt_embeds,
+                self.text_ids,
+                self.vec,
+            )
+
+        if prompt_embeds.shape[0] == 1 and ensemble_size > 1:
+            prompt_embeds = repeat(prompt_embeds, "1 ... -> bs ...", bs=ensemble_size)
+        if text_ids.shape[0] == 1 and ensemble_size > 1:
+            text_ids = repeat(text_ids, "1 ... -> bs ...", bs=ensemble_size)
+        if vec.shape[0] == 1 and ensemble_size > 1:
+            vec = repeat(vec, "1 ... -> bs ...", bs=ensemble_size)
+
+        prompt_embeds = prompt_embeds.to(img_tensor.device)
+        text_ids = text_ids.to(img_tensor.device)
+        vec = vec.to(img_tensor.device)
 
         device = img_tensor.device
         t = timestep / 1000
