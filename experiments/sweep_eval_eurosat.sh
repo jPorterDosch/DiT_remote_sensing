@@ -1,12 +1,12 @@
 #!/bin/bash
-#SBATCH -A acf-utk0011
+#SBATCH -A isaac-utk0256
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-task=1
 #SBATCH --cpus-per-gpu=16
-#SBATCH --qos=campus-gpu
-#SBATCH --partition=campus-gpu-bigmem
-#SBATCH --time=1-00:00:00               # Wall time (days-hh:mm:ss)
+#SBATCH --qos=ai-tenn
+#SBATCH --partition=ai-tenn
+#SBATCH --time=3-00:00:00               # Wall time (days-hh:mm:ss)
 #SBATCH --job-name=sweep_eval_eurosat
 #SBATCH --output=logs/%x/%j.out
 #SBATCH --error=logs/%x/%j.out
@@ -21,10 +21,10 @@ source "$PROJECT_ROOT/experiments/_common.sh" || {
 }
 setup_environment
 
-# Results always land in the project tree (not scratch) so plot_sweep.py can
-# find them without copying. Each (t, k) pair gets its own subdirectory so
+# Saved so plot_sweep.py can later find and use the features. 
+# Each (t, k) pair gets its own subdirectory so
 # feature caches (train_feats.npz / test_feats.npz) don't collide across runs.
-RESULTS_DIR="$PROJECT_ROOT/layers_cat/eurosat_flux"
+RESULTS_DIR="$SAVE_DIR/layers_cat/eurosat_flux"
 mkdir -p "$RESULTS_DIR"
 
 # ============================================================================
@@ -38,8 +38,8 @@ mkdir -p "$RESULTS_DIR"
 # t : [200, 260, 300, 400] — covers the expected peak and shoulders
 # k : [26, 27, 28, 29, 30] — neighbourhood of SPair's optimal k=28
 # ============================================================================
-T_VALUES=(200)
-K_VALUES=(26)
+T_VALUES=(200 300 400 500)
+K_VALUES=(26 27 28 29 30)
 
 TOTAL=$(( ${#T_VALUES[@]} * ${#K_VALUES[@]} ))
 echo "RESULTS_DIR: $RESULTS_DIR"
