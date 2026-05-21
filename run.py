@@ -35,6 +35,10 @@ class DatasetConfig:
     name: str = "eurosat"
     path: str = "/lustre/isaac24/scratch/jdosch1/DeepLearning/datasets/EuroSAT"
 
+    def __post_init__(self) -> None:
+        if not os.path.exists(self.path):
+            raise ValueError(f"Dataset path '{self.path}' does not exist.")
+
 
 @dataclass
 class RunConfig:
@@ -47,7 +51,7 @@ class RunConfig:
     # Root to save extracted features and trained classifiers. Name derived from config will be appended to this path so that multiple runs can be organized under the same directory.
     save_dir: str = "./models"
     img_size: list[int] = field(default_factory=lambda: [224, 224])
-    t: int = 260  ###调参[1,1000]
+    t: int = 260  # Timestep index in range [1,1000]
     k: int | list[int] = (
         28  # [0, 57], for now, we can currently extract from multiple blocks, but have no aggregation methods implemented yet. Future work could explore this direction (e.g. concatenation, attention-based fusion, etc.
     )
@@ -58,7 +62,7 @@ class RunConfig:
     captions_path: str = "spair_detailed_captions.json"
 
     ## classification
-    label_fractions: list[float] = field(default_factory=lambda: [1.0, 5.0, 10.0, 50.0, 100.0])
+    label_fraction: float = 1.0
     clf_epochs: int = 50
     clf_lr: float = 1e-3
     clf_batch_size: int = 256
@@ -68,8 +72,10 @@ class RunConfig:
     overwrite_features: bool = False
 
     ## Diffusion/flow-matching training with LoRA
+    mask_ratio: float = 0.75
     finetune_max_epochs: int = 10
     finetune_bs: int = 1
+    use_gradient_accumulation: bool = True
     gradient_accumulation_steps: int = 4
     finetune_lr: float = 1e-3
     # TODO: test higher values of max_train_steps, setting default low so we can get it running.
@@ -79,6 +85,9 @@ class RunConfig:
     log_train_steps: int = 10
     log_val_steps: int = 50
 
+    # Path to a saved LoRA checkpoint to load before eval/training (empty = base model)
+    lora_checkpoint: str = ""
+
     # LoRA hyperparameters
     lora_wd: float = 0.0
     lora_rank: int = 4
@@ -86,6 +95,12 @@ class RunConfig:
     lora_dropout: float = 0.0
     wrap_output: bool = True  # whether to wrap the output projection in attention and/or MLP blocks with LoRA (in addition to the input projections, which are always wrapped). Future work could explore more flexible options for which projections to wrap.
     guidance_scale: float = 3.5
+
+    # total_loss = flow_loss + mim_loss_weight * mim_loss. mim_loss_weight = the alpha
+    mim_loss_weight: float = 1.0
+
+    # Linear LR warmup to mitigate spikes early on
+    warmup_steps: int = 100
 
     def make_run_name(self) -> str:
         payload = to_jsonable(asdict(self))
@@ -117,7 +132,8 @@ class RunConfig:
         return f"{dataset_name}_{model_name}_{digest}+{seed}"
 
     def __post_init__(self) -> None:
-        pass
+        if self.label_fraction <= 0 or self.label_fraction > 1:
+            raise ValueError(f"label_fraction must be in the range (0, 1], got {self.label_fraction}")
 
 
 def main(cfg: RunConfig) -> None:
