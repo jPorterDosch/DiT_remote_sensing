@@ -70,6 +70,7 @@ class RunConfig:
     batch_size: int = 1
     num_workers: int = 4
     overwrite_features: bool = False
+    max_samples: int | None = None  # cap images per split for smoke tests; None = no limit
 
     ## Diffusion/flow-matching training with LoRA
     mask_ratio: float = 0.75
