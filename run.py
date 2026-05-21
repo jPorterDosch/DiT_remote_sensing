@@ -35,10 +35,6 @@ class DatasetConfig:
     name: str = "eurosat"
     path: str = "/lustre/isaac24/scratch/jdosch1/DeepLearning/datasets/EuroSAT"
 
-    def __post_init__(self) -> None:
-        if not os.path.exists(self.path):
-            raise ValueError(f"Dataset path '{self.path}' does not exist.")
-
 
 @dataclass
 class RunConfig:
@@ -136,12 +132,101 @@ class RunConfig:
         if self.label_fraction <= 0 or self.label_fraction > 1:
             raise ValueError(f"label_fraction must be in the range (0, 1], got {self.label_fraction}")
 
+        if self.batch_size <= 0:
+            raise ValueError(f"batch_size must be positive, got {self.batch_size}")
+
+        if self.num_workers < 0:
+            raise ValueError(f"num_workers must be non-negative, got {self.num_workers}")
+
+        if len(self.img_size) != 2 or any(x <= 0 for x in self.img_size):
+            raise ValueError(f"img_size must contain exactly two positive integers, got {self.img_size}")
+
+        if self.t < 1 or self.t > 1000:
+            raise ValueError(f"t must be in the range [1, 1000], got {self.t}")
+
+        if isinstance(self.k, int):
+            if self.k < 0 or self.k > 57:
+                raise ValueError(f"k must be in the range [0, 57], got {self.k}")
+        else:
+            bad_k = [x for x in self.k if x < 0 or x > 57]
+            if bad_k:
+                raise ValueError(
+                    f"all k values must be in the range [0, 57], got invalid values {bad_k}"
+                )
+
+        if any(ch < 0 for ch in self.discard_channels):
+            raise ValueError(f"discard_channels must be non-negative, got {self.discard_channels}")
+
+        if self.clf_epochs <= 0:
+            raise ValueError(f"clf_epochs must be positive, got {self.clf_epochs}")
+
+        if self.clf_lr <= 0:
+            raise ValueError(f"clf_lr must be positive, got {self.clf_lr}")
+
+        if self.clf_batch_size <= 0:
+            raise ValueError(f"clf_batch_size must be positive, got {self.clf_batch_size}")
+
+        if self.max_samples is not None and self.max_samples <= 0:
+            raise ValueError(f"max_samples must be positive or None, got {self.max_samples}")
+
+        if self.mask_ratio <= 0 or self.mask_ratio >= 1:
+            raise ValueError(f"mask_ratio must be in the range (0, 1), got {self.mask_ratio}")
+
+        if self.finetune_max_epochs <= 0:
+            raise ValueError(f"finetune_max_epochs must be positive, got {self.finetune_max_epochs}")
+
+        if self.finetune_bs <= 0:
+            raise ValueError(f"finetune_bs must be positive, got {self.finetune_bs}")
+
+        if self.gradient_accumulation_steps <= 0:
+            raise ValueError(
+                f"gradient_accumulation_steps must be positive, got {self.gradient_accumulation_steps}"
+            )
+
+        if self.finetune_lr <= 0:
+            raise ValueError(f"finetune_lr must be positive, got {self.finetune_lr}")
+
+        if self.max_train_steps <= 0:
+            raise ValueError(f"max_train_steps must be positive, got {self.max_train_steps}")
+
+        if self.log_train_steps <= 0:
+            raise ValueError(f"log_train_steps must be positive, got {self.log_train_steps}")
+
+        if self.log_val_steps <= 0:
+            raise ValueError(f"log_val_steps must be positive, got {self.log_val_steps}")
+
+        if self.warmup_steps < 0:
+            raise ValueError(f"warmup_steps must be non-negative, got {self.warmup_steps}")
+
+        if self.warmup_steps >= self.max_train_steps:
+            raise ValueError(
+                f"warmup_steps must be less than max_train_steps, got "
+                f"{self.warmup_steps} >= {self.max_train_steps}"
+            )
+
+        if self.lora_checkpoint and not os.path.isfile(self.lora_checkpoint):
+            raise ValueError(f"lora_checkpoint does not exist: {self.lora_checkpoint}")
+
+        if self.lora_wd < 0:
+            raise ValueError(f"lora_wd must be non-negative, got {self.lora_wd}")
+
+        if self.lora_rank <= 0:
+            raise ValueError(f"lora_rank must be positive, got {self.lora_rank}")
+
+        if self.lora_alpha <= 0:
+            raise ValueError(f"lora_alpha must be positive, got {self.lora_alpha}")
+
+        if self.lora_dropout < 0 or self.lora_dropout >= 1:
+            raise ValueError(f"lora_dropout must be in the range [0, 1), got {self.lora_dropout}")
+
+        if self.guidance_scale <= 0:
+            raise ValueError(f"guidance_scale must be positive, got {self.guidance_scale}")
+
+        if self.mim_loss_weight < 0:
+            raise ValueError(f"mim_loss_weight must be non-negative, got {self.mim_loss_weight}")
+
 
 def main(cfg: RunConfig) -> None:
-    # Resolve save_dir for this run (after config is fully initialized and run name can be generated).
-    cfg.save_dir = os.path.join(cfg.save_dir, cfg.make_run_name())
-    # Set global seed
-    seed_all(cfg.seed)
     # Registering a new dataset is still necessary, but this solution keeps the entrypoint generic.
     if cfg.dataset.name not in DATASETS:
         raise ValueError(f"Unknown dataset '{cfg.dataset.name}'. Registered: {list(DATASETS)}")
@@ -149,6 +234,19 @@ def main(cfg: RunConfig) -> None:
         raise ValueError(f"Unknown model '{cfg.model.name}'. Registered: {list(MODELS)}")
     if cfg.task not in TASKS:
         raise ValueError(f"Unknown task '{cfg.task}'. Registered: {list(TASKS)}")
+    if not os.path.exists(cfg.dataset.path):
+        raise ValueError(f"Dataset path '{cfg.dataset.path}' does not exist.")
+
+    # Resolve save_dir for this run (after config is fully initialized and run name can be generated).
+    cfg.save_dir = os.path.join(cfg.save_dir, cfg.make_run_name())
+
+    # Check for save_dir existence, and error if it already exists to avoid accidental overwriting.
+    if os.path.exists(cfg.save_dir):
+        raise ValueError(f"Save directory '{cfg.save_dir}' already exists. Please change the config or remove the existing directory to avoid overwriting previous results.")
+    
+    os.makedirs(cfg.save_dir, exist_ok=True)
+    # Set global seed
+    seed_all(cfg.seed)
 
     dataset = DATASETS[cfg.dataset.name](cfg)
     model = MODELS[cfg.model.name](cfg, dataset.category_list)
