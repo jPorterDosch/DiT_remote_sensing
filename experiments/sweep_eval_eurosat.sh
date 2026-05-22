@@ -50,7 +50,7 @@ print_delim "## START"
 for t in "${T_VALUES[@]}"; do
     for k in "${K_VALUES[@]}"; do
         echo "--- t=$t k=$k ---"
-        python3 "$PROJECT_ROOT/eval.py" \
+        python3 "$PROJECT_ROOT/run.py" \
             --task classification \
             --dataset.name eurosat \
             --dataset.path "/lustre/isaac24/scratch/jdosch1/DeepLearning/datasets/EuroSAT" \
