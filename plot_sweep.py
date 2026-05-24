@@ -20,22 +20,46 @@ Usage:
     python plot_sweep.py --results-dir layers_cat/eurosat_flux --metric top1_accuracy
 
     # Classification, low-shot (10% labels)
-    python plot_sweep.py --results-dir layers_cat/eurosat_flux --metric macro_f1 --frac 10
+    python plot_sweep.py --results-dir layers_cat/eurosat_flux --metric macro_f1 --label_fraction 0.1
 
     # Override title and output prefix
     python plot_sweep.py --results-dir layers_cat/eurosat_flux --metric top1_accuracy \\
         --title "EuroSAT sweep — FLUX" --out plots/eurosat_sweep
 """
 
-import argparse
+from dataclasses import dataclass
 import json
 import re
 from pathlib import Path
+from typing import Literal
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import tyro
 
+
+@dataclass(frozen=True)
+class PlotConfig:
+    """Plot sweep results (correspondence or classification) over t × k."""
+
+    results_dir: str = "layers_cat/flux"
+    """Directory searched recursively for result JSON files."""
+
+    task: Literal["auto", "correspondence", "classification"] = "auto"
+    """Task type: 'auto', 'correspondence', or 'classification'."""
+
+    metric: str = "image"
+    """Metric to plot. Correspondence: image/point. Classification: top1_accuracy/macro_f1/weighted_f1."""
+
+    label_fraction: float = 1.0
+    """Label fraction for classification as a proportion, e.g. 0.1, 0.5, 1.0."""
+
+    title: str = ""
+    """Override figure suptitle. If empty, auto-generated from --results-dir."""
+
+    out: str = "sweep_plot"
+    """Output filename prefix. Final file: <out>_<metric>.png."""
 
 # ---------------------------------------------------------------------------
 # Filename parsing
@@ -74,11 +98,11 @@ def detect_task(data: dict) -> str:
     return "classification"
 
 
-def get_metric_label(task: str, metric: str, frac: float | None) -> str:
+def get_metric_label(task: str, metric: str, label_fraction: float | None) -> str:
     """Human-readable y-axis / title label."""
     if task == "correspondence":
         return f"Mean PCK@0.1 ({metric})"
-    frac_str = f" ({frac:.0f}% labels)" if frac is not None else ""
+    frac_str = f" ({label_fraction * 100:.0f}% labels)" if label_fraction is not None else ""
     labels = {
         "top1_accuracy": f"Top-1 Accuracy{frac_str}",
         "macro_f1": f"Macro F1{frac_str}",
@@ -140,7 +164,7 @@ def load_results(
 
         val = extract_value(data, actual_task, metric, frac)
         if val is None:
-            print(f"  skipping (metric '{metric}' not found at frac={frac}): {json_path.name}")
+            print(f"  skipping (metric '{metric}' not found at label_fraction={frac}): {json_path.name}")
             continue
 
         dedup_key = (meta["t"], meta["k"], meta.get("seed"))
@@ -154,7 +178,7 @@ def load_results(
     if not rows:
         raise FileNotFoundError(
             f"No usable result JSONs found under '{results_dir}' "
-            f"(task={task}, metric='{metric}', frac={frac})."
+            f"(task={task}, metric='{metric}', label_fraction={frac})."
         )
 
     df = pd.DataFrame(rows)
@@ -228,54 +252,13 @@ def plot_lines_by_timestep(df: pd.DataFrame, ylabel: str, ax: plt.Axes) -> None:
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Plot sweep results (correspondence or classification) over t × k.",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=__doc__,
-    )
-    parser.add_argument(
-        "--results-dir",
-        default="layers_cat/flux",
-        help="Directory (searched recursively) containing result JSON files. Default: layers_cat/flux",
-    )
-    parser.add_argument(
-        "--task",
-        default="auto",
-        choices=["auto", "correspondence", "classification"],
-        help="Force task type, or 'auto' to detect from JSON structure.",
-    )
-    parser.add_argument(
-        "--metric",
-        default="image",
-        help="Metric to plot. "
-        "Correspondence: 'image' or 'point' (→ Mean PCK@0.1). "
-        "Classification: 'top1_accuracy', 'macro_f1', 'weighted_f1'. "
-        "Default: image",
-    )
-    parser.add_argument(
-        "--frac",
-        type=float,
-        default=100.0,
-        help="Label fraction %% for classification results (e.g. 10, 50, 100). "
-        "Ignored for correspondence. Default: 100.0",
-    )
-    parser.add_argument(
-        "--title",
-        default="",
-        help="Override the figure suptitle. If empty, auto-generated from --results-dir.",
-    )
-    parser.add_argument(
-        "--out",
-        default="sweep_plot",
-        help="Output filename prefix (no extension). Final file: <out>_<metric>.png. Default: sweep_plot",
-    )
-    args = parser.parse_args()
+    args = tyro.cli(PlotConfig)
 
     print(f"Loading results from '{args.results_dir}' ...")
-    df = load_results(args.results_dir, args.task, args.metric, args.frac)
+    df = load_results(args.results_dir, args.task, args.metric, args.label_fraction)
 
     task = df["task"].iloc[0]
-    ylabel = get_metric_label(task, args.metric, args.frac if task == "classification" else None)
+    ylabel = get_metric_label(task, args.metric, args.label_fraction if task == "classification" else None)
 
     unique_t = df["t"].nunique()
     unique_k = df["k"].nunique()

@@ -59,8 +59,7 @@ for t in "${T_VALUES[@]}"; do
             --model.ensemble-size 8 \
             --cd \
             --t "$t" \
-            --k "$k" \
-            --save-dir "$RESULTS_DIR/t${t}_k${k}"
+            --k "$k"
     done
 done
 
@@ -70,14 +69,14 @@ print_delim "## DONE"
 # PLOTTING (runs after sweep completes)
 # ============================================================================
 # Default metric is top1_accuracy at 100% labels.
-# Re-run manually with --metric macro_f1 --frac 10 etc. for low-shot views.
+# Re-run manually with --metric macro_f1 --label_fraction 0.1 etc. for low-shot views.
 # ============================================================================
 echo "Generating sweep plots..."
 python3 "$PROJECT_ROOT/plot_sweep.py" \
     --results-dir "$RESULTS_DIR" \
     --task classification \
     --metric top1_accuracy \
-    --frac 100 \
+    --label_fraction 1.0 \
     --title "EuroSAT sweep — flux (100% labels)" \
     --out "$PROJECT_ROOT/sweep_plot_eurosat"
 
