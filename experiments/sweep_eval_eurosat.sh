@@ -21,12 +21,6 @@ source "$PROJECT_ROOT/experiments/_common.sh" || {
 }
 setup_environment
 
-# Saved so plot_sweep.py can later find and use the features. 
-# Each (t, k) pair gets its own subdirectory so
-# feature caches (train_feats.npz / test_feats.npz) don't collide across runs.
-RESULTS_DIR="$SAVE_DIR/layers_cat/eurosat_flux"
-mkdir -p "$RESULTS_DIR"
-
 # ============================================================================
 # SWEEP GRID
 # ============================================================================
@@ -46,6 +40,7 @@ echo "RESULTS_DIR: $RESULTS_DIR"
 echo "COMBINATIONS: $TOTAL  (${#T_VALUES[@]} timesteps × ${#K_VALUES[@]} block indices)"
 countdown
 print_delim "## START"
+
 
 for t in "${T_VALUES[@]}"; do
     for k in "${K_VALUES[@]}"; do
@@ -71,9 +66,14 @@ print_delim "## DONE"
 # Default metric is top1_accuracy at 100% labels.
 # Re-run manually with --metric macro_f1 --label_fraction 0.1 etc. for low-shot views.
 # ============================================================================
+
+# Use $SAVE_DIR so plot_sweep.py can later find and use the features. 
+# Each (t, k) pair gets its own subdirectory so
+# feature caches (train_feats.npz / test_feats.npz) don't collide across runs.
+
 echo "Generating sweep plots..."
 python3 "$PROJECT_ROOT/plot_sweep.py" \
-    --results-dir "$RESULTS_DIR" \
+    --results-dir "$SAVE_DIR" \
     --task classification \
     --metric top1_accuracy \
     --label_fraction 1.0 \

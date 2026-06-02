@@ -27,9 +27,9 @@ Usage:
         --title "EuroSAT sweep — FLUX" --out plots/eurosat_sweep
 """
 
-from dataclasses import dataclass
 import json
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
@@ -60,6 +60,7 @@ class PlotConfig:
 
     out: str = "sweep_plot"
     """Output filename prefix. Final file: <out>_<metric>.png."""
+
 
 # ---------------------------------------------------------------------------
 # Filename parsing
@@ -102,7 +103,9 @@ def get_metric_label(task: str, metric: str, label_fraction: float | None) -> st
     """Human-readable y-axis / title label."""
     if task == "correspondence":
         return f"Mean PCK@0.1 ({metric})"
-    frac_str = f" ({label_fraction * 100:.0f}% labels)" if label_fraction is not None else ""
+    frac_str = (
+        f" ({label_fraction * 100:.0f}% labels)" if label_fraction is not None else ""
+    )
     labels = {
         "top1_accuracy": f"Top-1 Accuracy{frac_str}",
         "macro_f1": f"Macro F1{frac_str}",
@@ -158,19 +161,24 @@ def load_results(
 
         # enforce task filter if explicitly set
         if task != "auto" and detected != task:
-            print(f"  skipping (task mismatch — expected {task}, got {detected}): {json_path.name}")
+            print(
+                f"  skipping (task mismatch — expected {task}, got {detected}): {json_path.name}"
+            )
             continue
         actual_task = detected
 
         val = extract_value(data, actual_task, metric, frac)
         if val is None:
-            print(f"  skipping (metric '{metric}' not found at label_fraction={frac}): {json_path.name}")
+            print(
+                f"  skipping (metric '{metric}' not found at label_fraction={frac}): {json_path.name}"
+            )
             continue
 
         dedup_key = (meta["t"], meta["k"], meta.get("seed"))
         if dedup_key in seen:
-            print(f"  skipping (duplicate t/k/seed): {json_path.name}")
-            continue
+            raise ValueError(
+                f"  skipping (duplicate t/k/seed): {json_path.name}. Consider renaming experiment script to avoid collisions."
+            )
         seen.add(dedup_key)
 
         rows.append({**meta, "value": val, "task": actual_task})
@@ -183,7 +191,11 @@ def load_results(
 
     df = pd.DataFrame(rows)
     print(f"  {len(df)} result(s) loaded  [task={df['task'].iloc[0]}]")
-    print(df[["t", "k", "e", "seed", "value"]].sort_values(["t", "k"]).to_string(index=False))
+    print(
+        df[["t", "k", "e", "seed", "value"]]
+        .sort_values(["t", "k"])
+        .to_string(index=False)
+    )
     return df
 
 
@@ -220,7 +232,15 @@ def plot_heatmap(df: pd.DataFrame, ylabel: str, ax: plt.Axes) -> None:
         for j, k_val in enumerate(pivot.columns):
             v = pivot.loc[t_val, k_val]
             if not np.isnan(v):
-                ax.text(j, i, f"{v:.1f}", ha="center", va="center", fontsize=8, color="black")
+                ax.text(
+                    j,
+                    i,
+                    f"{v:.1f}",
+                    ha="center",
+                    va="center",
+                    fontsize=8,
+                    color="black",
+                )
 
 
 def plot_lines_by_block(df: pd.DataFrame, ylabel: str, ax: plt.Axes) -> None:
@@ -258,7 +278,9 @@ def main():
     df = load_results(args.results_dir, args.task, args.metric, args.label_fraction)
 
     task = df["task"].iloc[0]
-    ylabel = get_metric_label(task, args.metric, args.label_fraction if task == "classification" else None)
+    ylabel = get_metric_label(
+        task, args.metric, args.label_fraction if task == "classification" else None
+    )
 
     unique_t = df["t"].nunique()
     unique_k = df["k"].nunique()

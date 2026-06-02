@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 import torch
 from einops import rearrange, repeat
 
-from .util import load_ae, load_clip, load_flow_model, load_t5
+from .util import load_ae, load_flow_model
 
 
 def prepare_txt(bs, t5, clip, prompt, device="cuda"):
@@ -52,13 +52,15 @@ class Featurizer(ABC):
         self.model = model
         self.ae = ae
 
-        # TODO: if captions are not needed for feature extraction (we currently are not including them), remove t5 and CLIP for memory savings
         if null_embed_path is None:
-            t5 = load_t5(device, max_length=512)
-            clip = load_clip(device)
-            self.t5 = t5
-            self.clip = clip
-            self.null_prompt_embeds = None
+            raise ValueError(
+                "null_embed_path must be provided -- for memory savings, t5 and clip are not supported currently."
+            )
+            # t5 = load_t5(device, max_length=512)
+            # clip = load_clip(device)
+            # self.t5 = t5
+            # self.clip = clip
+            # self.null_prompt_embeds = None
         else:
             self.t5 = None
             self.clip = None
@@ -173,7 +175,9 @@ class Featurizer4Eval(Featurizer):
             img, img_ids = prepare(img=latents_noisy)
 
             t_vec = torch.full((img.shape[0],), t, dtype=img.dtype, device=img.device)
-            guidance_vec = torch.full((img.shape[0],), guidance, device=img.device, dtype=img.dtype)
+            guidance_vec = torch.full(
+                (img.shape[0],), guidance, device=img.device, dtype=img.dtype
+            )
 
             prompt_embeds_i = prompt_embeds[i : i + 1]
             text_ids_i = text_ids[i : i + 1]
