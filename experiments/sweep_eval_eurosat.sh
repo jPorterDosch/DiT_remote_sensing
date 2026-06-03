@@ -49,9 +49,10 @@ for t in "${T_VALUES[@]}"; do
             --task classification \
             --dataset.name eurosat \
             --dataset.path "/lustre/isaac24/scratch/jdosch1/DeepLearning/datasets/EuroSAT" \
-            --img-size 224 224 \
+            --img_size 224 224 \
             --model.name flux \
             --model.ensemble-size 8 \
+            --save_dir "$SAVE_DIR" \
             --cd \
             --t "$t" \
             --k "$k"
