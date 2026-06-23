@@ -1,3 +1,5 @@
 src/models/flux/_version.py
 src/models/flux/__pycache__
 src/models/flux/modules/__pycache__
+data/*
+.secrets

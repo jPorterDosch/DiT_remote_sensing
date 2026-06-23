@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import numpy as np
 import torch
 import torch.nn.functional as F
 from einops import repeat
-from torch.utils.tensorboard import SummaryWriter
+import wandb
 
 from models.flux.adapter import FluxModel
 from models.flux.feat_flux import Featurizer4Eval, prepare
@@ -449,9 +448,6 @@ class FinetuneDiffusionTask:
         featurizer_model: Featurizer4Eval = model._inner
         device = torch.device(cfg.device)
 
-        tb_dir = os.path.join(cfg.save_dir, "tensorboard_logs")
-        writer = SummaryWriter(log_dir=tb_dir)
-
         best_val_loss = float("inf")
 
         # Move Flux and VAE to GPU; VAE stays in eval and its weights stay frozen.
@@ -565,8 +561,7 @@ class FinetuneDiffusionTask:
             last_train_metrics = step_train_metrics
 
             if global_step % log_train_steps == 0:
-                for key, value in last_train_metrics.items():
-                    writer.add_scalar(key, value, global_step)
+                wandb.log(last_train_metrics, step=global_step)
 
             if global_step % log_val_steps == 0 or global_step == cfg.max_train_steps:
                 val_metrics = _validate_diffusion(
@@ -582,8 +577,7 @@ class FinetuneDiffusionTask:
                 )
                 last_val_metrics = val_metrics
 
-                for key, value in val_metrics.items():
-                    writer.add_scalar(key, value, global_step)
+                wandb.log(val_metrics, step=global_step)
 
                 history.append(
                     {
@@ -682,12 +676,9 @@ class FinetuneDiffusionTask:
             "per_class_f1": per_class_f1_dict,
         }
 
-        # Log to TensorBoard under "probe/" prefix for easy comparison across runs with different label fractions.
-        # NOTE: these will only have 1 timestep.
-        log_scalars_recursive(writer, "probe", probe_results, step=0)
+        log_scalars_recursive("probe", probe_results, step=0)
 
         capture.remove()
-        writer.close()
 
         return {
             "history": history,

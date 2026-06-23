@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.join(_root, "src", "models"))  # flux.* internal impo
 
 import torch
 import tyro
+import wandb
 
 warnings.filterwarnings("ignore")
 
@@ -99,6 +100,10 @@ class RunConfig:
     # Linear LR warmup to mitigate spikes early on
     warmup_steps: int = 100
 
+    # W&B logging — fill in after account/project creation
+    wandb_entity: str = "jporterdosch-university-of-tennessee-knoxville"
+    wandb_project: str = "DiT_remote_sensing"
+
     def make_run_name(self) -> str:
         payload = to_jsonable(asdict(self))
 
@@ -112,6 +117,8 @@ class RunConfig:
             "device",
             "num_workers",
             "overwrite_features",
+            "wandb_entity",
+            "wandb_project",
         }
 
         for k in blacklist:
@@ -150,9 +157,7 @@ class RunConfig:
         else:
             bad_k = [x for x in self.k if x < 0 or x > 57]
             if bad_k:
-                raise ValueError(
-                    f"all k values must be in the range [0, 57], got invalid values {bad_k}"
-                )
+                raise ValueError(f"all k values must be in the range [0, 57], got invalid values {bad_k}")
 
         if any(ch < 0 for ch in self.discard_channels):
             raise ValueError(f"discard_channels must be non-negative, got {self.discard_channels}")
@@ -242,17 +247,28 @@ def main(cfg: RunConfig) -> None:
 
     # Check for save_dir existence, and error if it already exists to avoid accidental overwriting.
     if os.path.exists(cfg.save_dir):
-        raise ValueError(f"Save directory '{cfg.save_dir}' already exists. Please change the config or remove the existing directory to avoid overwriting previous results.")
-    
+        raise ValueError(
+            f"Save directory '{cfg.save_dir}' already exists. Please change the config or remove the existing directory to avoid overwriting previous results."
+        )
+
     os.makedirs(cfg.save_dir, exist_ok=True)
     # Set global seed
     seed_all(cfg.seed)
+
+    wandb.init(
+        entity=cfg.wandb_entity,
+        project=cfg.wandb_project,
+        name=cfg.make_run_name(),
+        config=asdict(cfg),
+    )
 
     dataset = DATASETS[cfg.dataset.name](cfg)
     model = MODELS[cfg.model.name](cfg, dataset.category_list)
     task = TASKS[cfg.task]()
 
     task.run(cfg, model, dataset)
+
+    wandb.finish()
 
 
 if __name__ == "__main__":
