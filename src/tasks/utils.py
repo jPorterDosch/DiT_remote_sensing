@@ -1,5 +1,6 @@
 import time
 
+import wandb
 import numpy as np
 import torch
 import torch.nn as nn
@@ -38,14 +39,19 @@ class MLPProbe(nn.Module):
         return self.net(x)
 
 
-def log_scalars_recursive(writer, prefix, values, step=0):
+def _flatten_scalars_into(prefix, values, out):
     for key, value in values.items():
         tag = f"{prefix}/{key}"
-
         if isinstance(value, dict):
-            log_scalars_recursive(writer, tag, value, step)
+            _flatten_scalars_into(tag, value, out)
         else:
-            writer.add_scalar(tag, value, step)
+            out[tag] = value
+
+
+def log_scalars_recursive(prefix, values, step=0):
+    flat = {}
+    _flatten_scalars_into(prefix, values, flat)
+    wandb.log(flat, step=step)
 
 
 @torch.inference_mode()
