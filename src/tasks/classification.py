@@ -11,7 +11,7 @@ from registry import register_task
 from .utils import (
     evaluate_probe,
     extract_features,
-    train_linear_probe,
+    train_probe,
 )
 
 
@@ -51,7 +51,8 @@ class ClassificationTask:
 
         print("Label fraction: %s%%" % (cfg.label_fraction * 100))
         frac = cfg.label_fraction
-        probe, steps, elapsed = train_linear_probe(
+        probe, steps, elapsed = train_probe(
+            cfg.probe_type,
             train_feats,
             train_labels,
             num_epochs=cfg.clf_epochs,
@@ -59,6 +60,8 @@ class ClassificationTask:
             batch_size=cfg.clf_batch_size,
             device=torch.device(cfg.device),
             num_classes=num_classes,
+            grid_size=cfg.grid_size,
+            polynomial_order=cfg.polynomial_order,
         )
         top1, macro_f1, weighted_f1, per_class_f1 = evaluate_probe(
             probe, test_feats, test_labels, torch.device(cfg.device)

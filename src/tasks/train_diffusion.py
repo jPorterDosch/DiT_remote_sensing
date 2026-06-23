@@ -15,7 +15,7 @@ from models.lora import lora_wrap_flux
 from registry import register_task
 from utils import to_jsonable
 
-from .utils import evaluate_probe, extract_features, log_scalars_recursive, train_linear_probe
+from .utils import evaluate_probe, extract_features, log_scalars_recursive, train_probe
 
 
 def _expand_null_embeddings(featurizer: Featurizer4Eval, batch_size: int, device, dtype):
@@ -247,6 +247,11 @@ def _random_masking(
     return x_masked, mask
 
 
+def _no_mask(x: torch.Tensor) -> torch.Tensor:
+    """Return a mask tensor where every token is visible."""
+    return torch.zeros(x.shape[:2], device=x.device, dtype=x.dtype)
+
+
 def _cycle_loader(dataloader: torch.utils.data.DataLoader):
     """Yield batches from dataloader indefinitely, re-shuffling each epoch."""
     while True:
@@ -313,7 +318,10 @@ def _fine_tune_diffusion_microbatch(
     guidance_vec = torch.full((imgs.shape[0],), cfg.guidance_scale, device=device, dtype=latents.dtype)
 
     # Mask input tokens before the Flux forward.
-    img_masked, mask = _random_masking(img, mask_token, mask_ratio)
+    if mask_ratio > 0:
+        img_masked, mask = _random_masking(img, mask_token, mask_ratio)
+    else:
+        img_masked, mask = img, _no_mask(img)
 
     capture.features = None
 
@@ -394,7 +402,10 @@ def _validate_diffusion(
         )
         guidance_vec = torch.full((imgs.shape[0],), cfg.guidance_scale, device=device, dtype=latents.dtype)
 
-        img_masked, mask = _random_masking(img, mask_token, mask_ratio)
+        if mask_ratio > 0:
+            img_masked, mask = _random_masking(img, mask_token, mask_ratio)
+        else:
+            img_masked, mask = img, _no_mask(img)
 
         capture.features = None
 
@@ -645,7 +656,8 @@ class FinetuneDiffusionTask:
         class_names = dataset.category_list
         num_classes = len(class_names)
 
-        probe, steps, elapsed = train_linear_probe(
+        probe, steps, elapsed = train_probe(
+            cfg.probe_type,
             train_feats,
             train_labels,
             num_epochs=cfg.clf_epochs,
@@ -653,6 +665,8 @@ class FinetuneDiffusionTask:
             batch_size=cfg.clf_batch_size,
             device=torch.device(cfg.device),
             num_classes=num_classes,
+            grid_size=cfg.grid_size,
+            polynomial_order=cfg.polynomial_order,
         )
         top1, macro_f1, weighted_f1, per_class_f1 = evaluate_probe(
             probe, test_feats, test_labels, torch.device(cfg.device)

@@ -9,33 +9,9 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from utils import seed_worker
+from classifier_heads import FourierKANProbe, KANProbe, LinearProbe, MLPProbe
+from config_types import ProbeType
 
-
-class LinearProbe(nn.Module):
-    """Single linear layer trained on top of frozen DiT features."""
-
-    def __init__(self, feat_dim: int, num_classes: int) -> None:
-        super().__init__()
-        self.fc = nn.Linear(feat_dim, num_classes)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.fc(x)
-
-
-# TODO: currently unused, allow cfg to specify probe type (and add corresponding Enum to support later expansion)
-class MLPProbe(nn.Module):
-    """Small MLP trained on top of frozen DiT features."""
-
-    def __init__(self, feat_dim: int, num_classes: int, hidden_dim: int = 512) -> None:
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(feat_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, num_classes),
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.net(x)
 
 
 def log_scalars_recursive(writer, prefix, values, step=0):
@@ -83,7 +59,18 @@ def extract_features(cfg, model, dataloader, split_name: str) -> tuple[np.ndarra
     return feats, labels
 
 
-def train_linear_probe(train_feats, train_labels, num_epochs, lr, batch_size, device, num_classes: int):
+def train_probe(
+    probe_type: ProbeType,
+    train_feats: np.ndarray,
+    train_labels: np.ndarray,
+    num_epochs: int,
+    lr: float,
+    batch_size: int,
+    device: torch.device,
+    num_classes: int,
+    grid_size: int = 5,
+    polynomial_order: int = 3,
+) -> tuple[nn.Module, int, float]:
     X = torch.from_numpy(train_feats).float().to(device)
     y = torch.from_numpy(train_labels).long().to(device)
 
@@ -95,7 +82,21 @@ def train_linear_probe(train_feats, train_labels, num_epochs, lr, batch_size, de
         drop_last=False,
         worker_init_fn=seed_worker,
     )
-    probe = LinearProbe(X.shape[1], num_classes).to(device)
+
+    # Define probe model
+    match probe_type:
+        case ProbeType.LINEAR:
+            probe = LinearProbe(X.shape[1], num_classes).to(device)
+        case ProbeType.MLP:
+            probe = MLPProbe(X.shape[1], num_classes).to(device)
+        case ProbeType.KAN:
+            probe = KANProbe(X.shape[1], num_classes, grid_size=grid_size, k=polynomial_order).to(device)
+        case ProbeType.FOURIER_KAN:
+            probe = FourierKANProbe(X.shape[1], num_classes, grid_size=grid_size, add_bias=True).to(device)
+        case _:
+            raise ValueError(f"Unsupported probe type: {probe_type}. Expected one of {list(ProbeType)}, got {probe_type}.")
+
+
     # TODO: make optimizer and loss configurable (e.g. SGD, label smoothing)
     optimizer = torch.optim.Adam(probe.parameters(), lr=lr, weight_decay=1e-4)
     criterion = nn.CrossEntropyLoss()
@@ -112,6 +113,27 @@ def train_linear_probe(train_feats, train_labels, num_epochs, lr, batch_size, de
             total_steps += 1
 
     return probe, total_steps, time.perf_counter() - t0
+
+
+def train_linear_probe(
+    train_feats: np.ndarray,
+    train_labels: np.ndarray,
+    num_epochs: int,
+    lr: float,
+    batch_size: int,
+    device: torch.device,
+    num_classes: int,
+) -> tuple[nn.Module, int, float]:
+    return train_probe(
+        ProbeType.LINEAR,
+        train_feats,
+        train_labels,
+        num_epochs,
+        lr,
+        batch_size,
+        device,
+        num_classes,
+    )
 
 
 @torch.no_grad()

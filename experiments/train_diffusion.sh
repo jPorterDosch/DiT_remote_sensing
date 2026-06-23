@@ -58,12 +58,11 @@ mkdir -p "$PROJECT_ROOT/logs/${SLURM_JOB_NAME:-train_diffusion}"
 # ============================================================================
 declare -A params
 params=(
-    [task]="finetune-diffusion-input-mask"
+    [task]="finetune-diffusion"
     [dataset.name]="eurosat"
     [dataset.path]="/lustre/isaac24/scratch/jdosch1/DeepLearning/datasets/EuroSAT"
     [model.name]="flux"
     [save-dir]="$SAVE_DIR"
-    [img-size]="224"
     [t]="260"
     [k]="28"
     [mask-ratio]="0.75"
@@ -91,8 +90,7 @@ countdown
 # Notes on fixed flags (can't go in the params array):
 #   --use-gradient-accumulation   bool flag, no value
 #   --wrap-output                 bool flag, no value
-#   --label-fractions 100         list-valued; must be a single entry to satisfy
-#                                 FinetuneDiffusionTask's len==1 guard
+#   --label-fraction 1.0          full-label probe after fine-tuning
 # ============================================================================
 print_delim "## START"
 set -x
@@ -100,7 +98,7 @@ parallel -j $PARALLEL_JOBS --delay 15 --verbose \
     "$PYTHON" "$PROJECT_ROOT/run.py" \
         --use-gradient-accumulation \
         --wrap-output \
-        --label-fractions 100 \
+        --label-fraction 1.0 \
         $SWEEP_PLACEHOLDERS \
     $SWEEP_VALUES
 set +x
