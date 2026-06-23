@@ -22,6 +22,7 @@ import datasets  # noqa: F401  — triggers @register_dataset decorators
 import models  # noqa: F401  — resolves to src/models/, triggers @register_model decorators
 import tasks  # noqa: F401  — triggers @register_task decorators
 from registry import DATASETS, MODELS, TASKS
+from config_types import ProbeType
 from utils import seed_all, to_jsonable
 
 
@@ -48,9 +49,9 @@ class RunConfig:
     # Root to save extracted features and trained classifiers. Name derived from config will be appended to this path so that multiple runs can be organized under the same directory.
     save_dir: str = "./models"
     img_size: list[int] = field(default_factory=lambda: [224, 224])
-    t: int = 260  # Timestep index in range [1,1000]
+    t: int = 340  # Timestep index in range [1,1000]
     k: int | list[int] = (
-        28  # [0, 57], for now, we can currently extract from multiple blocks, but have no aggregation methods implemented yet. Future work could explore this direction (e.g. concatenation, attention-based fusion, etc.
+        29  # [0, 57], for now, we can currently extract from multiple blocks, but have no aggregation methods implemented yet. Future work could explore this direction (e.g. concatenation, attention-based fusion, etc.
     )
     cd: bool = False
     discard_channels: list[int] = field(default_factory=lambda: [154, 1446])
@@ -58,6 +59,7 @@ class RunConfig:
     ## correspondence (spair)
     captions_path: str = "spair_detailed_captions.json"
 
+    # TODO: move this to nested dataclass -- cfg is quickly filling up with more hparams, would be good to group by function.
     ## classification
     label_fraction: float = 1.0
     clf_epochs: int = 50
@@ -68,6 +70,11 @@ class RunConfig:
     num_workers: int = 4
     overwrite_features: bool = False
     max_samples: int | None = None  # cap images per split for smoke tests; None = no limit
+    probe_type: ProbeType = ProbeType.MLP
+
+    # The following only apply for KAN classifier heads
+    grid_size: int = 5
+    polynomial_order: int = 3
 
     ## Diffusion/flow-matching training with LoRA
     mask_ratio: float = 0.75
@@ -174,8 +181,14 @@ class RunConfig:
         if self.max_samples is not None and self.max_samples <= 0:
             raise ValueError(f"max_samples must be positive or None, got {self.max_samples}")
 
-        if self.mask_ratio <= 0 or self.mask_ratio >= 1:
-            raise ValueError(f"mask_ratio must be in the range (0, 1), got {self.mask_ratio}")
+        if self.mask_ratio < 0 or self.mask_ratio >= 1:
+            raise ValueError(f"mask_ratio must be in the range [0, 1), got {self.mask_ratio}")
+
+        if self.mask_ratio == 0:
+            warnings.warn(
+                "mask ratio is set to 0, meaning no masking will be applied during training. If this is intentional, you can ignore this warning."
+                " If you intended to apply masking, please set mask_ratio to a value in the range (0, 1)."
+            )
 
         if self.finetune_max_epochs <= 0:
             raise ValueError(f"finetune_max_epochs must be positive, got {self.finetune_max_epochs}")
