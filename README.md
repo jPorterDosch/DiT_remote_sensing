@@ -1,6 +1,3 @@
-Overleaf: https://www.overleaf.com/read/sgzqyzdyhjck#781ef8
-Slides: https://docs.google.com/presentation/d/1weO5EqcOJ-1nMl6Wz2Cn6Ks5SDq-2_EwG6sr8_PlbmY/edit?usp=sharing
-
 ### Overview
 This project adapts diffusion transformer (DiT) models for downstream remote sensing tasks by adding a latent reconstruction objective. 
 
@@ -22,6 +19,3 @@ conda env create -f environment.yml
 conda activate DiTF
 pip install -e ".[all]"
 ```
- 
- ### Accessing data and baseline models
- Models and EuroSAT dataset are mounted on ISAAC cluster at /lustre/isaac24/scratch/jdosch1/DeepLearning.
