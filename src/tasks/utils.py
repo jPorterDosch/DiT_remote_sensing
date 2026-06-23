@@ -13,7 +13,6 @@ from classifier_heads import FourierKANProbe, KANProbe, LinearProbe, MLPProbe
 from config_types import ProbeType
 
 
-
 def log_scalars_recursive(writer, prefix, values, step=0):
     for key, value in values.items():
         tag = f"{prefix}/{key}"
@@ -94,8 +93,9 @@ def train_probe(
         case ProbeType.FOURIER_KAN:
             probe = FourierKANProbe(X.shape[1], num_classes, grid_size=grid_size, add_bias=True).to(device)
         case _:
-            raise ValueError(f"Unsupported probe type: {probe_type}. Expected one of {list(ProbeType)}, got {probe_type}.")
-
+            raise ValueError(
+                f"Unsupported probe type: {probe_type}. Expected one of {list(ProbeType)}, got {probe_type}."
+            )
 
     # TODO: make optimizer and loss configurable (e.g. SGD, label smoothing)
     optimizer = torch.optim.Adam(probe.parameters(), lr=lr, weight_decay=1e-4)
@@ -113,27 +113,6 @@ def train_probe(
             total_steps += 1
 
     return probe, total_steps, time.perf_counter() - t0
-
-
-def train_linear_probe(
-    train_feats: np.ndarray,
-    train_labels: np.ndarray,
-    num_epochs: int,
-    lr: float,
-    batch_size: int,
-    device: torch.device,
-    num_classes: int,
-) -> tuple[nn.Module, int, float]:
-    return train_probe(
-        ProbeType.LINEAR,
-        train_feats,
-        train_labels,
-        num_epochs,
-        lr,
-        batch_size,
-        device,
-        num_classes,
-    )
 
 
 @torch.no_grad()
