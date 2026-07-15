@@ -7,15 +7,14 @@
 #   max_train_steps=7000    20000 batches    ~94 h compute + ~15 min load
 #   Request 1 day (checkpoints saved on best val loss so progress is not lost if preempted).
 #
-#SBATCH -A acf-utk0011
+#SBATCH -A isaac-utk0256
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-task=1
-#SBATCH --cpus-per-gpu=8
-#SBATCH --mem=64G
-#SBATCH --qos=campus-gpu
-#SBATCH --partition=campus-gpu
-#SBATCH --time=1-00:00:00
+#SBATCH --cpus-per-gpu=16
+#SBATCH --qos=ai-tenn
+#SBATCH --partition=ai-tenn
+#SBATCH --time=3-00:00:00
 #SBATCH --output=logs/%x/%j.out
 #SBATCH --error=logs/%x/%j.out
 
@@ -44,8 +43,6 @@ else
 fi
 conda activate DiTF
 
-source .secrets/wandb-personal.env
-
 # Capture the resolved python so parallel inherits the right interpreter
 # regardless of how it spawns subshells.
 PYTHON=$(which python3)
@@ -54,6 +51,10 @@ ${PYTHON} -c "import tyro" || { echo "FATAL: tyro not found in $PYTHON — check
 
 # Create log subdirectory so SLURM doesn't fail on missing path.
 mkdir -p "$PROJECT_ROOT/logs/${SLURM_JOB_NAME:-train_diffusion}"
+
+# Wandb login info -- replace with stored credentials, or remove if signed in with primary wandb account through CLI.
+source .secrets/wandb-personal.env
+
 
 # ============================================================================
 # SWEEP GRID (single run — extend to sweep by adding space-separated values)
@@ -65,9 +66,9 @@ params=(
     [dataset.path]="/lustre/isaac24/scratch/jdosch1/DeepLearning/datasets/EuroSAT"
     [model.name]="flux"
     [save-dir]="$SAVE_DIR"
-    [t]="260"
-    [k]="28"
-    [mask-ratio]="0.75"
+    [t]="340"
+    [k]="29"
+    [mask-ratio]="0.75 0.0"
     [finetune-max-epochs]="10"
     [finetune-lr]="1e-3"
     [max-train-steps]="5000"
@@ -78,8 +79,8 @@ params=(
     [guidance-scale]="3.5"
     [batch-size]="1"
     [num-workers]="4"
-    [seed]="42"
-    [mim-loss-weight]="0.1 0.5 1.0"
+    [seed]="42 43 44"
+    [mim-loss-weight]="1.0"
 )
 
 expand_params_for_parallel
@@ -101,7 +102,31 @@ parallel -j $PARALLEL_JOBS --delay 15 --verbose \
         --use-gradient-accumulation \
         --wrap-output \
         --label-fraction 1.0 \
+        --probe-type MLP \
         $SWEEP_PLACEHOLDERS \
     $SWEEP_VALUES
+
+parallel -j $PARALLEL_JOBS --delay 15 --verbose \
+    "$PYTHON" "$PROJECT_ROOT/run.py" \
+        --use-gradient-accumulation \
+        --wrap-output \
+        --label-fraction 1.0 \
+        --probe-type KAN \
+        --grid-size 5 \
+        --polynomial-order 3 \
+        $SWEEP_PLACEHOLDERS \
+    $SWEEP_VALUES
+
+parallel -j $PARALLEL_JOBS --delay 15 --verbose \
+    "$PYTHON" "$PROJECT_ROOT/run.py" \
+        --use-gradient-accumulation \
+        --wrap-output \
+        --label-fraction 1.0 \
+        --probe-type FOURIER_KAN \
+        --grid-size 5 \
+        --polynomial-order 3 \
+        $SWEEP_PLACEHOLDERS \
+    $SWEEP_VALUES
+
 set +x
 print_delim "## DONE"

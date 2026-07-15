@@ -17,6 +17,10 @@ from registry import register_task
 @register_task("correspondence")
 class CorrespondenceTask:
     def run(self, cfg, model, dataset) -> dict:
+        if isinstance(cfg.t, list):
+            raise ValueError(
+                "correspondence expects a single timestep t; use task='extract' for multi-timestep extraction"
+            )
         device = torch.device(cfg.device)
 
         data = dataset.get_data(cfg)

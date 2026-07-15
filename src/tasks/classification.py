@@ -5,19 +5,25 @@ import os
 
 import numpy as np
 import torch
+import wandb
 
 from registry import register_task
 
 from .utils import (
+    _flatten_scalars_into,
     evaluate_probe,
     extract_features,
-    train_linear_probe,
+    train_probe,
 )
 
 
 @register_task("classification")
 class ClassificationTask:
     def run(self, cfg, model, dataset) -> dict:
+        if isinstance(cfg.t, list):
+            raise ValueError(
+                "classification expects a single timestep t; use task='extract' for multi-timestep extraction"
+            )
         device = torch.device(cfg.device)
 
         loaders = dataset.get_data(cfg)
@@ -51,7 +57,8 @@ class ClassificationTask:
 
         print("Label fraction: %s%%" % (cfg.label_fraction * 100))
         frac = cfg.label_fraction
-        probe, steps, elapsed = train_linear_probe(
+        probe, steps, elapsed = train_probe(
+            cfg.probe_type,
             train_feats,
             train_labels,
             num_epochs=cfg.clf_epochs,
@@ -59,6 +66,8 @@ class ClassificationTask:
             batch_size=cfg.clf_batch_size,
             device=torch.device(cfg.device),
             num_classes=num_classes,
+            grid_size=cfg.grid_size,
+            polynomial_order=cfg.polynomial_order,
         )
         top1, macro_f1, weighted_f1, per_class_f1 = evaluate_probe(
             probe, test_feats, test_labels, torch.device(cfg.device)
@@ -101,5 +110,14 @@ class ClassificationTask:
         )
         with open(out_path, "w+") as json_file:
             json.dump(result, json_file, indent=4, ensure_ascii=False)
+
+        flat = {}
+        _flatten_scalars_into("probe", result[frac], flat)
+        flat["probe/confusion_matrix"] = wandb.plot.confusion_matrix(
+            y_true=test_labels.tolist(),
+            preds=preds.tolist(),
+            class_names=class_names,
+        )
+        wandb.log(flat)
 
         return result

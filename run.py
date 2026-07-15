@@ -22,6 +22,7 @@ import datasets  # noqa: F401  — triggers @register_dataset decorators
 import models  # noqa: F401  — resolves to src/models/, triggers @register_model decorators
 import tasks  # noqa: F401  — triggers @register_task decorators
 from registry import DATASETS, MODELS, TASKS
+from config_types import ProbeType
 from utils import seed_all, to_jsonable
 
 
@@ -45,10 +46,22 @@ class RunConfig:
 
     device: str = field(default_factory=lambda: "cuda" if torch.cuda.is_available() else "cpu")
 
+    hash: str | None = None
+
     # Root to save extracted features and trained classifiers. Name derived from config will be appended to this path so that multiple runs can be organized under the same directory.
     save_dir: str = "./models"
     img_size: list[int] = field(default_factory=lambda: [224, 224])
-    t: int = 260  # Timestep index in range [1,1000]
+    # Timestep index in range [1,1000]. A strictly increasing list of K timesteps enables
+    # multi-timestep extraction (task="extract"): one-shot noising to each t independently,
+    # same eps per image across all K forward passes. E.g. --t 100 180 260 340 420 500 580.
+    t: int | list[int] = 260
+    # Seed for the dedicated eps RNG stream in multi-timestep extraction. None = use cfg.seed.
+    eps_seed: int | None = None
+    # task="extract" only: number of train images to extract (class-stratified with
+    # subset_seed). None = the full train split.
+    subset_size: int | None = None
+    # Configurable, but should remain consistent across experiments.
+    subset_seed: int = 42
     k: int | list[int] = (
         28  # [0, 57], for now, we can currently extract from multiple blocks, but have no aggregation methods implemented yet. Future work could explore this direction (e.g. concatenation, attention-based fusion, etc.
     )
@@ -58,6 +71,7 @@ class RunConfig:
     ## correspondence (spair)
     captions_path: str = "spair_detailed_captions.json"
 
+    # TODO: move this to nested dataclass -- cfg is quickly filling up with more hparams, would be good to group by function.
     ## classification
     label_fraction: float = 1.0
     clf_epochs: int = 50
@@ -68,6 +82,11 @@ class RunConfig:
     num_workers: int = 4
     overwrite_features: bool = False
     max_samples: int | None = None  # cap images per split for smoke tests; None = no limit
+    probe_type: ProbeType = ProbeType.MLP
+
+    # The following only apply for KAN classifier heads
+    grid_size: int = 5
+    polynomial_order: int = 3
 
     ## Diffusion/flow-matching training with LoRA
     mask_ratio: float = 0.75
@@ -101,15 +120,11 @@ class RunConfig:
     warmup_steps: int = 100
 
     # W&B logging — fill in after account/project creation
-    wandb_entity: str = "jporterdosch-university-of-tennessee-knoxville"
+    wandb_entity: str = "sparse_representation_learning"
     wandb_project: str = "DiT_remote_sensing"
 
-    def make_run_name(self) -> str:
+    def config_hash(self) -> str:
         payload = to_jsonable(asdict(self))
-
-        dataset_name = payload["dataset"]["name"]
-        model_name = payload["model"]["name"]
-        seed = payload["seed"]
 
         blacklist = {
             # --- Irrelevant for feature extraction and training
@@ -119,6 +134,7 @@ class RunConfig:
             "overwrite_features",
             "wandb_entity",
             "wandb_project",
+            "hash",
         }
 
         for k in blacklist:
@@ -131,9 +147,16 @@ class RunConfig:
 
         # Hash config to get deterministic identifier for run.
         serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"))
-        digest = hashlib.sha1(serialized.encode()).hexdigest()[:8]
+        return hashlib.sha1(serialized.encode()).hexdigest()[:8]
 
-        return f"{dataset_name}_{model_name}_{digest}+{seed}"
+    def make_run_name(self) -> str:
+        payload = to_jsonable(asdict(self))
+
+        dataset_name = payload["dataset"]["name"]
+        model_name = payload["model"]["name"]
+        seed = payload["seed"]
+
+        return f"{dataset_name}_{model_name}_{self.config_hash()}+{seed}"
 
     def __post_init__(self) -> None:
         if self.label_fraction <= 0 or self.label_fraction > 1:
@@ -148,8 +171,21 @@ class RunConfig:
         if len(self.img_size) != 2 or any(x <= 0 for x in self.img_size):
             raise ValueError(f"img_size must contain exactly two positive integers, got {self.img_size}")
 
-        if self.t < 1 or self.t > 1000:
-            raise ValueError(f"t must be in the range [1, 1000], got {self.t}")
+        if isinstance(self.t, int):
+            if self.t < 1 or self.t > 1000:
+                raise ValueError(f"t must be in the range [1, 1000], got {self.t}")
+        else:
+            if len(self.t) == 0:
+                raise ValueError("t must be a non-empty list of timesteps")
+            bad_t = [x for x in self.t if x < 1 or x > 1000]
+            if bad_t:
+                raise ValueError(f"all t values must be in the range [1, 1000], got invalid values {bad_t}")
+            # Increment/curvature analysis along the timestep axis assumes an ordered sweep.
+            if any(a >= b for a, b in zip(self.t, self.t[1:])):
+                raise ValueError(f"t list must be strictly increasing, got {self.t}")
+
+        if self.subset_size is not None and self.subset_size <= 0:
+            raise ValueError(f"subset_size must be positive or None, got {self.subset_size}")
 
         if isinstance(self.k, int):
             if self.k < 0 or self.k > 57:
@@ -174,8 +210,14 @@ class RunConfig:
         if self.max_samples is not None and self.max_samples <= 0:
             raise ValueError(f"max_samples must be positive or None, got {self.max_samples}")
 
-        if self.mask_ratio <= 0 or self.mask_ratio >= 1:
-            raise ValueError(f"mask_ratio must be in the range (0, 1), got {self.mask_ratio}")
+        if self.mask_ratio < 0 or self.mask_ratio >= 1:
+            raise ValueError(f"mask_ratio must be in the range [0, 1), got {self.mask_ratio}")
+
+        if self.mask_ratio == 0:
+            warnings.warn(
+                "mask ratio is set to 0, meaning no masking will be applied during training. If this is intentional, you can ignore this warning."
+                " If you intended to apply masking, please set mask_ratio to a value in the range (0, 1)."
+            )
 
         if self.finetune_max_epochs <= 0:
             raise ValueError(f"finetune_max_epochs must be positive, got {self.finetune_max_epochs}")
@@ -242,8 +284,10 @@ def main(cfg: RunConfig) -> None:
     if not os.path.exists(cfg.dataset.path):
         raise ValueError(f"Dataset path '{cfg.dataset.path}' does not exist.")
 
-    # Resolve save_dir for this run (after config is fully initialized and run name can be generated).
-    cfg.save_dir = os.path.join(cfg.save_dir, cfg.make_run_name())
+    # Resolve hash and save_dir for this run (after config is fully initialized).
+    cfg.hash = cfg.config_hash()
+    run_name = cfg.make_run_name()
+    cfg.save_dir = os.path.join(cfg.save_dir, run_name)
 
     # Check for save_dir existence, and error if it already exists to avoid accidental overwriting.
     if os.path.exists(cfg.save_dir):
@@ -258,7 +302,7 @@ def main(cfg: RunConfig) -> None:
     wandb.init(
         entity=cfg.wandb_entity,
         project=cfg.wandb_project,
-        name=cfg.make_run_name(),
+        name=run_name,
         config=asdict(cfg),
     )
 
