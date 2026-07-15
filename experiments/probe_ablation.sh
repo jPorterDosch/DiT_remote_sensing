@@ -16,7 +16,7 @@
 #SBATCH --partition=ai-tenn
 #SBATCH --time=3-00:00:00
 #SBATCH --output=logs/%x/%j.out
-#SBATCH --error=logs/%x/%j.err
+#SBATCH --error=logs/%x/%j.out
 
 # --- Bootstrap ---
 _dir="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)}"
@@ -52,6 +52,10 @@ ${PYTHON} -c "import tyro" || { echo "FATAL: tyro not found in $PYTHON — check
 # Create log subdirectory so SLURM doesn't fail on missing path.
 mkdir -p "$PROJECT_ROOT/logs/${SLURM_JOB_NAME:-train_diffusion}"
 
+# Wandb login info -- replace with stored credentials, or remove if signed in with primary wandb account through CLI.
+source .secrets/wandb-personal.env
+
+
 # ============================================================================
 # SWEEP GRID (single run — extend to sweep by adding space-separated values)
 # ============================================================================
@@ -75,7 +79,7 @@ params=(
     [guidance-scale]="3.5"
     [batch-size]="1"
     [num-workers]="4"
-    [seed]="42"
+    [seed]="42 43 44"
     [mim-loss-weight]="1.0"
 )
 

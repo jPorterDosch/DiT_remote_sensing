@@ -21,6 +21,9 @@ source "$PROJECT_ROOT/experiments/_common.sh" || {
 }
 setup_environment
 
+# Wandb login info -- replace with stored credentials, or remove if signed in with primary wandb account through CLI.
+source .secrets/wandb-personal.env
+
 # ============================================================================
 # SWEEP GRID
 # ============================================================================
@@ -32,8 +35,8 @@ setup_environment
 # t : [200, 260, 300, 400] — covers the expected peak and shoulders
 # k : [26, 27, 28, 29, 30] — neighbourhood of SPair's optimal k=28
 # ============================================================================
-T_VALUES=(200 300 400 500)
-K_VALUES=(26 27 28 29 30)
+T_VALUES=(320 340 360 380 400 420)
+K_VALUES=(27 28 29 30)
 
 TOTAL=$(( ${#T_VALUES[@]} * ${#K_VALUES[@]} ))
 echo "RESULTS_DIR: $RESULTS_DIR"

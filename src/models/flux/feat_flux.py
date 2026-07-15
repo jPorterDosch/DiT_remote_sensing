@@ -120,7 +120,18 @@ class Featurizer4Eval(Featurizer):
         block_idx=1,
         ensemble_size=1,
         guidance=3.5,
+        latents=None,
+        noise=None,
+        generator=None,
     ):
+        """One-shot noising to `timestep` and a single DiT forward pass (per ensemble member).
+
+        `latents`/`noise` (each (ensemble_size, c, h, w)) let a caller reuse the exact clean
+        latents and eps across multiple calls at different timesteps for the same image, so
+        only t varies between calls. When None, they are computed/drawn here (from `generator`
+        if given, else the global RNG). Returns (feat, mod, latents, noise) where latents/noise
+        are the tensors actually mixed into the noisy input, so callers can assert constancy.
+        """
         if img_tensor.dim() != 3:
             raise ValueError(
                 f"Expected img_tensor to have 3 dimensions (C, H, W), but got {img_tensor.shape}. If passing batched images, refactor this check, and make sure that this does not cause OOM."
@@ -159,25 +170,37 @@ class Featurizer4Eval(Featurizer):
 
         dit_feats = []
         mods = []
+        latents_used = []
+        noise_used = []
 
         block_indices = [block_idx] if isinstance(block_idx, int) else block_idx
 
         # Sequential to avoid OOM.
         for i in range(ensemble_size):
-            latents = self.ae.encode(img_tensor)
-            latents = latents.to(torch.bfloat16)
+            if latents is not None:
+                latents_i = latents[i : i + 1]
+            else:
+                # Encode inside the loop (not batched upfront) to preserve the exact global-RNG
+                # draw order of the original single-timestep implementation.
+                latents_i = self.ae.encode(img_tensor).to(torch.bfloat16)
 
-            noise = torch.randn_like(latents).to(device)
+            if noise is not None:
+                noise_i = noise[i : i + 1]
+            elif generator is not None:
+                noise_i = torch.randn(
+                    latents_i.shape, generator=generator, device=device, dtype=latents_i.dtype
+                )
+            else:
+                noise_i = torch.randn_like(latents_i).to(device)
+
             # add noise
-            latents_noisy = t * noise + (1.0 - t) * latents
+            latents_noisy = t * noise_i + (1.0 - t) * latents_i
             _, c, h, w = latents_noisy.shape
 
             img, img_ids = prepare(img=latents_noisy)
 
             t_vec = torch.full((img.shape[0],), t, dtype=img.dtype, device=img.device)
-            guidance_vec = torch.full(
-                (img.shape[0],), guidance, device=img.device, dtype=img.dtype
-            )
+            guidance_vec = torch.full((img.shape[0],), guidance, device=img.device, dtype=img.dtype)
 
             prompt_embeds_i = prompt_embeds[i : i + 1]
             text_ids_i = text_ids[i : i + 1]
@@ -203,10 +226,12 @@ class Featurizer4Eval(Featurizer):
             mod = torch.cat([mod.shift, mod.scale, mod.gate], dim=1)
             dit_feats.append(dit_feat)
             mods.append(mod)
+            # Record the tensors actually mixed into latents_noisy (not the caller's inputs),
+            # so a downstream constancy assertion catches any reintroduced per-call resampling.
+            latents_used.append(latents_i)
+            noise_used.append(noise_i)
 
             del (
-                latents,
-                noise,
                 latents_noisy,
                 img,
                 img_ids,
@@ -221,4 +246,4 @@ class Featurizer4Eval(Featurizer):
         dit_feat = torch.cat(dit_feats, dim=0).mean(0, keepdim=True)  # 1, c, h, w
         mod = torch.cat(mods, dim=0).mean(0, keepdim=True)  # 1, c, h, w
 
-        return dit_feat, mod
+        return dit_feat, mod, torch.cat(latents_used, dim=0), torch.cat(noise_used, dim=0)

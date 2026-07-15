@@ -14,7 +14,7 @@ from models.lora import lora_wrap_flux
 from registry import register_task
 from utils import to_jsonable
 
-from .utils import evaluate_probe, extract_features, log_scalars_recursive, train_probe
+from .utils import _flatten_scalars_into, evaluate_probe, extract_features, train_probe
 
 
 def _expand_null_embeddings(featurizer: Featurizer4Eval, batch_size: int, device, dtype):
@@ -455,6 +455,10 @@ def _validate_diffusion(
 @register_task("finetune-diffusion")
 class FinetuneDiffusionTask:
     def run(self, cfg, model: FluxModel, dataset) -> dict:
+        if isinstance(cfg.t, list):
+            raise ValueError(
+                "train_diffusion expects a single timestep t; use task='extract' for multi-timestep extraction"
+            )
         # Unwrap registered adapter to get the raw Featurizer4Eval.
         featurizer_model: Featurizer4Eval = model._inner
         device = torch.device(cfg.device)
@@ -690,7 +694,14 @@ class FinetuneDiffusionTask:
             "per_class_f1": per_class_f1_dict,
         }
 
-        log_scalars_recursive("probe", probe_results, step=0)
+        flat = {}
+        _flatten_scalars_into("probe", probe_results, flat)
+        flat["probe/confusion_matrix"] = wandb.plot.confusion_matrix(
+            y_true=test_labels.tolist(),
+            preds=preds.tolist(),
+            class_names=class_names,
+        )
+        wandb.log(flat)
 
         capture.remove()
 

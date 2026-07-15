@@ -46,12 +46,24 @@ class RunConfig:
 
     device: str = field(default_factory=lambda: "cuda" if torch.cuda.is_available() else "cpu")
 
+    hash: str | None = None
+
     # Root to save extracted features and trained classifiers. Name derived from config will be appended to this path so that multiple runs can be organized under the same directory.
     save_dir: str = "./models"
     img_size: list[int] = field(default_factory=lambda: [224, 224])
-    t: int = 340  # Timestep index in range [1,1000]
+    # Timestep index in range [1,1000]. A strictly increasing list of K timesteps enables
+    # multi-timestep extraction (task="extract"): one-shot noising to each t independently,
+    # same eps per image across all K forward passes. E.g. --t 100 180 260 340 420 500 580.
+    t: int | list[int] = 260
+    # Seed for the dedicated eps RNG stream in multi-timestep extraction. None = use cfg.seed.
+    eps_seed: int | None = None
+    # task="extract" only: number of train images to extract (class-stratified with
+    # subset_seed). None = the full train split.
+    subset_size: int | None = None
+    # Configurable, but should remain consistent across experiments.
+    subset_seed: int = 42
     k: int | list[int] = (
-        29  # [0, 57], for now, we can currently extract from multiple blocks, but have no aggregation methods implemented yet. Future work could explore this direction (e.g. concatenation, attention-based fusion, etc.
+        28  # [0, 57], for now, we can currently extract from multiple blocks, but have no aggregation methods implemented yet. Future work could explore this direction (e.g. concatenation, attention-based fusion, etc.
     )
     cd: bool = False
     discard_channels: list[int] = field(default_factory=lambda: [154, 1446])
@@ -108,15 +120,11 @@ class RunConfig:
     warmup_steps: int = 100
 
     # W&B logging — fill in after account/project creation
-    wandb_entity: str = "jporterdosch-university-of-tennessee-knoxville"
+    wandb_entity: str = "sparse_representation_learning"
     wandb_project: str = "DiT_remote_sensing"
 
-    def make_run_name(self) -> str:
+    def config_hash(self) -> str:
         payload = to_jsonable(asdict(self))
-
-        dataset_name = payload["dataset"]["name"]
-        model_name = payload["model"]["name"]
-        seed = payload["seed"]
 
         blacklist = {
             # --- Irrelevant for feature extraction and training
@@ -126,6 +134,7 @@ class RunConfig:
             "overwrite_features",
             "wandb_entity",
             "wandb_project",
+            "hash",
         }
 
         for k in blacklist:
@@ -138,9 +147,16 @@ class RunConfig:
 
         # Hash config to get deterministic identifier for run.
         serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"))
-        digest = hashlib.sha1(serialized.encode()).hexdigest()[:8]
+        return hashlib.sha1(serialized.encode()).hexdigest()[:8]
 
-        return f"{dataset_name}_{model_name}_{digest}+{seed}"
+    def make_run_name(self) -> str:
+        payload = to_jsonable(asdict(self))
+
+        dataset_name = payload["dataset"]["name"]
+        model_name = payload["model"]["name"]
+        seed = payload["seed"]
+
+        return f"{dataset_name}_{model_name}_{self.config_hash()}+{seed}"
 
     def __post_init__(self) -> None:
         if self.label_fraction <= 0 or self.label_fraction > 1:
@@ -155,8 +171,21 @@ class RunConfig:
         if len(self.img_size) != 2 or any(x <= 0 for x in self.img_size):
             raise ValueError(f"img_size must contain exactly two positive integers, got {self.img_size}")
 
-        if self.t < 1 or self.t > 1000:
-            raise ValueError(f"t must be in the range [1, 1000], got {self.t}")
+        if isinstance(self.t, int):
+            if self.t < 1 or self.t > 1000:
+                raise ValueError(f"t must be in the range [1, 1000], got {self.t}")
+        else:
+            if len(self.t) == 0:
+                raise ValueError("t must be a non-empty list of timesteps")
+            bad_t = [x for x in self.t if x < 1 or x > 1000]
+            if bad_t:
+                raise ValueError(f"all t values must be in the range [1, 1000], got invalid values {bad_t}")
+            # Increment/curvature analysis along the timestep axis assumes an ordered sweep.
+            if any(a >= b for a, b in zip(self.t, self.t[1:])):
+                raise ValueError(f"t list must be strictly increasing, got {self.t}")
+
+        if self.subset_size is not None and self.subset_size <= 0:
+            raise ValueError(f"subset_size must be positive or None, got {self.subset_size}")
 
         if isinstance(self.k, int):
             if self.k < 0 or self.k > 57:
@@ -255,8 +284,10 @@ def main(cfg: RunConfig) -> None:
     if not os.path.exists(cfg.dataset.path):
         raise ValueError(f"Dataset path '{cfg.dataset.path}' does not exist.")
 
-    # Resolve save_dir for this run (after config is fully initialized and run name can be generated).
-    cfg.save_dir = os.path.join(cfg.save_dir, cfg.make_run_name())
+    # Resolve hash and save_dir for this run (after config is fully initialized).
+    cfg.hash = cfg.config_hash()
+    run_name = cfg.make_run_name()
+    cfg.save_dir = os.path.join(cfg.save_dir, run_name)
 
     # Check for save_dir existence, and error if it already exists to avoid accidental overwriting.
     if os.path.exists(cfg.save_dir):
@@ -271,7 +302,7 @@ def main(cfg: RunConfig) -> None:
     wandb.init(
         entity=cfg.wandb_entity,
         project=cfg.wandb_project,
-        name=cfg.make_run_name(),
+        name=run_name,
         config=asdict(cfg),
     )
 

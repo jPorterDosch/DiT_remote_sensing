@@ -14,10 +14,10 @@
 #SBATCH --cpus-per-gpu=8
 #SBATCH --mem=64G
 #SBATCH --qos=campus-gpu
-#SBATCH --partition=campus-gpu-bigmem
-#SBATCH --time=2-00:00:00
+#SBATCH --partition=campus-gpu
+#SBATCH --time=1-00:00:00
 #SBATCH --output=logs/%x/%j.out
-#SBATCH --error=logs/%x/%j.err
+#SBATCH --error=logs/%x/%j.out
 
 # --- Bootstrap ---
 _dir="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)}"
@@ -43,6 +43,8 @@ else
     done
 fi
 conda activate DiTF
+
+source .secrets/wandb-personal.env
 
 # Capture the resolved python so parallel inherits the right interpreter
 # regardless of how it spawns subshells.

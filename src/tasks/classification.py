@@ -5,10 +5,12 @@ import os
 
 import numpy as np
 import torch
+import wandb
 
 from registry import register_task
 
 from .utils import (
+    _flatten_scalars_into,
     evaluate_probe,
     extract_features,
     train_probe,
@@ -18,6 +20,10 @@ from .utils import (
 @register_task("classification")
 class ClassificationTask:
     def run(self, cfg, model, dataset) -> dict:
+        if isinstance(cfg.t, list):
+            raise ValueError(
+                "classification expects a single timestep t; use task='extract' for multi-timestep extraction"
+            )
         device = torch.device(cfg.device)
 
         loaders = dataset.get_data(cfg)
@@ -104,5 +110,14 @@ class ClassificationTask:
         )
         with open(out_path, "w+") as json_file:
             json.dump(result, json_file, indent=4, ensure_ascii=False)
+
+        flat = {}
+        _flatten_scalars_into("probe", result[frac], flat)
+        flat["probe/confusion_matrix"] = wandb.plot.confusion_matrix(
+            y_true=test_labels.tolist(),
+            preds=preds.tolist(),
+            class_names=class_names,
+        )
+        wandb.log(flat)
 
         return result
