@@ -18,8 +18,8 @@ def _find_project_root(start: str) -> str:
 
 
 _root = _find_project_root(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, _root)                        # registry.py lives here
-sys.path.insert(0, os.path.join(_root, "src"))   # datasets, data, utils, …
+sys.path.insert(0, _root)  # registry.py lives here
+sys.path.insert(0, os.path.join(_root, "src"))  # datasets, data, utils, …
 
 import pytest
 
@@ -29,16 +29,12 @@ from data.resisc45_dataset import RESISC45_CLASSES, RESISC45Dataset
 
 # Real data is optional: skip (not fail) when the dataset isn't downloaded,
 # e.g. in CI. Populate with: bash download_resisc45.sh data/resisc45
-DATA_PATH = os.environ.get(
-    "RESISC45_PATH", os.path.join(_root, "data/resisc45/NWPU-RESISC45")
-)
+DATA_PATH = os.environ.get("RESISC45_PATH", os.path.join(_root, "data/resisc45/NWPU-RESISC45"))
 
 _have_data = os.path.isdir(DATA_PATH) and any(
     os.path.isdir(os.path.join(DATA_PATH, c)) for c in RESISC45_CLASSES
 )
-requires_data = pytest.mark.skipif(
-    not _have_data, reason=f"RESISC45 data not found at {DATA_PATH}"
-)
+requires_data = pytest.mark.skipif(not _have_data, reason=f"RESISC45 data not found at {DATA_PATH}")
 
 
 def test_registered():
