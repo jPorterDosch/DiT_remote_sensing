@@ -4,6 +4,8 @@ from torch.utils.data import Dataset, DataLoader
 from torchvision.transforms import PILToTensor
 from PIL import Image
 
+from data.utils import round_up_to_multiple
+
 
 EUROSAT_CLASSES = [
     "AnnualCrop",
@@ -46,7 +48,7 @@ class EuroSATDataset(Dataset):
                       Rounded up to a multiple of 16 for compatibility with the VAE.
         """
         self.root = root
-        self.img_size = self._round_to_multiple(img_size, 16)
+        self.img_size = round_up_to_multiple(img_size, 16)
         self.samples = []
 
         for class_idx, class_name in enumerate(EUROSAT_CLASSES):
@@ -72,10 +74,6 @@ class EuroSATDataset(Dataset):
                         class_name,
                     )
                 )
-
-    @staticmethod
-    def _round_to_multiple(val, m):
-        return ((val + m - 1) // m) * m
 
     def __len__(self):
         return len(self.samples)
