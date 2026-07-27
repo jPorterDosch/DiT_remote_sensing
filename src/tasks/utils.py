@@ -11,7 +11,7 @@ from tqdm import tqdm
 
 from utils import seed_worker
 from classifier_heads import FourierKANProbe, KANProbe, LinearProbe, MLPProbe
-from config_types import ProbeType
+from config_types import ExtractionMode, ProbeType
 
 
 def _flatten_scalars_into(prefix, values, out):
@@ -45,6 +45,20 @@ def extract_features(cfg, model, dataloader, split_name: str):
     toggled). Returns (feats (N, K, C), labels (N,), mods (K, 3, C)) where mods hold the
     per-timestep adaLN [shift, scale, gate] vectors needed to apply DiTF normalization
     offline; they depend only on t (null prompt embeds are constant), not on the image.
+
+    cfg.extraction_mode == INVERSION (multi-timestep only): instead of independent
+    one-shot noising, a single RF-Solver reverse-ODE chain per image (each state depends
+    on the previous one; see Featurizer4Eval.invert_chain), with features cached at the
+    K requested timesteps — which must lie on the cfg.num_inversion_steps integration
+    grid. Output shapes are identical to one-shot multi-timestep ((N, K, C) pre-norm +
+    (K, 3, C) mods), so cached features are drop-in interchangeable. The chain has no
+    eps stream and ensemble_size does not apply; note ae.encode samples the VAE
+    posterior from the global RNG, so inversion features are reproducible only under
+    identical RNG state (unlike the oneshot eps stream, which is generator-isolated).
+
+    cfg.guidance_scale feeds every model evaluation in ALL modes (oneshot passes it
+    through extract_raw/extract; inversion through the chain), so oneshot-vs-inversion
+    comparisons at a given guidance are apples-to-apples.
     """
     # TODO: change call sites to pass in underlying Flux model directly instead of wrapper,
     # which adds extra unnecessary calls to access underlying model.
@@ -54,9 +68,12 @@ def extract_features(cfg, model, dataloader, split_name: str):
     device = torch.device(cfg.device)
 
     multi_timestep = isinstance(cfg.t, list)
+    inversion = getattr(cfg, "extraction_mode", ExtractionMode.ONESHOT) == ExtractionMode.INVERSION
+    if inversion and not multi_timestep:
+        raise ValueError("extraction_mode=inversion requires a list of timesteps (cfg.t)")
     eps_generator = None
     mods: list[torch.Tensor] = []
-    if multi_timestep:
+    if multi_timestep and not inversion:
         # Dedicated, seeded RNG stream for eps so extraction is reproducible independent of
         # global RNG consumption. Per-image eps values differ (drawn sequentially from this
         # stream); requires a deterministic dataloader order (shuffle=False).
@@ -70,7 +87,20 @@ def extract_features(cfg, model, dataloader, split_name: str):
 
         for single_img, single_label in zip(img, label, strict=True):
             # TODO: if GPU can tolerate higher batch sizes, we can extract features for the whole batch at once instead of looping through images one by one.
-            if multi_timestep:
+            if inversion:
+                feats_k, mods_k = model.extract_inversion(
+                    single_img,
+                    timesteps=cfg.t,
+                    num_inversion_steps=cfg.num_inversion_steps,
+                    block_idx=cfg.k,
+                    guidance=cfg.guidance_scale,
+                )  # feats_k: K, C, h, w; mods_k: K, 3, C
+                per_t = feats_k.mean(dim=[2, 3])  # K, C — global average pool, pre-normalization
+                all_feats.append(per_t.unsqueeze(0).cpu())  # 1, K, C
+                if not mods:
+                    # adaLN mods depend only on (t, null embeds), not the image.
+                    mods = [m.unsqueeze(0).cpu() for m in mods_k]
+            elif multi_timestep:
                 latents = None
                 noise = None
                 per_t_feats: list[torch.Tensor] = []
@@ -80,6 +110,7 @@ def extract_features(cfg, model, dataloader, split_name: str):
                         timestep=timestep,
                         block_idx=cfg.k,
                         ensemble_size=cfg.model.ensemble_size,
+                        guidance=cfg.guidance_scale,
                         latents=latents,
                         noise=noise,
                         generator=eps_generator,
@@ -112,6 +143,7 @@ def extract_features(cfg, model, dataloader, split_name: str):
                     timestep=cfg.t,
                     block_idx=cfg.k,
                     ensemble_size=cfg.model.ensemble_size,
+                    guidance=cfg.guidance_scale,
                 )  # 1, C, H, W
 
                 feat_vec = feat.mean(dim=[2, 3])  # 1, C  — global average pool

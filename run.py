@@ -22,7 +22,13 @@ import datasets  # noqa: F401  — triggers @register_dataset decorators
 import models  # noqa: F401  — resolves to src/models/, triggers @register_model decorators
 import tasks  # noqa: F401  — triggers @register_task decorators
 from registry import DATASETS, MODELS, TASKS
-from config_types import ProbeType
+from config_types import (
+    NUM_BLOCKS,
+    ExtractionMode,
+    ProbeType,
+    map_timesteps_to_grid,
+    validate_inversion_block,
+)
 from utils import seed_all, to_jsonable
 
 
@@ -54,7 +60,18 @@ class RunConfig:
     # Timestep index in range [1,1000]. A strictly increasing list of K timesteps enables
     # multi-timestep extraction (task="extract"): one-shot noising to each t independently,
     # same eps per image across all K forward passes. E.g. --t 100 180 260 340 420 500 580.
+    # With extraction_mode=inversion these are the nominal timesteps features are cached at
+    # along the chain; each must lie on the num_inversion_steps integration grid.
     t: int | list[int] = 260
+    # How multi-timestep features are produced: "oneshot" = independent one-shot noising
+    # per t (original behavior); "inversion" = a single chained RF-Solver reverse-ODE
+    # trajectory per image, caching features at the requested t values.
+    extraction_mode: ExtractionMode = ExtractionMode.ONESHOT
+    # extraction_mode=inversion only: integration granularity of the reverse ODE — how
+    # finely the chain from clean image toward noise is discretized. A SEPARATE knob from
+    # the cached feature timesteps t, which are a subsample of this grid (cf. Diffusion
+    # Hyperfeatures: 50 integration steps, 11 cached). Finer grids invert more accurately.
+    num_inversion_steps: int = 50
     # Seed for the dedicated eps RNG stream in multi-timestep extraction. None = use cfg.seed.
     eps_seed: int | None = None
     # task="extract" only: number of train images to extract (class-stratified with
@@ -62,9 +79,13 @@ class RunConfig:
     subset_size: int | None = None
     # Configurable, but should remain consistent across experiments.
     subset_seed: int = 42
-    k: int | list[int] = (
-        28  # [0, 57], for now, we can currently extract from multiple blocks, but have no aggregation methods implemented yet. Future work could explore this direction (e.g. concatenation, attention-based fusion, etc.
-    )
+    # Block index in [0, 56] (19 double + 38 single-stream blocks): reference block for
+    # the timestep-isolation sweep — override per experiment (e.g. 29 is EuroSAT-optimal).
+    # The extraction paths cache the adaLN mod triple, which only single-stream blocks
+    # (19-56) expose; extraction_mode=inversion enforces a single k in that range. We can
+    # currently extract from multiple blocks, but have no aggregation methods implemented
+    # yet. Future work could explore this direction (e.g. concatenation, fusion, etc.)
+    k: int | list[int] = 28
     cd: bool = False
     discard_channels: list[int] = field(default_factory=lambda: [154, 1446])
 
@@ -187,13 +208,31 @@ class RunConfig:
         if self.subset_size is not None and self.subset_size <= 0:
             raise ValueError(f"subset_size must be positive or None, got {self.subset_size}")
 
+        if self.num_inversion_steps < 1:
+            raise ValueError(f"num_inversion_steps must be >= 1, got {self.num_inversion_steps}")
+
+        if self.extraction_mode == ExtractionMode.INVERSION:
+            if not isinstance(self.t, list):
+                raise ValueError("extraction_mode=inversion requires a list of timesteps t")
+            # Grid-alignment rule lives in one place (shared with Featurizer4Eval) so the
+            # config check and the extractor can never disagree; raises on misalignment.
+            map_timesteps_to_grid(self.t, self.num_inversion_steps)
+
+        max_k = NUM_BLOCKS - 1
         if isinstance(self.k, int):
-            if self.k < 0 or self.k > 57:
-                raise ValueError(f"k must be in the range [0, 57], got {self.k}")
+            if self.k < 0 or self.k > max_k:
+                raise ValueError(f"k must be in the range [0, {max_k}], got {self.k}")
         else:
-            bad_k = [x for x in self.k if x < 0 or x > 57]
+            bad_k = [x for x in self.k if x < 0 or x > max_k]
             if bad_k:
-                raise ValueError(f"all k values must be in the range [0, 57], got invalid values {bad_k}")
+                raise ValueError(
+                    f"all k values must be in the range [0, {max_k}], got invalid values {bad_k}"
+                )
+
+        if self.extraction_mode == ExtractionMode.INVERSION:
+            # Reject at config time instead of crashing after the model loads; the block
+            # range is defined once in config_types (mirrors Featurizer4Eval.invert_chain).
+            validate_inversion_block(self.k)
 
         if any(ch < 0 for ch in self.discard_channels):
             raise ValueError(f"discard_channels must be non-negative, got {self.discard_channels}")
