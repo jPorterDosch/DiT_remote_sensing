@@ -4,6 +4,12 @@ from abc import ABC, abstractmethod
 import torch
 from einops import rearrange, repeat
 
+from config_types import (
+    NUM_DOUBLE_BLOCKS,
+    validate_inversion_block,
+)
+from config_types import map_timesteps_to_grid as _map_timesteps_to_grid
+
 from .util import load_ae, load_flow_model
 
 
@@ -247,3 +253,242 @@ class Featurizer4Eval(Featurizer):
         mod = torch.cat(mods, dim=0).mean(0, keepdim=True)  # 1, c, h, w
 
         return dit_feat, mod, torch.cat(latents_used, dim=0), torch.cat(noise_used, dim=0)
+
+    def _null_text_inputs(self, device):
+        """Null-prompt conditioning tensors (the extractor's standard conditioning)."""
+        return (
+            self.null_prompt_embeds.to(device),
+            self.text_ids.to(device),
+            self.vec.to(device),
+        )
+
+    def _velocity(self, x, img_ids, t, guidance, txt, txt_ids, vec):
+        """One velocity evaluation v(x_t, t) in packed-latent space."""
+        t_vec = torch.full((x.shape[0],), t, dtype=x.dtype, device=x.device)
+        guidance_vec = torch.full((x.shape[0],), guidance, device=x.device, dtype=x.dtype)
+        return self.model(
+            img=x,
+            img_ids=img_ids,
+            txt=txt,
+            txt_ids=txt_ids,
+            y=vec,
+            timesteps=t_vec,
+            guidance=guidance_vec,
+        )
+
+    def _ode_step(self, x, img_ids, pred, t_curr, h_step, order, guidance, txt, txt_ids, vec):
+        """One integrator step from t_curr to t_curr + h_step, given pred = v(x, t_curr).
+
+        order 2 is the RF-Solver second-order step (Wang et al., arXiv:2411.04746);
+        order 1 is naive Euler. Shared by invert_chain (h_step > 0) and generate_chain
+        (h_step < 0) so the two directions cannot drift numerically apart — the
+        round-trip validation depends on them using the identical update.
+        """
+        if order == 2:
+            # RF-Solver's 2nd-order Taylor term 0.5*h^2*(pred_mid-pred)/(h/2) cancels
+            # algebraically to h*(pred_mid-pred), so the whole step is the explicit
+            # midpoint update x + h*v(x_mid, t+h/2) (cf. REPORT / arXiv:2411.04746). We
+            # apply that directly: identical in exact arithmetic, and free of the bf16
+            # cancellation from differencing two near-equal velocities then rescaling.
+            x_mid = x + (h_step / 2) * pred
+            pred_mid = self._velocity(x_mid, img_ids, t_curr + h_step / 2, guidance, txt, txt_ids, vec)
+            return x + h_step * pred_mid
+        return x + h_step * pred
+
+    @staticmethod
+    def map_timesteps_to_grid(cache_timesteps, num_inversion_steps):
+        """Map nominal timesteps ([1, 1000], the one-shot convention t/1000) onto the
+        uniform integration grid t_i = i / num_inversion_steps.
+
+        The cached feature timesteps are a SUBSAMPLE of the integration grid (integration
+        granularity and cache timesteps are separate knobs — cf. Diffusion Hyperfeatures,
+        which integrates 50 steps and subsamples 11 for features). Each requested timestep
+        must land exactly on a grid point; a mismatch means features would silently be
+        extracted at a different t than the label claims, corrupting timestep sweeps.
+
+        Returns {nominal_timestep: grid_index}, in ascending nominal order. Thin wrapper
+        over config_types.map_timesteps_to_grid, the single source of truth shared with
+        run.py's config validation.
+        """
+        return _map_timesteps_to_grid(cache_timesteps, num_inversion_steps)
+
+    @torch.no_grad()
+    def invert_chain(
+        self,
+        img_tensor,
+        cache_timesteps,
+        num_inversion_steps,
+        block_idx,
+        guidance=3.5,
+        order=2,
+        t_stop=None,
+    ):
+        """Invert a clean image toward noise along the reverse generative ODE, caching
+        block hidden states at the requested timesteps.
+
+        Follows RF-Solver (Wang et al., ICML 2025, arXiv:2411.04746): a second-order
+        Taylor expansion of the rectified-flow ODE, with the velocity derivative
+        estimated by a half-step finite difference (two model evaluations per step).
+        Unlike one-shot noising, each state z_{t_{i+1}} depends on z_{t_i}, producing a
+        chained trajectory: z_{t_{i+1}} = z_{t_i} + h*v(z_{t_i}, t_i)
+                                          + 0.5*h^2 * (v(z_mid, t_i + h/2) - v(z_{t_i}, t_i)) / (h/2).
+
+        The chain draws no eps of its own, so ensemble_size does not apply. NOTE:
+        ae.encode SAMPLES the VAE posterior from the global RNG (repo-wide convention),
+        so the chain — and every cached feature — is deterministic only given the
+        sampled clean latents, i.e. reproducible under identical global RNG state,
+        not unconditionally "deterministic given the image".
+
+        Args:
+            img_tensor: (C, H, W) image in [-1, 1] (dataset convention).
+            cache_timesteps: nominal timesteps ([1, 1000]) at which to cache features.
+                Must lie on the integration grid (see map_timesteps_to_grid).
+            num_inversion_steps: integration granularity of the reverse ODE — a separate
+                knob from cache_timesteps.
+            block_idx: single-stream DiT block to cache hidden states from ([19, 56]
+                for FLUX). Double blocks (0-18) do not expose the adaLN mod triple the
+                cache stores, and multi-block caching is not implemented.
+            guidance: guidance strength embedded by the guidance-distilled model; also
+                used for every velocity evaluation of the chain.
+            order: 2 = RF-Solver second-order step (default), 1 = naive Euler (for
+                ablation only; known-unreliable for rectified flows).
+            t_stop: nominal timestep to integrate up to (defaults to max(cache_timesteps)).
+                Pass 1000 to invert fully to t=1 (e.g. for round-trip validation).
+
+        Returns dict with:
+            feats: {nominal_t: (1, C, h, w)} block hidden states, pre-normalization.
+            mods:  {nominal_t: (1, 3, C)} adaLN [shift, scale, gate] rows.
+            latents_clean: (1, c, h, w) unpacked clean VAE latents (t=0).
+            z_final: (1, T, d) packed latent state at the stop timestep.
+            img_ids: positional ids for z_final (needed to continue/reverse the chain).
+            grid: {nominal_t: grid_index} mapping actually used.
+        """
+        if order not in (1, 2):
+            raise ValueError(f"order must be 1 (Euler) or 2 (RF-Solver), got {order}")
+        if img_tensor.dim() != 3:
+            raise ValueError(f"Expected img_tensor of shape (C, H, W), got {tuple(img_tensor.shape)}")
+
+        # Single source of truth for the block-range rule (shared with run.py). Check the
+        # loaded model matches the assumed layout so a divergent architecture fails loudly
+        # rather than silently validating against wrong bounds.
+        if len(self.model.double_blocks) != NUM_DOUBLE_BLOCKS:
+            raise RuntimeError(
+                f"model has {len(self.model.double_blocks)} double blocks, config_types assumes "
+                f"{NUM_DOUBLE_BLOCKS}"
+            )
+        block_indices = [validate_inversion_block(block_idx)]
+
+        device = img_tensor.device if img_tensor.is_cuda else torch.device("cuda")
+        img_tensor = img_tensor.unsqueeze(0).to(device)
+
+        grid = self.map_timesteps_to_grid(cache_timesteps, num_inversion_steps)
+        if t_stop is None:
+            if not grid:
+                raise ValueError("cache_timesteps is empty and t_stop is None — nothing to do")
+            stop_idx = max(grid.values())
+        else:
+            stop_map = self.map_timesteps_to_grid([t_stop], num_inversion_steps)
+            stop_idx = stop_map[t_stop]
+            if grid and max(grid.values()) > stop_idx:
+                raise ValueError("t_stop is below the largest cache timestep")
+
+        txt, txt_ids, vec = self._null_text_inputs(device)
+
+        latents_clean = self.ae.encode(img_tensor).to(torch.bfloat16)
+        _, c, h, w = latents_clean.shape
+        x, img_ids = prepare(img=latents_clean)
+
+        idx2t = {gi: ct for ct, gi in grid.items()}
+
+        feats: dict[int, torch.Tensor] = {}
+        mods: dict[int, torch.Tensor] = {}
+        n = num_inversion_steps
+        h_step = 1.0 / n
+
+        for i in range(stop_idx + 1):
+            t_curr = i / n
+            pred = None
+
+            if i in idx2t:
+                # Features live at exactly (z_i, t_i) — the first evaluation of the
+                # RF-Solver step — so mid-chain caching adds no extra forward passes.
+                t_vec = torch.full((x.shape[0],), t_curr, dtype=x.dtype, device=x.device)
+                guidance_vec = torch.full((x.shape[0],), guidance, device=x.device, dtype=x.dtype)
+                model_kwargs = dict(
+                    img=x,
+                    img_ids=img_ids,
+                    txt=txt,
+                    txt_ids=txt_ids,
+                    y=vec,
+                    timesteps=t_vec,
+                    ft_indices=block_indices,
+                    guidance=guidance_vec,
+                )
+                if i < stop_idx:
+                    pred, up_ft = self.model.forward_velocity_feat(**model_kwargs)
+                else:
+                    # Terminal step: no ODE step follows, so the velocity would be
+                    # discarded — use the early-exiting feature pass instead (identical
+                    # features; the blocks after block_idx are skipped).
+                    up_ft = self.model.forward_feat(**model_kwargs)
+                dit_feat = rearrange(up_ft[0], "b (h w) c -> b h w c", h=h // 2, w=w // 2)
+                dit_feat = dit_feat.permute(0, 3, 1, 2)  # 1, C, h/2, w/2
+                mod = up_ft[1]
+                mod = torch.cat([mod.shift, mod.scale, mod.gate], dim=1)  # 1, 3, C
+                feats[idx2t[i]] = dit_feat
+                mods[idx2t[i]] = mod
+
+            if i >= stop_idx:
+                break
+
+            if pred is None:
+                pred = self._velocity(x, img_ids, t_curr, guidance, txt, txt_ids, vec)
+            x = self._ode_step(x, img_ids, pred, t_curr, h_step, order, guidance, txt, txt_ids, vec)
+
+        return {
+            "feats": feats,
+            "mods": mods,
+            "latents_clean": latents_clean,
+            "z_final": x,
+            "img_ids": img_ids,
+            "grid": grid,
+        }
+
+    @torch.no_grad()
+    def generate_chain(
+        self,
+        z_packed,
+        img_ids,
+        t_start,
+        num_inversion_steps,
+        guidance=3.5,
+        order=2,
+    ):
+        """Integrate the generative ODE from t_start back to t=0 (the reverse of
+        invert_chain), with the same RF-Solver step and the same conditioning, so that
+        invert_chain -> generate_chain forms a round trip.
+
+        Args:
+            z_packed: (1, T, d) packed latent state at nominal timestep t_start.
+            img_ids: positional ids matching z_packed.
+            t_start: nominal timestep in [1, 1000] the state currently sits at.
+            num_inversion_steps / guidance / order: must match the inversion run.
+
+        Returns the packed latent state at t=0 (unpack + ae.decode to get pixels).
+        """
+        if order not in (1, 2):
+            raise ValueError(f"order must be 1 (Euler) or 2 (RF-Solver), got {order}")
+
+        device = z_packed.device
+        txt, txt_ids, vec = self._null_text_inputs(device)
+
+        start_idx = self.map_timesteps_to_grid([t_start], num_inversion_steps)[t_start]
+        n = num_inversion_steps
+        h_step = -1.0 / n  # stepping toward t=0
+
+        x = z_packed
+        for i in range(start_idx, 0, -1):
+            t_curr = i / n
+            pred = self._velocity(x, img_ids, t_curr, guidance, txt, txt_ids, vec)
+            x = self._ode_step(x, img_ids, pred, t_curr, h_step, order, guidance, txt, txt_ids, vec)
+        return x

@@ -219,23 +219,17 @@ class DoubleStreamBlock(nn.Module):
         attn = attention(q, k, v, pe=pe)
         txt_attn, img_attn = attn[:, : txt.shape[1]], attn[:, txt.shape[1] :]
 
-        # time.sleep(5000)
         # calculate the img bloks
         img = img + img_mod1.gate * self.img_attn.proj(img_attn)
-        img_copy = img.clone()
-        img_feat = (1 + img_mod2.scale) * self.img_norm2(img_copy) + img_mod2.shift
-
-        x_feat = img_feat.clone()
+        x_feat = None
+        if return_feat:
+            x_feat = (1 + img_mod2.scale) * self.img_norm2(img) + img_mod2.shift
 
         img = img + img_mod2.gate * self.img_mlp((1 + img_mod2.scale) * self.img_norm2(img) + img_mod2.shift)
 
         # calculate the txt bloks
         txt = txt + txt_mod1.gate * self.txt_attn.proj(txt_attn)
         txt = txt + txt_mod2.gate * self.txt_mlp((1 + txt_mod2.scale) * self.txt_norm2(txt) + txt_mod2.shift)
-        # if return_feat:
-        #     return img_feat, txt
-        # print(img_q.shape)
-        img_q = rearrange(img_q, "B H L D -> B L (H D)")
         return img, txt, x_feat
 
 
@@ -289,10 +283,10 @@ class SingleStreamBlock(nn.Module):
     def forward_feat(self, x: Tensor, vec: Tensor, pe: Tensor, return_feat=False):
         mod, _ = self.modulation(vec[0])
 
-        x_feat = x.clone()
+        # Pre-normalization hidden state — only materialized when the caller caches it.
+        x_feat = x.clone() if return_feat else None
         x_norm = self.pre_norm(x)
         x_mod = (1 + mod.scale) * x_norm + mod.shift
-        # x_feat_ada = x_mod.clone()
 
         qkv, mlp = torch.split(self.linear1(x_mod), [3 * self.hidden_size, self.mlp_hidden_dim], dim=-1)
 

@@ -36,8 +36,14 @@ configs = {
         repo_id="black-forest-labs/FLUX.1-dev",
         repo_flow="flux1-dev.safetensors",
         repo_ae="ae.safetensors",
-        ckpt_path="/lustre/isaac24/scratch/jdosch1/DeepLearning/FLUX.1-dev/flux1-dev.safetensors",
-        # ckpt_path="/home/jdosch1/personal/DiT_remote_sensing/ditf_models/FLUX.1-dev/flux1-dev.safetensors",
+        # FLUX_DEV/AE env vars override for non-ISAAC machines (e.g. local workstations
+        # with weights under ditf_models/FLUX.1-dev/); default stays the ISAAC path.
+        # `or` (not a getenv default) so an empty-string env var counts as unset rather
+        # than sending load_sft("") / defeating the ckpt_path-is-None HF fallback.
+        ckpt_path=(
+            os.getenv("FLUX_DEV")
+            or "/lustre/isaac24/scratch/jdosch1/DeepLearning/FLUX.1-dev/flux1-dev.safetensors"
+        ),
         params=FluxParams(
             in_channels=64,
             vec_in_dim=768,
@@ -52,8 +58,7 @@ configs = {
             qkv_bias=True,
             guidance_embed=True,
         ),
-        ae_path="/lustre/isaac24/scratch/jdosch1/DeepLearning/FLUX.1-dev/ae.safetensors",
-        # ae_path="/home/jdosch1/personal/DiT_remote_sensing/ditf_models/FLUX.1-dev/ae.safetensors",
+        ae_path=(os.getenv("AE") or "/lustre/isaac24/scratch/jdosch1/DeepLearning/FLUX.1-dev/ae.safetensors"),
         ae_params=AutoEncoderParams(
             resolution=256,
             in_channels=3,
@@ -70,7 +75,7 @@ configs = {
         repo_id="black-forest-labs/FLUX.1-schnell",
         repo_flow="flux1-schnell.safetensors",
         repo_ae="ae.safetensors",
-        ckpt_path=os.getenv("FLUX_SCHNELL"),
+        ckpt_path=os.getenv("FLUX_SCHNELL") or None,
         params=FluxParams(
             in_channels=64,
             vec_in_dim=768,
@@ -85,7 +90,7 @@ configs = {
             qkv_bias=True,
             guidance_embed=False,
         ),
-        ae_path=os.getenv("AE"),
+        ae_path=os.getenv("AE") or None,
         ae_params=AutoEncoderParams(
             resolution=256,
             in_channels=3,

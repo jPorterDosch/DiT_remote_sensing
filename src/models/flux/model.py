@@ -1,6 +1,5 @@
 from dataclasses import dataclass
 
-import numpy as np
 import torch
 from torch import Tensor, nn
 
@@ -80,6 +79,84 @@ class Flux(nn.Module):
 
         self.final_layer = LastLayer(self.hidden_size, 1, self.out_channels)
 
+    def _forward_trunk(
+        self,
+        img: Tensor,
+        img_ids: Tensor,
+        txt: Tensor,
+        txt_ids: Tensor,
+        timesteps: Tensor,
+        y: Tensor,
+        guidance: Tensor | None = None,
+        ft_indices=None,
+        early_exit: bool = False,
+    ) -> tuple[Tensor | None, list]:
+        """Single shared trunk behind forward / forward_feat / forward_velocity_feat.
+
+        The inversion-chain extractor mixes velocity-only and velocity+feature calls
+        inside one ODE trajectory, so all entry points MUST compute identical
+        velocities — one trunk enforces that instead of hand-synced copies.
+
+        ft_indices: block indices to cache hidden states from (None/empty = none).
+        up_ft convention: [feat] per double block, [feat, mod] per single block,
+        in ft_indices order. early_exit=True stops after max(ft_indices) and skips
+        the final layer; the returned pred is then None.
+
+        Returns (pred, up_ft).
+        """
+        if img.ndim != 3 or txt.ndim != 3:
+            raise ValueError("Input img and txt tensors must have 3 dimensions.")
+
+        ft_indices = list(ft_indices) if ft_indices else []
+        max_ft = max(ft_indices) if ft_indices else -1
+
+        # running on sequences img
+        img = self.img_in(img)
+        vec = self.time_in(timestep_embedding(timesteps, 256))
+        if self.params.guidance_embed:
+            if guidance is None:
+                raise ValueError("Didn't get guidance strength for guidance distilled model.")
+            vec = vec + self.guidance_in(timestep_embedding(guidance, 256))
+        vec_t = vec.clone().detach()
+        vec_y = self.vector_in(y)
+        vec = vec + vec_y
+        txt = self.txt_in(txt)
+
+        ids = torch.cat((txt_ids, img_ids), dim=1)
+        pe = self.pe_embedder(ids)
+        up_ft = []
+
+        n_double = len(self.double_blocks)
+        n_single = len(self.single_blocks)
+        if early_exit:
+            n_double = min(n_double, max_ft + 1)
+            n_single = min(n_single, max(0, max_ft + 1 - len(self.double_blocks)))
+
+        for i in range(n_double):
+            img, txt, img_feat = self.double_blocks[i].forward_feat(
+                img=img, txt=txt, vec=vec, pe=pe, return_feat=i in ft_indices
+            )
+            if i in ft_indices:
+                up_ft.append(img_feat.clone().detach())
+
+        if n_single > 0:
+            img = torch.cat((txt, img), 1)
+            offset = len(self.double_blocks)
+            for i in range(n_single):
+                img, img_feat, mod = self.single_blocks[i].forward_feat(
+                    img, vec=(vec, vec_t, vec_y), pe=pe, return_feat=(offset + i) in ft_indices
+                )
+                if (offset + i) in ft_indices:
+                    up_ft.append(img_feat[:, txt.shape[1] :, ...].clone().detach())
+                    up_ft.append(mod)
+
+        if early_exit:
+            return None, up_ft
+
+        img = img[:, txt.shape[1] :, ...]
+        pred = self.final_layer(img, vec)  # (N, T, patch_size ** 2 * out_channels)
+        return pred, up_ft
+
     def forward(
         self,
         img: Tensor,
@@ -90,34 +167,8 @@ class Flux(nn.Module):
         y: Tensor,
         guidance: Tensor | None = None,
     ) -> Tensor:
-        if img.ndim != 3 or txt.ndim != 3:
-            raise ValueError("Input img and txt tensors must have 3 dimensions.")
-
-        # running on sequences img
-        img = self.img_in(img)
-        vec = self.time_in(timestep_embedding(timesteps, 256))
-        if self.params.guidance_embed:
-            if guidance is None:
-                raise ValueError("Didn't get guidance strength for guidance distilled model.")
-            vec = vec + self.guidance_in(timestep_embedding(guidance, 256))
-        vec = vec + self.vector_in(y)
-        txt = self.txt_in(txt)
-
-        ids = torch.cat((txt_ids, img_ids), dim=1)
-        pe = self.pe_embedder(ids)
-
-        # for block in self.double_blocks:
-        for i, block in enumerate(self.double_blocks):
-            img, txt = block(img=img, txt=txt, vec=vec, pe=pe)
-
-        img = torch.cat((txt, img), 1)
-        for block in self.single_blocks:
-            img = block(img, vec=vec, pe=pe)
-
-        img = img[:, txt.shape[1] :, ...]
-
-        img = self.final_layer(img, vec)  # (N, T, patch_size ** 2 * out_channels)
-        return img
+        pred, _ = self._forward_trunk(img, img_ids, txt, txt_ids, timesteps, y, guidance)
+        return pred
 
     def forward_feat(
         self,
@@ -128,61 +179,37 @@ class Flux(nn.Module):
         timesteps: Tensor,
         y: Tensor,
         ft_indices,
-        cat,
+        cat=None,
         guidance: Tensor | None = None,
     ):
-        if img.ndim != 3 or txt.ndim != 3:
-            raise ValueError("Input img and txt tensors must have 3 dimensions.")
+        """Block features only; early-exits after max(ft_indices), velocity not computed."""
+        _, up_ft = self._forward_trunk(
+            img, img_ids, txt, txt_ids, timesteps, y, guidance, ft_indices=ft_indices, early_exit=True
+        )
+        return up_ft
 
-        # running on sequences img
-        img = self.img_in(img)
+    def forward_velocity_feat(
+        self,
+        img: Tensor,
+        img_ids: Tensor,
+        txt: Tensor,
+        txt_ids: Tensor,
+        timesteps: Tensor,
+        y: Tensor,
+        ft_indices,
+        guidance: Tensor | None = None,
+    ):
+        """Full forward pass returning BOTH the velocity prediction and block features.
 
-        vec = self.time_in(timestep_embedding(timesteps, 256))
-        if self.params.guidance_embed:
-            if guidance is None:
-                raise ValueError("Didn't get guidance strength for guidance distilled model.")
-            vec = vec + self.guidance_in(timestep_embedding(guidance, 256))
+        Unlike forward_feat (which early-exits after max(ft_indices) and discards the
+        velocity), this runs every block so the returned prediction is the model's
+        velocity field v(x_t, t) — needed by the inversion-chain extractor, which must
+        step the reverse ODE AND cache features from the same forward pass.
 
-        vec_t = vec.clone().detach()
-
-        vec = vec + self.vector_in(y)
-
-        vec_y = self.vector_in(y)
-
-        txt = self.txt_in(txt)
-
-        ids = torch.cat((txt_ids, img_ids), dim=1)
-        pe = self.pe_embedder(ids)
-        up_ft = []
-
-        for i, block in enumerate(self.double_blocks):
-            if i > np.max(ft_indices):
-                break
-            img, txt, img_feat = block.forward_feat(
-                img=img, txt=txt, vec=vec, pe=pe, return_feat=True if i in ft_indices else False
-            )
-
-            if i in ft_indices:
-                # print(sample.shape)
-                up_ft.append(img_feat.clone().detach())
-
-        img = torch.cat((txt, img), 1)
-        for i, block in enumerate(self.single_blocks):
-            # print(19+i)
-            if (19 + i) > np.max(ft_indices):
-                break
-            img, img_feat, mod = block.forward_feat(
-                img, vec=(vec, vec_t, vec_y), pe=pe, return_feat=True if (i + 19) in ft_indices else False
-            )
-
-            if (19 + i) in ft_indices:
-                up_ft.append(img_feat[:, txt.shape[1] :, ...].clone().detach())
-                up_ft.append(mod)
-
-        img = img[:, txt.shape[1] :, ...]
-
-        img = self.final_layer(img, vec)  # (N, T, patch_size ** 2 * out_channels)
-
-        # output = {}
-        output = up_ft
-        return output
+        Returns (pred, up_ft): pred is (N, T, in_channels) packed-latent velocity;
+        up_ft matches forward_feat's convention ([feat] for double blocks,
+        [feat, mod] for single blocks, in ft_indices order).
+        """
+        return self._forward_trunk(
+            img, img_ids, txt, txt_ids, timesteps, y, guidance, ft_indices=ft_indices, early_exit=False
+        )
