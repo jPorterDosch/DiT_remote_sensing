@@ -16,6 +16,57 @@ from .utils import extract_features
 POOLING = "spatial_mean"  # global average pool over the feature map, pre-normalization
 
 
+# Datasets whose __getitem__ implements the DEGRADE_TO resolution-degradation hook. The env
+# var silently no-ops elsewhere, so stamping _DEG provenance for any other dataset would make
+# the provenance LIE (native-resolution features labelled as degraded).
+_DEGRADE_AWARE_DATASETS = {"resisc45", "eurosat"}
+
+
+def env_provenance(cfg):
+    """Read the three extraction-control env vars, validate them against the config, and
+    return (cache_tag_suffix, meta_fields). Shared by ExtractionTask and TokenExtractionTask
+    so a control cache can NEVER carry an unsuffixed name (the poisoning both task docstrings
+    warn about). Uniform semantics: unset, "" and "0" all mean OFF for every flag.
+    """
+    from config_types import ExtractionMode
+
+    from utils import env_value
+
+    randinit = env_value("FLUX_RANDOM_INIT")
+    fixedcond = env_value("FIXED_COND_T")
+    degrade = env_value("DEGRADE_TO")
+
+    if fixedcond and cfg.extraction_mode == ExtractionMode.INVERSION:
+        # feat_flux reads FIXED_COND_T only in the one-shot forward; invert_chain never sees
+        # it. Stamping the tag anyway would label an ORDINARY inversion cache as a
+        # fixed-conditioning control and the analysis would compare vanilla against itself.
+        raise ValueError(
+            "FIXED_COND_T is only implemented for the one-shot path; unset it for "
+            "extraction_mode=inversion (the chain would silently ignore it and the cache "
+            "would be mislabelled as a control)."
+        )
+    if degrade and cfg.dataset.name not in _DEGRADE_AWARE_DATASETS:
+        raise ValueError(
+            f"DEGRADE_TO is implemented only for {sorted(_DEGRADE_AWARE_DATASETS)}; dataset "
+            f"'{cfg.dataset.name}' would silently ignore it while the cache claims degraded "
+            "provenance."
+        )
+
+    suffix = ""
+    if randinit:
+        suffix += "_RANDINIT"
+    if fixedcond:
+        suffix += f"_FIXEDCOND{fixedcond}"
+    if degrade:
+        suffix += f"_DEG{degrade}"
+    meta = {
+        "weights": "random_init" if randinit else "flux-dev",
+        "fixed_cond_t": int(fixedcond) if fixedcond else None,
+        "degrade_to": int(degrade) if degrade else None,
+    }
+    return suffix, meta
+
+
 def _stratified_indices(labels: np.ndarray, subset_size: int, seed: int) -> np.ndarray:
     """Class-stratified sample of `subset_size` indices, split as evenly as possible
     across classes (first `subset_size % num_classes` classes get one extra).
@@ -71,7 +122,15 @@ class ExtractionTask:
 
         inversion = cfg.extraction_mode == ExtractionMode.INVERSION
         # e.g. inversion_g1.0_n50 / oneshot_g1.0 / oneshot_g3.5 — collision-proof cache tag.
-        cache_tag = f"{cfg.extraction_mode.value.lower()}_g{cfg.guidance_scale}"
+        # RANDOM-WEIGHT PROVENANCE. FLUX_RANDOM_INIT builds the architecture WITHOUT
+        # loading the checkpoint (see flux/util.load_flow_model), which changes the
+        # features completely while changing no field of RunConfig -- so the config hash,
+        # the run directory and this filename would all be identical to a real-weights
+        # run. Every downstream sweep locates caches by GLOB, so an untrained cache
+        # sitting at the expected path would be probed as if it were FLUX. Mark it in the
+        # filename, where a `*_oneshot_g1.0.npz` glob cannot reach it.
+        prov_suffix, prov_meta = env_provenance(cfg)
+        cache_tag = f"{cfg.extraction_mode.value.lower()}_g{cfg.guidance_scale}" + prov_suffix
         if inversion:
             cache_tag += f"_n{cfg.num_inversion_steps}"
 
@@ -150,6 +209,9 @@ class ExtractionTask:
             extraction_mode=np.array(cfg.extraction_mode.value),
             guidance_scale=np.array(cfg.guidance_scale),
             pooling=np.array(POOLING),
+            weights=np.array(prov_meta["weights"]),
+            degrade_to=np.array(prov_meta["degrade_to"] if prov_meta["degrade_to"] else -1),
+            fixed_cond_t=np.array(prov_meta["fixed_cond_t"] if prov_meta["fixed_cond_t"] else -1),
             **mode_extra,
         )
         consistency = "chain state" if inversion else "eps-consistency assertion passed"
@@ -170,6 +232,9 @@ class ExtractionTask:
             "dataset": cfg.dataset.name,
             "pooling": POOLING,
             "feats_shape": list(feats.shape),
+            # "random_init" = untrained control, NOT FLUX weights. Recorded here as well as
+            # in the filename so provenance survives a rename or a copy.
+            **prov_meta,
         }
         meta_path = os.path.join(cfg.save_dir, f"multistep_train_feats_{cache_tag}_meta.json")
         with open(meta_path, "w") as f:

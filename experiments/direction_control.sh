@@ -80,9 +80,16 @@ fi
 echo "cache: $CACHE_PATH"
 
 BEST_T="${BEST_T:-260}"
-OUT_CSV="$PROJECT_ROOT/results/direction_control.csv"
+# Overridable like the companion sweep script. REQUIRED since the CSV schema gained
+# pos_enc/pos_scale: the pre-existing results/direction_control.csv carries the old
+# header, and the append-time header guard aborts on mismatch -- with a hardcoded path
+# every invocation would train 5 folds on GPU and then die, and `|| WARN` would hide it.
+OUT_CSV="${OUT_CSV:-$PROJECT_ROOT/results/direction_control_v2.csv}"
 echo "out-csv: $OUT_CSV   best-t: $BEST_T"
 
+# POS_ENC / POS_SCALE pass through to traj_readout (default learned/1.0), matching
+# ordering_traj_readout_inversion.sh -- previously this script silently ignored the env vars
+# the companion script honours, so a sinusoidal control re-run trained the learned table.
 # --- Sweep: 2 norms x 5 seeds, all three arms per invocation.
 fail=0
 for norm in raw normalized; do
@@ -95,6 +102,8 @@ for norm in raw normalized; do
             --norm "$norm" \
             --seed "$seed" \
             --best-t "$BEST_T" \
+            --pos-enc "${POS_ENC:-learned}" \
+            --pos-scale "${POS_SCALE:-1.0}" \
             --control-out-csv "$OUT_CSV" || {
                 echo "WARN: control failed (norm=$norm seed=$seed) — continuing." >&2
                 fail=1
@@ -104,3 +113,6 @@ done
 
 echo "control done. results appended to $OUT_CSV"
 [ "$fail" -eq 0 ] || echo "NOTE: one or more runs failed — grep the log for WARN." >&2
+# Propagate: without this the trailing echo exits 0 and SLURM reports
+# COMPLETED even when every run failed.
+exit "$fail"

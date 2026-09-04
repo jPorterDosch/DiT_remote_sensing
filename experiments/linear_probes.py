@@ -137,7 +137,7 @@ def tier1(caches: list[dict], rows: list[dict]) -> None:
         acc, t = best_t_inversion
         print("-" * len(header))
         print(f">>> best single t (inversion): t={t}  (CV acc {acc:.3f})")
-        print(f">>> feed this to the B2 sweep:  BEST_T={t} sbatch experiments/b2_traj_readout_inversion.sbatch")
+        print(f">>> feed this to the B2 sweep:  BEST_T={t} sbatch experiments/ordering_traj_readout_inversion.sh")
     else:
         print("-" * len(header))
         print(">>> no inversion cache among inputs — cannot recommend --best-t")

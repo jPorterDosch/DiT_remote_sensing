@@ -66,11 +66,18 @@ echo "cache: $CACHE_PATH"
 
 BEST_T="${BEST_T:-260}"
 
-OUT_CSV="$PROJECT_ROOT/results/ordering_inversion_g1.0.csv"
-echo "out-csv: $OUT_CSV   best-t: $BEST_T"
+# Positional-encoding controls. Defaults reproduce the original sweep exactly; export
+# POS_ENC=sinusoidal to re-run with the fixed table that the direction control showed
+# does not collapse into a permutation-invariant solution (learned collapsed 23/50).
+POS_ENC="${POS_ENC:-learned}"
+POS_SCALE="${POS_SCALE:-1.0}"
+
+OUT_CSV="${OUT_CSV:-$PROJECT_ROOT/results/ordering_inversion_g1.0.csv}"
+echo "out-csv: $OUT_CSV   best-t: $BEST_T   pos-enc: $POS_ENC (scale $POS_SCALE)"
 
 # --- GATE: permutation-sensitivity self-test must pass before any training.
-python3 "$PROJECT_ROOT/experiments/traj_readout.py" --cache-path "$CACHE_PATH" --self-test || {
+python3 "$PROJECT_ROOT/experiments/traj_readout.py" --cache-path "$CACHE_PATH" --self-test \
+    --pos-enc "$POS_ENC" --pos-scale "$POS_SCALE" || {
     echo "FATAL: traj_readout self-test failed — aborting sweep (see message above)." >&2
     exit 1
 }
@@ -87,6 +94,8 @@ for arm in traj mlp shuffle; do
                 --norm "$norm" \
                 --seed "$seed" \
                 --best-t "$BEST_T" \
+                --pos-enc "$POS_ENC" \
+                --pos-scale "$POS_SCALE" \
                 --out-csv "$OUT_CSV" || {
                     echo "WARN: run failed (arm=$arm norm=$norm seed=$seed) — continuing sweep." >&2
                     fail=1
@@ -97,3 +106,6 @@ done
 
 echo "sweep done. results appended to $OUT_CSV"
 [ "$fail" -eq 0 ] || echo "NOTE: one or more runs failed — grep the log for WARN." >&2
+# Propagate: without this the trailing echo exits 0 and SLURM reports
+# COMPLETED even when every run failed.
+exit "$fail"

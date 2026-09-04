@@ -57,6 +57,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import math
 import os
 from datetime import datetime, timezone
 
@@ -93,6 +94,17 @@ WEIGHT_DECAY = 1e-4
 BATCH_SIZE = 64
 N_FOLDS = 5
 
+# --- Positional encoding mode (set from --pos-enc / --pos-scale in main) ----------------
+# "learned"    — nn.Parameter, trunc_normal_(std=0.02). Original behaviour.
+# "sinusoidal" — fixed non-learnable buffer. Two consequences that matter here: it is not
+#                in model.parameters(), so WEIGHT_DECAY cannot shrink it, and its RMS is
+#                ~0.707 instead of 0.02. The direction control showed the learned table
+#                decaying to a permutation-invariant solution in 23/50 folds (perm_delta
+#                ~1e-4); a fixed table means the model is never permutation-invariant at
+#                any point in training, so that basin does not exist to fall into.
+POS_ENC = "learned"
+POS_SCALE = 1.0
+
 CSV_FIELDS = [
     "arm",
     "norm",
@@ -100,6 +112,22 @@ CSV_FIELDS = [
     "fold",
     "acc",
     "macro_f1",
+    # Encoder diagnostics, same four the direction control records. Without these the
+    # class task cannot distinguish "ordering carries no signal" from "this particular
+    # model stopped being able to read ordering" — the learned table collapsed into a
+    # permutation-invariant solution in 23/50 control folds, and a collapsed traj model
+    # IS shuffle. Logging them per fold makes each row self-verifying: order-sensitivity
+    # and the accuracy gap are measured on the SAME model rather than inferred across
+    # experiments. None for arms with no `pos` (mlp).
+    "pos_rms_init",
+    "pos_rms_final",
+    "pos_signal_ratio",
+    "perm_delta_final",
+    # Which positional encoding produced this row. Load-bearing: the learned-vs-sinusoidal
+    # comparison is unrecoverable from the data without it -- a sinusoidal re-run appended
+    # to the same CSV has identical (arm, norm, seed, fold) keys otherwise.
+    "pos_enc",
+    "pos_scale",
     "param_count",
     "timestamp",
 ]
@@ -120,6 +148,11 @@ CONTROL_CSV_FIELDS = [
     "pos_rms_final",
     "pos_signal_ratio",
     "perm_delta_final",
+    # Which positional encoding produced this row. Load-bearing: the learned-vs-sinusoidal
+    # comparison is unrecoverable from the data without it -- a sinusoidal re-run appended
+    # to the same CSV has identical (arm, norm, seed, fold) keys otherwise.
+    "pos_enc",
+    "pos_scale",
     "param_count",
     "timestamp",
 ]
@@ -208,11 +241,35 @@ def build_direction_dataset(feats: np.ndarray) -> tuple[np.ndarray, np.ndarray, 
 # =======================================================================================
 # Models
 # =======================================================================================
+def sinusoidal_pos_table(k: int, d: int) -> torch.Tensor:
+    """Standard transformer sinusoidal table, shape (1, k, d), RMS ~0.707.
+
+    At K=7 the sinusoid's usual selling points (relative distance, extrapolation beyond
+    trained lengths) are irrelevant — what matters here is only that the table is FIXED
+    and of the same order of magnitude as input_proj's output (measured RMS ~0.74 on this
+    cache), so position is a comparable signal rather than a ~2% perturbation.
+    """
+    position = torch.arange(k, dtype=torch.float32).unsqueeze(1)
+    div = torch.exp(torch.arange(0, d, 2, dtype=torch.float32) * (-math.log(10000.0) / d))
+    pe = torch.zeros(k, d, dtype=torch.float32)
+    pe[:, 0::2] = torch.sin(position * div)
+    pe[:, 1::2] = torch.cos(position * div)
+    return pe.unsqueeze(0)
+
+
 class TrajEncoder(nn.Module):
     """Transformer encoder over K ordered timestep tokens -> mean-pool -> linear head."""
 
-    def __init__(self, c: int, k: int, n_classes: int):
+    def __init__(self, c: int, k: int, n_classes: int,
+                 pos_enc: str | None = None, pos_scale: float | None = None):
         super().__init__()
+        # Explicit args beat the module globals so tests and multi-config processes can
+        # build both encoders side by side; None falls back to the globals main() sets.
+        pos_enc = POS_ENC if pos_enc is None else pos_enc
+        pos_scale = POS_SCALE if pos_scale is None else pos_scale
+        if pos_enc not in ("learned", "sinusoidal"):
+            # A typo ("sinusoid") must not silently become the learned table.
+            raise ValueError(f"unknown pos_enc {pos_enc!r}; expected 'learned' or 'sinusoidal'")
         self.input_proj = nn.Linear(c, D_MODEL)
         # Learned positional encoding. Non-zero init is load-bearing: with pos == 0 the
         # encoder (permutation-equivariant) + mean-pool is exactly permutation-invariant,
@@ -220,8 +277,14 @@ class TrajEncoder(nn.Module):
         # weights stay identical between the arms — the first sweep produced bit-identical
         # fold accuracies because of this. std=0.02 follows the ViT/BERT learned-pos-enc
         # convention.
-        self.pos = nn.Parameter(torch.empty(1, k, D_MODEL))
-        nn.init.trunc_normal_(self.pos, std=0.02)
+        # `pos` is a Parameter when learned and a buffer when sinusoidal. Every diagnostic
+        # below (pos_rms / pos_signal_ratio / perm_sensitivity) gates on hasattr(model,
+        # "pos") and calls .detach(), both of which hold either way.
+        if pos_enc == "sinusoidal":
+            self.register_buffer("pos", sinusoidal_pos_table(k, D_MODEL) * pos_scale)
+        else:
+            self.pos = nn.Parameter(torch.empty(1, k, D_MODEL))
+            nn.init.trunc_normal_(self.pos, std=0.02)
         layer = nn.TransformerEncoderLayer(
             D_MODEL, NHEAD, dim_feedforward=DIM_FF, dropout=DROPOUT, batch_first=True
         )
@@ -253,9 +316,10 @@ def count_params(model: nn.Module) -> int:
     return sum(p.numel() for p in model.parameters())
 
 
-def build_model(arm: str, c: int, k: int, n_classes: int) -> nn.Module:
+def build_model(arm: str, c: int, k: int, n_classes: int,
+                pos_enc: str | None = None, pos_scale: float | None = None) -> nn.Module:
     if arm in ("traj", "shuffle"):
-        return TrajEncoder(c, k, n_classes)
+        return TrajEncoder(c, k, n_classes, pos_enc=pos_enc, pos_scale=pos_scale)
     if arm == "mlp":
         return MLPHead(c, n_classes)
     raise ValueError(f"unknown arm {arm!r}")
@@ -398,11 +462,16 @@ def run_cv(arm: str, feats: np.ndarray, labels: np.ndarray, seed: int, device: t
         fold_seed = seed * 1000 + fold
         torch.manual_seed(fold_seed)  # deterministic weight init
         model = build_model(arm, c, k, n_classes)
+        rms_init = pos_rms(model)
+
         train_one(model, x_tr, labels[tr], device, fold_seed)
         y_pred = predict(model, x_va, device)
 
         acc = accuracy_score(labels[va], y_pred)
         macro_f1 = f1_score(labels[va], y_pred, average="macro")
+        rms_final = pos_rms(model)
+        delta = perm_sensitivity(model, x_va, device)
+        ratio = pos_signal_ratio(model, x_va, device)
         rows.append(
             {
                 "arm": arm,
@@ -410,10 +479,19 @@ def run_cv(arm: str, feats: np.ndarray, labels: np.ndarray, seed: int, device: t
                 "fold": fold,
                 "acc": round(float(acc), 4),
                 "macro_f1": round(float(macro_f1), 4),
+                "pos_rms_init": None if rms_init is None else round(rms_init, 6),
+                "pos_rms_final": None if rms_final is None else round(rms_final, 6),
+                "pos_signal_ratio": None if ratio is None else round(ratio, 6),
+                "perm_delta_final": None if delta is None else round(delta, 6),
                 "param_count": count_params(model),
             }
         )
-        print(f"  fold {fold}: acc={acc:.4f}  macro_f1={macro_f1:.4f}")
+        bits = [f"  fold {fold}: acc={acc:.4f}  macro_f1={macro_f1:.4f}"]
+        if delta is not None:
+            # The load-bearing number: if this is ~0 the model is permutation-invariant,
+            # so its score says nothing about ordering no matter what the accuracy is.
+            bits.append(f"perm_delta {delta:.3e}")
+        print("  ".join(bits))
     return rows
 
 
@@ -554,34 +632,54 @@ def report_control_verdict(by_arm: dict[str, list[dict]]) -> None:
 # =======================================================================================
 # CSV
 # =======================================================================================
-def append_rows(out_csv: str, rows: list[dict], norm: str) -> None:
+def _check_existing_header(out_csv: str, fields: list[str]) -> None:
+    # Refuse to append under a stale header. The schema has grown twice; appending
+    # 12-field rows below an 8-column header silently misaligns the diagnostic columns
+    # the collapse analysis depends on.
+    import csv
+
+    if os.path.getsize(out_csv) == 0:
+        return  # empty file: the caller's write_header path will populate it
+    with open(out_csv, newline="") as f:
+        existing = next(csv.reader(f), None)
+    if existing is not None and existing != fields:
+        raise SystemExit(
+            f"FATAL: {out_csv} has header {existing}, but this script writes {fields}. "
+            "Point --out-csv at a fresh file (or migrate the old one) instead of mixing "
+            "schemas in place."
+        )
+
+
+def _append(out_csv: str, rows: list[dict], norm: str, fields: list[str]) -> None:
+    """Single writer for both sweep and control CSVs. The two schemas previously had
+    line-for-line duplicate writers, and every schema fix (empty-file handling, header
+    validation, pos_enc stamping) had to land twice -- this diff itself demonstrated the
+    drift mechanism the duplication invites."""
     import csv
 
     os.makedirs(os.path.dirname(os.path.abspath(out_csv)), exist_ok=True)
-    write_header = not os.path.exists(out_csv)
+    write_header = not os.path.exists(out_csv) or os.path.getsize(out_csv) == 0
+    if not write_header:
+        _check_existing_header(out_csv, fields)
     ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
     with open(out_csv, "a", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=CSV_FIELDS)
+        w = csv.DictWriter(f, fieldnames=fields)
         if write_header:
             w.writeheader()
         for r in rows:
-            w.writerow({**r, "norm": norm, "timestamp": ts})
+            # Row-level value wins over the module global (rows built by run_cv /
+            # run_control_arm stamp the encoder actually constructed).
+            w.writerow({"pos_enc": POS_ENC, "pos_scale": POS_SCALE,
+                        **r, "norm": norm, "timestamp": ts})
     print(f"appended {len(rows)} row(s) to {out_csv}")
+
+
+def append_rows(out_csv: str, rows: list[dict], norm: str) -> None:
+    _append(out_csv, rows, norm, CSV_FIELDS)
 
 
 def append_control_rows(out_csv: str, rows: list[dict], norm: str) -> None:
-    import csv
-
-    os.makedirs(os.path.dirname(os.path.abspath(out_csv)), exist_ok=True)
-    write_header = not os.path.exists(out_csv)
-    ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    with open(out_csv, "a", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=CONTROL_CSV_FIELDS)
-        if write_header:
-            w.writeheader()
-        for r in rows:
-            w.writerow({**r, "norm": norm, "timestamp": ts})
-    print(f"appended {len(rows)} row(s) to {out_csv}")
+    _append(out_csv, rows, norm, CONTROL_CSV_FIELDS)
 
 
 # =======================================================================================
@@ -643,10 +741,43 @@ def main() -> None:
     )
     p.add_argument(
         "--control-out-csv",
-        default="results/direction_control.csv",
+        default="results/direction_control_v2.csv",
         help="CSV for --control rows (default %(default)s). Separate schema from --out-csv.",
     )
+    p.add_argument(
+        "--pos-enc",
+        choices=["learned", "sinusoidal"],
+        default="learned",
+        help="Positional encoding for the traj/shuffle encoder (default %(default)s). "
+        "'sinusoidal' is a fixed buffer: WEIGHT_DECAY cannot reach it and the model is "
+        "never permutation-invariant during training, which is the basin the learned "
+        "table fell into in 23/50 direction-control folds.",
+    )
+    p.add_argument(
+        "--pos-scale",
+        type=float,
+        default=1.0,
+        help="Multiplier on the sinusoidal table (default %(default)s; ignored when "
+        "--pos-enc learned). At 1.0 its RMS ~0.707 is comparable to input_proj's ~0.74.",
+    )
     args = p.parse_args()
+
+    # Validate the output-CSV header BEFORE any training: a schema mismatch discovered at
+    # append time costs the entire GPU sweep and is then swallowed by the caller's `|| WARN`.
+    # Scope to the CSV the SELECTED MODE actually writes -- checking both unconditionally
+    # made every invocation (self-test included) die on whichever default file was stale.
+    if getattr(args, "control", False):
+        path, fields = getattr(args, "control_out_csv", None), CONTROL_CSV_FIELDS
+    else:
+        path, fields = getattr(args, "out_csv", None), CSV_FIELDS
+    if path and os.path.exists(path):
+        _check_existing_header(path, fields)
+
+    global POS_ENC, POS_SCALE
+    POS_ENC = args.pos_enc
+    POS_SCALE = args.pos_scale
+    if POS_ENC != "learned":
+        print(f"positional encoding: {POS_ENC} (scale {POS_SCALE})")
 
     d = np.load(args.cache_path)
     feats_raw, labels, mods, timesteps = (

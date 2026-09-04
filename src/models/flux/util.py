@@ -121,6 +121,17 @@ def load_flow_model(name: str, device: str | torch.device = "cuda", hf_download:
     # Loading flux
     print("Init model")
     ckpt_path = configs[name].ckpt_path
+    # RANDOM-WEIGHT CONTROL. With FLUX_RANDOM_INIT=1 the architecture is built but no
+    # checkpoint is loaded, so features come from an UNTRAINED network of identical
+    # capacity (same 3072-d block-28 output). This is the only control that separates
+    # "the learned representation is doing the work" from "3072 nonlinear projections
+    # beat 16 raw latent dims" -- by the data-processing inequality DiT(x_t) cannot hold
+    # more label information than x_t, so a level gap over the raw baseline is NOT by
+    # itself evidence of a representation. hf_download is forced off too, otherwise a
+    # None ckpt_path silently falls through to downloading the real weights.
+    if os.getenv("FLUX_RANDOM_INIT", "") not in ("", "0"):
+        print("FLUX_RANDOM_INIT set — building UNTRAINED Flux (no checkpoint)")
+        ckpt_path, hf_download = None, False
     if (
         ckpt_path is None
         and configs[name].repo_id is not None

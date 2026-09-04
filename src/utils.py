@@ -61,3 +61,15 @@ def to_jsonable(value: Any) -> Any:
         return [to_jsonable(v) for v in value]
 
     return value
+
+
+def env_value(name: str) -> str:
+    """Shared 'unset, empty, and "0" all mean OFF' rule for the extraction-control env vars
+    (FLUX_RANDOM_INIT / FIXED_COND_T / DEGRADE_TO). The rule was previously re-implemented
+    inline at six call sites; gates that must agree byte-for-byte on when a flag is 'on'
+    should share one implementation. Returns "" when off, else the raw value.
+    """
+    import os
+
+    v = os.getenv(name, "")
+    return "" if v in ("", "0") else v
