@@ -60,13 +60,14 @@ def test_control_detects_ordering() -> None:
     print(f"\nsynthetic: {x.shape}  classes {np.bincount(y).tolist()}  chance 0.5000\n")
 
     dev = torch.device("cpu")
-    out_csv = os.path.join(tempfile.mkdtemp(), "synth_control.csv")
     by_arm = {}
-    for arm in ("traj", "shuffle"):
-        print(f"--- arm={arm} ---")
-        rows = T.run_control_arm(arm, x, y, groups, 2, 42, dev)
-        by_arm[arm] = rows
-        T.append_control_rows(out_csv, rows, "raw")
+    with tempfile.TemporaryDirectory() as tmp:
+        out_csv = os.path.join(tmp, "synth_control.csv")
+        for arm in ("traj", "shuffle"):
+            print(f"--- arm={arm} ---")
+            rows = T.run_control_arm(arm, x, y, groups, 2, 42, dev)
+            by_arm[arm] = rows
+            T.append_control_rows(out_csv, rows, "raw")
     T.report_control_verdict(by_arm)
 
     traj = float(np.mean([r["acc"] for r in by_arm["traj"]]))

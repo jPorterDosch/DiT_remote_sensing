@@ -93,20 +93,22 @@ def _env_suffix_and_meta():
     (via load_flow_model) and DEGRADE_TO (via the dataset hook) but previously wrote
     UN-suffixed cache names -- a stale export would poison the exact filenames the
     downstream probes glob (2026-09-04 review)."""
-    from utils import env_value
+    from utils import env_int, env_value
 
+    fixedcond = env_int("FIXED_COND_T", 1, 1000)
+    degrade = env_int("DEGRADE_TO")
     parts = []
     if env_value("FLUX_RANDOM_INIT"):
         parts.append("RANDINIT")
-    if env_value("FIXED_COND_T"):
-        parts.append(f"FIXEDCOND{env_value('FIXED_COND_T')}")
-    if env_value("DEGRADE_TO"):
-        parts.append(f"DEG{env_value('DEGRADE_TO')}")
+    if fixedcond:
+        parts.append(f"FIXEDCOND{fixedcond}")
+    if degrade:
+        parts.append(f"DEG{degrade}")
     suffix = "".join("_" + p for p in parts)
     meta = {
         "weights": "random_init" if env_value("FLUX_RANDOM_INIT") else "flux-dev",
-        "degrade_to": int(env_value("DEGRADE_TO")) if env_value("DEGRADE_TO") else None,
-        "fixed_cond_t": int(env_value("FIXED_COND_T")) if env_value("FIXED_COND_T") else None,
+        "degrade_to": degrade,
+        "fixed_cond_t": fixedcond,
     }
     return suffix, meta
 

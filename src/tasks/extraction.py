@@ -30,11 +30,15 @@ def env_provenance(cfg):
     """
     from config_types import ExtractionMode
 
-    from utils import env_value
+    from utils import env_int, env_value
 
     randinit = env_value("FLUX_RANDOM_INIT")
     fixedcond = env_value("FIXED_COND_T")
     degrade = env_value("DEGRADE_TO")
+    # Fail on typos (FIXED_COND_T=100.0, DEGRADE_TO=abc) here, with the var named, rather
+    # than as a bare ValueError during run-name generation (PR #5 review).
+    fixedcond_i = env_int("FIXED_COND_T", 1, 1000)
+    degrade_i = env_int("DEGRADE_TO", 1)
 
     if fixedcond and cfg.extraction_mode == ExtractionMode.INVERSION:
         # feat_flux reads FIXED_COND_T only in the one-shot forward; invert_chain never sees
@@ -61,14 +65,14 @@ def env_provenance(cfg):
     if randinit:
         parts.append("randinit")
     if fixedcond:
-        parts.append(f"fixedcond{fixedcond}")
+        parts.append(f"fixedcond{fixedcond_i}")
     if degrade:
-        parts.append(f"deg{degrade}")
+        parts.append(f"deg{degrade_i}")
     suffix = "".join("_" + p.upper() for p in parts)
     meta = {
         "weights": "random_init" if randinit else "flux-dev",
-        "fixed_cond_t": int(fixedcond) if fixedcond else None,
-        "degrade_to": int(degrade) if degrade else None,
+        "fixed_cond_t": fixedcond_i,
+        "degrade_to": degrade_i,
     }
     return suffix, meta, parts
 

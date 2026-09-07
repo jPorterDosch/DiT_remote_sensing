@@ -86,12 +86,11 @@ class EuroSATDataset(Dataset):
         # 64px, so DEGRADE_TO=64 is a near-no-op here -- the hook exists so the
         # _DEGRADE_AWARE_DATASETS whitelist in tasks/extraction.py is true, and so
         # symmetric degradation sweeps can include EuroSAT without silent no-ops.
-        from utils import env_value  # shared "0 means off" rule -- see src/utils.py
+        from utils import env_int  # shared "0 means off" rule + validation -- see src/utils.py
 
-        _deg = env_value("DEGRADE_TO")
+        _deg = env_int("DEGRADE_TO")
         if _deg:
-            n = int(_deg)
-            img = img.resize((n, n), Image.Resampling.BICUBIC)
+            img = img.resize((_deg, _deg), Image.Resampling.BICUBIC)
         img = img.resize((self.img_size, self.img_size), Image.Resampling.BICUBIC)
 
         # Normalize to [-1, 1]

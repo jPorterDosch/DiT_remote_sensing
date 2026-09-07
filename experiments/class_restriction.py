@@ -32,7 +32,6 @@ from sklearn.preprocessing import StandardScaler
 TRAINED = (
     "models/n5000_resisc45_oneshot_ens1/resisc45_flux_19044381+42/multistep_train_feats_oneshot_g1.0.npz"
 )
-UNTRAINED = "models/n5000_resisc45_deg64_random/../../n5000_resisc45_randinit_ens1/resisc45_flux_19044381+42+randinit/multistep_train_feats_oneshot_g1.0_RANDINIT.npz"
 UNTRAINED = "models/n5000_resisc45_randinit_ens1/resisc45_flux_19044381+42+randinit/multistep_train_feats_oneshot_g1.0_RANDINIT.npz"
 T_IDX = 0  # t=100
 C_BY_ARM = {"trained": 0.1, "untrained": 10.0}  # each arm's frozen C from arm_shape

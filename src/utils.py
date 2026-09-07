@@ -73,3 +73,20 @@ def env_value(name: str) -> str:
 
     v = os.getenv(name, "")
     return "" if v in ("", "0") else v
+
+
+def env_int(name: str, lo: int = 1, hi: int | None = None) -> int | None:
+    """Validated integer form of env_value: None when the flag is off, else the parsed int.
+    These flags gate cache provenance, so a typo (DEGRADE_TO=abc, FIXED_COND_T=100.0) must
+    fail here with a nameable message, not as a bare ValueError mid-run (PR #5 review)."""
+    raw = env_value(name)
+    if not raw:
+        return None
+    try:
+        v = int(raw)
+    except ValueError:
+        raise ValueError(f"{name}={raw!r} is not an integer (unset, empty, or '0' to disable)") from None
+    if v < lo or (hi is not None and v > hi):
+        bound = f">= {lo}" if hi is None else f"in [{lo}, {hi}]"
+        raise ValueError(f"{name}={v} is out of range (must be {bound})")
+    return v
