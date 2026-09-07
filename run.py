@@ -74,6 +74,19 @@ class RunConfig:
     num_inversion_steps: int = 50
     # Seed for the dedicated eps RNG stream in multi-timestep extraction. None = use cfg.seed.
     eps_seed: int | None = None
+    # task="extract_tokens" only: subset of `t` at which PRE-POOL token features are also
+    # cached, as (N, S, L, C). Kept deliberately short — a per-token cache is L times the
+    # size of the pooled one (L ~= 196 at img_size 224), so this is 3 timesteps, not 7.
+    # Every value must appear in `t`; the pooled (N, K, C) cache is written regardless.
+    per_token_t: list[int] = field(default_factory=lambda: [260, 420, 580])
+    # task="extract_tokens" + extraction_mode=inversion only: also cache the model's
+    # VELOCITY at every cached timestep, as (N, K, T, d) packed-latent. The velocity is the
+    # model's output (where the prior says the sample should go), not the state (where it
+    # is) — for a deterministic flow the state determines the whole path, so state-derived
+    # features are mutually redundant, whereas the velocity is not a function of the cached
+    # state alone. Already computed at every non-terminal step, so this costs one extra
+    # forward per image (the terminal step, which otherwise early-exits at block k).
+    want_velocity: bool = False
     # task="extract" only: number of train images to extract (class-stratified with
     # subset_seed). None = the full train split.
     subset_size: int | None = None
@@ -156,6 +169,20 @@ class RunConfig:
             "wandb_entity",
             "wandb_project",
             "hash",
+            # Selects which timesteps get an ADDITIONAL per-token rider (task=
+            # "extract_tokens" only). It cannot change the pooled features, so including
+            # it would change the run name — and therefore the cache directory — of every
+            # previously-extracted run, silently breaking the config->directory mapping
+            # that provenance relies on. The rider's own timesteps are recorded in the
+            # token cache FILENAME and its meta.json instead, so two riders that differ
+            # only in per_token_t still cannot be confused for one another.
+            "per_token_t",
+            # Same reasoning: requesting the velocity adds an ADDITIONAL artifact and does
+            # not alter the pooled features (the terminal step's forward_velocity_feat
+            # returns the same block-k features as the early-exiting forward_feat), so it
+            # must not change the run name. The velocity lands in its own
+            # multistep_train_vels_*.npz, so the two artifacts cannot be confused.
+            "want_velocity",
         }
 
         for k in blacklist:
@@ -177,6 +204,19 @@ class RunConfig:
         model_name = payload["model"]["name"]
         seed = payload["seed"]
 
+        # FLUX_RANDOM_INIT is an ENV override, not a config field, so it cannot reach
+        # config_hash() -- an untrained run would otherwise claim the identical run
+        # directory as the real-weights run with the same settings. Tag the directory too,
+        # so provenance is visible without opening the cache. Real runs are unaffected,
+        # so no previously-extracted cache changes path.
+        # Control-provenance suffix, derived from the SAME parts list the cache tag uses
+        # (tasks.extraction.env_provenance) -- one source of truth for both formats.
+        from tasks.extraction import env_provenance
+
+        _, _, parts = env_provenance(self)
+        suffix = "".join("+" + p for p in parts)
+        if suffix:
+            return f"{dataset_name}_{model_name}_{self.config_hash()}+{seed}{suffix}"
         return f"{dataset_name}_{model_name}_{self.config_hash()}+{seed}"
 
     def __post_init__(self) -> None:
@@ -337,6 +377,16 @@ def main(cfg: RunConfig) -> None:
     os.makedirs(cfg.save_dir, exist_ok=True)
     # Set global seed
     seed_all(cfg.seed)
+
+    # Env-control validation for EVERY task, not just extraction. make_run_name stamps
+    # +randinit/+fixedcondN/+degN unconditionally, so without this a task whose code path
+    # never reads the env var (e.g. DEGRADE_TO on a dataset without the hook, FIXED_COND_T
+    # on the inversion path) would get a run directory labelled as a control while holding
+    # clean outputs -- provenance lying in the opposite direction from the poisoning the
+    # tags were built to prevent.
+    from tasks.extraction import env_provenance
+
+    env_provenance(cfg)
 
     wandb.init(
         entity=cfg.wandb_entity,

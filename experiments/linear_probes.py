@@ -125,8 +125,13 @@ def tier1(caches: list[dict], rows: list[dict]) -> None:
             per_t.append(m)
             line += f"{f'{m:.3f}':>12}"
             rows.append(
-                {"tier": "1_per_timestep", "arm": c["__tag__"], "key": f"t={t}",
-                 "acc_mean": round(m, 4), "acc_std": round(s, 4)}
+                {
+                    "tier": "1_per_timestep",
+                    "arm": c["__tag__"],
+                    "key": f"t={t}",
+                    "acc_mean": round(m, 4),
+                    "acc_std": round(s, 4),
+                }
             )
         print(line)
         if is_inversion(c):
@@ -137,7 +142,9 @@ def tier1(caches: list[dict], rows: list[dict]) -> None:
         acc, t = best_t_inversion
         print("-" * len(header))
         print(f">>> best single t (inversion): t={t}  (CV acc {acc:.3f})")
-        print(f">>> feed this to the B2 sweep:  BEST_T={t} sbatch experiments/b2_traj_readout_inversion.sbatch")
+        print(
+            f">>> feed this to the B2 sweep:  BEST_T={t} sbatch experiments/ordering_traj_readout_inversion.sh"
+        )
     else:
         print("-" * len(header))
         print(">>> no inversion cache among inputs — cannot recommend --best-t")
@@ -155,8 +162,10 @@ def tier2(caches: list[dict], rows: list[dict]) -> float:
         return c["feats"].reshape(c["feats"].shape[0], -1)  # (N, K*C)
 
     dim = flat(caches[0]).shape[1]
-    print(f"feature dim per arm: {dim} (K*C); {caches[0]['feats'].shape[0]} images — heavily "
-          "underdetermined, read with the robustness table.\n")
+    print(
+        f"feature dim per arm: {dim} (K*C); {caches[0]['feats'].shape[0]} images — heavily "
+        "underdetermined, read with the robustness table.\n"
+    )
 
     # Robustness grid + penalty selection: pick C* maximizing the cross-arm MEAN CV acc.
     grid = {c["__tag__"]: {} for c in caches}
@@ -180,13 +189,20 @@ def tier2(caches: list[dict], rows: list[dict]) -> float:
             mark = "*" if cval == c_star else " "
             line += f"{f'{m:.3f}{mark}':>14}"
             rows.append(
-                {"tier": "2_concat", "arm": c["__tag__"], "key": f"C={cval}{'(frozen)' if cval == c_star else ''}",
-                 "acc_mean": round(m, 4), "acc_std": round(s, 4)}
+                {
+                    "tier": "2_concat",
+                    "arm": c["__tag__"],
+                    "key": f"C={cval}{'(frozen)' if cval == c_star else ''}",
+                    "acc_mean": round(m, 4),
+                    "acc_std": round(s, 4),
+                }
             )
         print(line)
     print("-" * len(header))
-    print(f">>> frozen penalty C*={c_star} (max cross-arm mean CV acc = {mean_by_c[c_star]:.3f}); "
-          "starred column is the headline Tier-2 comparison.")
+    print(
+        f">>> frozen penalty C*={c_star} (max cross-arm mean CV acc = {mean_by_c[c_star]:.3f}); "
+        "starred column is the headline Tier-2 comparison."
+    )
     return c_star
 
 
@@ -207,15 +223,18 @@ def tier_delta(caches: list[dict], c_star: float, rows: list[dict]) -> None:
         m, s = cv_acc(x, c["labels"], c=c_star, seed=SEED)
         print(f"{c['__tag__']:<26}{f'{m:.3f}±{s:.3f}':>20}")
         rows.append(
-            {"tier": "delta", "arm": c["__tag__"], "key": f"C={c_star}",
-             "acc_mean": round(m, 4), "acc_std": round(s, 4)}
+            {
+                "tier": "delta",
+                "arm": c["__tag__"],
+                "key": f"C={c_star}",
+                "acc_mean": round(m, 4),
+                "acc_std": round(s, 4),
+            }
         )
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
-    )
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("caches", nargs="*", help=f"cache npz paths (default: glob {DEFAULT_GLOB})")
     ap.add_argument("--out-csv", default=None, help="also write all rows to this CSV")
     args = ap.parse_args()
@@ -227,8 +246,10 @@ def main() -> None:
     caches = load_caches(paths)
     assert_paired(caches)
     print(f"loaded {len(caches)} arm(s): " + ", ".join(c["__tag__"] for c in caches))
-    print(f"images: {caches[0]['feats'].shape[0]}  timesteps: {caches[0]['timesteps'].tolist()}  "
-          f"feat_dim: {caches[0]['feats'].shape[-1]}")
+    print(
+        f"images: {caches[0]['feats'].shape[0]}  timesteps: {caches[0]['timesteps'].tolist()}  "
+        f"feat_dim: {caches[0]['feats'].shape[-1]}"
+    )
 
     rows: list[dict] = []
     tier1(caches, rows)

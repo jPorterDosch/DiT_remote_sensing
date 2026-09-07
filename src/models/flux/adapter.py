@@ -6,7 +6,7 @@ from einops import rearrange
 
 from registry import register_model
 
-from .feat_flux import Featurizer4Eval
+from .feat_flux import Featurizer4Eval, prepare
 
 
 @register_model("flux")
@@ -92,14 +92,20 @@ class FluxModel:
         num_inversion_steps: int,
         block_idx: int,
         guidance: float = 3.5,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+        want_velocity: bool = False,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
         """Inversion-chain features: one RF-Solver reverse-ODE trajectory per image,
         caching pre-normalization block hidden states at each requested timestep.
 
         The chain draws no eps of its own (no ensemble), but ae.encode samples the
         VAE posterior from the global RNG, so features are reproducible only under
         identical RNG state (see Featurizer4Eval.invert_chain). Returns
-        (feats (K, C, h, w), mods (K, 3, C)) in the order of `timesteps`.
+        (feats (K, C, h, w), mods (K, 3, C), vels) in the order of `timesteps`, where
+        vels is (K, T, d) packed-latent velocities when want_velocity else None.
+
+        Velocity is the model's OUTPUT at each cached point rather than the state itself.
+        It is already computed at every non-terminal step, so requesting it costs one extra
+        forward only at the terminal timestep (which otherwise early-exits at block_idx).
         """
         out = self._inner.invert_chain(
             img,
@@ -107,10 +113,54 @@ class FluxModel:
             num_inversion_steps=num_inversion_steps,
             block_idx=block_idx,
             guidance=guidance,
+            want_velocity=want_velocity,
         )
         feats = torch.cat([out["feats"][t] for t in timesteps], dim=0)  # K, C, h, w
         mods = torch.cat([out["mods"][t] for t in timesteps], dim=0)  # K, 3, C
-        return feats, mods
+        vels = None
+        if want_velocity:
+            missing = [t for t in timesteps if t not in out["vels"]]
+            if missing:
+                raise RuntimeError(f"velocity missing at timesteps {missing} — chain did not cache it")
+            vels = torch.cat([out["vels"][t] for t in timesteps], dim=0)  # K, T, d
+        return feats, mods, vels
+
+    @torch.no_grad()
+    def roundtrip(
+        self,
+        img: torch.Tensor,
+        t_stop: int,
+        num_inversion_steps: int,
+        block_idx: int,
+        guidance: float = 3.5,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Invert to `t_stop` then integrate back to t=0. Returns (recovered, clean) packed
+        latents, both (1, T, d).
+
+        This measures how faithfully the chain can represent an image: the ODE is
+        analytically reversible, so any discrepancy is accumulated DISCRETIZATION error
+        from integrating a finite number of RF-Solver steps. Images the model finds hard
+        (high-frequency content, out-of-distribution structure) should invert worse, and
+        that error is what would degrade inversion features relative to one-shot noising —
+        which is exact at every t by construction.
+        """
+        out = self._inner.invert_chain(
+            img,
+            cache_timesteps=[],
+            num_inversion_steps=num_inversion_steps,
+            block_idx=block_idx,
+            guidance=guidance,
+            t_stop=t_stop,
+        )
+        recovered = self._inner.generate_chain(
+            out["z_final"],
+            out["img_ids"],
+            t_start=t_stop,
+            num_inversion_steps=num_inversion_steps,
+            guidance=guidance,
+        )
+        clean, _ = prepare(img=out["latents_clean"])
+        return recovered, clean
 
     @torch.no_grad()
     def extract(
