@@ -8,7 +8,14 @@ C-stability of all deltas). Image-level bootstrap.
 
 Blocks: the carrier decomposition (norms / pattern / full) plus the three validity controls
 (iid noise, image-shuffled curvature, synthetic s=4 detection anchor).
+
+FINDINGS (2026-08-29, RESEARCH_NOTES 6j -- the project's strongest positive result).
+RESISC45: curvature PATTERN adds +0.0819 [+0.0724, +0.0915] beyond states+velocity; EuroSAT
++0.0172. Noise (-0.060/-0.130) and image-shuffle (-0.056/-0.129) controls behave. CAVEAT:
+the synthetic power anchor is miscalibrated for K=45 (reads -0.015), so RESISC45 NULLS at
+this config are unreadable; every load-bearing number there is a positive with its own CI.
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -30,7 +37,7 @@ CACHES = {
 
 def pool_tokens(x, grid):
     n, k, t, d = x.shape
-    hw = int(round(t ** 0.5))
+    hw = int(round(t**0.5))
     sp = torch.from_numpy(x).reshape(n * k, hw, hw, d).permute(0, 3, 1, 2)
     return F.adaptive_avg_pool2d(sp, (grid, grid)).reshape(n, k * d * grid * grid).numpy()
 
@@ -57,7 +64,7 @@ def correct(x, y, n_jobs=7):
 def ci(d, n=10000, seed=0):
     rng = np.random.default_rng(seed)
     m = d[rng.integers(0, len(d), (n, len(d)))].mean(axis=1)
-    return float(np.quantile(m, .025)), float(np.quantile(m, .975))
+    return float(np.quantile(m, 0.025)), float(np.quantile(m, 0.975))
 
 
 def main():
@@ -66,8 +73,8 @@ def main():
         y = d["labels"]
         n = len(y)
         rng = np.random.default_rng(0)
-        states = pool_tokens(d["states"], 2)          # 7 x 256
-        pred = pool_tokens(d["pred"], 2)              # 6 x 256
+        states = pool_tokens(d["states"], 2)  # 7 x 256
+        pred = pool_tokens(d["pred"], 2)  # 6 x 256
         raw = d["pred_mid"] - d["pred"]
         curv = pool_tokens(raw, 2)
         norms = np.linalg.norm(raw.reshape(n, 6, -1), axis=2)
@@ -82,27 +89,35 @@ def main():
             ("curv norms only (6d)", norms),
             ("noise iid", rng.standard_normal((n, D))),
             ("curv SHUFFLED rows", curv[rng.permutation(n)]),
-            ("synthetic s=4", np.hstack([onehot] * (D // onehot.shape[1] + 1))[:, :D]
-             + 4 * rng.standard_normal((n, D))),
+            (
+                "synthetic s=4",
+                np.hstack([onehot] * (D // onehot.shape[1] + 1))[:, :D] + 4 * rng.standard_normal((n, D)),
+            ),
         ]
         base_x = np.hstack([states, pred])
         base = correct(base_x, y)
-        print(f"\n=== {ds}  n={n}  chance={1/len(np.unique(y)):.4f}  "
-              f"base states+pred {base.mean():.4f}  (C={C}, PCA-512) ===", flush=True)
+        print(
+            f"\n=== {ds}  n={n}  chance={1 / len(np.unique(y)):.4f}  "
+            f"base states+pred {base.mean():.4f}  (C={C}, PCA-512) ===",
+            flush=True,
+        )
         for name, blk in blocks:
             if name == "pred (velocity)":
                 st = correct(states, y)
                 dd = base - st
                 lo, hi = ci(dd)
-                print(f"  states alone {st.mean():.4f}; +pred d {dd.mean():+.4f} "
-                      f"[{lo:+.4f},{hi:+.4f}]", flush=True)
+                print(
+                    f"  states alone {st.mean():.4f}; +pred d {dd.mean():+.4f} [{lo:+.4f},{hi:+.4f}]",
+                    flush=True,
+                )
                 continue
             plus = correct(np.hstack([base_x, blk]), y)
             dd = plus - base
             lo, hi = ci(dd)
             sig = "SIGNIF" if lo > 0 or hi < 0 else ""
-            print(f"  +{name:<26} {plus.mean():.4f}  d {dd.mean():+.4f} "
-                  f"[{lo:+.4f},{hi:+.4f}] {sig}", flush=True)
+            print(
+                f"  +{name:<26} {plus.mean():.4f}  d {dd.mean():+.4f} [{lo:+.4f},{hi:+.4f}] {sig}", flush=True
+            )
 
 
 if __name__ == "__main__":

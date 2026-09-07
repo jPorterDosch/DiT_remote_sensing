@@ -14,7 +14,13 @@ Anchor 2 -- UPSAMPLING ARTIFACT CHECK: roundtrip on DEGRADED RESISC45 (DEGRADE_T
 64->256 BICUBIC, the section-6d pipeline). If smooth upsampled imagery is what the chain
 inverts badly, degraded RESISC45 should jump toward EuroSAT's 0.103; if it stays at ~0.042,
 the EuroSAT-RESISC45 gap is content, not upsampling.
+
+FINDINGS (2026-08-22, RESEARCH_NOTES 6f). Generated-image floor 0.022-0.024. RESISC45 native
+sits at 1.9x floor, EuroSAT at 4.2x -- BOTH datasets are OOD. Decisive: degraded RESISC45
+jumps to 0.089 (4.0x), most of EuroSAT's gap -- the upsampling pipeline, not content,
+dominates the roundtrip error.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -51,14 +57,19 @@ def main() -> None:
     args = p.parse_args()
 
     # Any registered dataset works to build the model wrapper; the images are generated.
-    cfg = RunConfig(task="extract", model=ModelConfig(name="flux", ensemble_size=1),
-                    dataset=DatasetConfig(name="eurosat", path="data/eurosat/EuroSAT_RGB"),
-                    img_size=[args.img_size, args.img_size], batch_size=1, num_workers=0,
-                    label_fraction=1.0)
+    cfg = RunConfig(
+        task="extract",
+        model=ModelConfig(name="flux", ensemble_size=1),
+        dataset=DatasetConfig(name="eurosat", path="data/eurosat/EuroSAT_RGB"),
+        img_size=[args.img_size, args.img_size],
+        batch_size=1,
+        num_workers=0,
+        label_fraction=1.0,
+    )
     dataset = DATASETS["eurosat"](cfg)
     model = MODELS["flux"](cfg, dataset.category_list)
     inner = model._inner
-    h = w = (args.img_size // 8)  # VAE stride 8 -> latent hw
+    h = w = args.img_size // 8  # VAE stride 8 -> latent hw
 
     gen = torch.Generator(device="cuda").manual_seed(123)
     errs = []
@@ -67,23 +78,31 @@ def main() -> None:
             # 1. Sample the model: integrate from pure noise to t=0 along the learned flow.
             z1 = torch.randn((1, 16, h, w), generator=gen, device="cuda", dtype=torch.bfloat16)
             z_packed, img_ids = prepare(img=z1)
-            z0 = inner.generate_chain(z_packed, img_ids, t_start=1000,
-                                      num_inversion_steps=args.num_steps, guidance=1.0)
+            z0 = inner.generate_chain(
+                z_packed, img_ids, t_start=1000, num_inversion_steps=args.num_steps, guidance=1.0
+            )
             # 2. Decode to pixels and re-encode: the anchor must pass through the identical
             #    pixel->latent path the real datasets take, or it is not the same measurement.
             from einops import rearrange
-            z0_sp = rearrange(z0, "b (h w) (c ph pw) -> b c (h ph) (w pw)",
-                              h=h // 2, w=w // 2, ph=2, pw=2)
+
+            z0_sp = rearrange(z0, "b (h w) (c ph pw) -> b c (h ph) (w pw)", h=h // 2, w=w // 2, ph=2, pw=2)
             img_px = inner.ae.decode(z0_sp.float()).clamp(-1, 1)
-            rec, clean = model.roundtrip(img_px.squeeze(0), t_stop=args.t_stop,
-                                         num_inversion_steps=args.num_steps,
-                                         block_idx=28, guidance=1.0)
+            rec, clean = model.roundtrip(
+                img_px.squeeze(0),
+                t_stop=args.t_stop,
+                num_inversion_steps=args.num_steps,
+                block_idx=28,
+                guidance=1.0,
+            )
             errs.append(rel_err(rec, clean))
             if i % 10 == 0:
                 print(f"  {i}/{args.n}  rel_err={errs[-1]:.5f}", flush=True)
     errs = np.array(errs)
-    print(f"\nGENERATED anchor @ {args.img_size}px: mean {errs.mean():.5f}  "
-          f"median {np.median(errs):.5f}  p90 {np.quantile(errs, .9):.5f}", flush=True)
+    print(
+        f"\nGENERATED anchor @ {args.img_size}px: mean {errs.mean():.5f}  "
+        f"median {np.median(errs):.5f}  p90 {np.quantile(errs, 0.9):.5f}",
+        flush=True,
+    )
     with open(args.out, "w") as f:
         json.dump({"img_size": args.img_size, "rel_errs": errs.tolist()}, f)
 

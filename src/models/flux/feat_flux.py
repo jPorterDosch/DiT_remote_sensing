@@ -1,4 +1,4 @@
-import os
+from utils import env_value
 import gc
 from abc import ABC, abstractmethod
 
@@ -215,7 +215,6 @@ class Featurizer4Eval(Featurizer):
             # conditioning at one value while the noising t still sweeps, separating the
             # two for the first time. Env override (not a config field) mirrors
             # FLUX_RANDOM_INIT; provenance is stamped by the extraction task.
-            from utils import env_value
             _fc = env_value("FIXED_COND_T")
             t_cond = (int(_fc) / 1000) if _fc else t
             t_vec = torch.full((img.shape[0],), t_cond, dtype=img.dtype, device=img.device)
@@ -503,7 +502,9 @@ class Featurizer4Eval(Featurizer):
                 # so the capture dict would stay empty and the consumer would np.stack([]).
                 raise ValueError("want_curvature requires order=2 (RF-Solver); got order=%d" % order)
             cap = {} if (want_curvature and i in idx2t) else None
-            x = self._ode_step(x, img_ids, pred, t_curr, h_step, order, guidance, txt, txt_ids, vec, capture=cap)
+            x = self._ode_step(
+                x, img_ids, pred, t_curr, h_step, order, guidance, txt, txt_ids, vec, capture=cap
+            )
             if cap:
                 curvs[idx2t[i]] = cap
 

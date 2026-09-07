@@ -21,6 +21,12 @@ Two measures, per arm and per timestep pair:
 
 If retrieval collapses to chance at large t-gaps, per-token temporal statistics over that
 range are computed across mismatched regions, and the rider must be restricted or dropped.
+
+FINDINGS (RESEARCH_NOTES 2, survived three adversarial attacks). Token alignment is real
+and CONTENT-driven: within-image self-retrieval 0.994 vs cross-image same-index 0.017
+(chance 0.005); robust to centering and to the massive-activation channels. The inversion
+chain holds alignment BETTER than one-shot (0.994 vs 0.967 at gap 320). Caveat: the
+mechanism sentence in early notes was wrong (eps is SHARED across t, not independent).
 """
 
 from __future__ import annotations
@@ -38,6 +44,18 @@ C_NULL = "#eb6834"  # random-token null
 C_TEXT = "#0b0b0b"
 C_MUTED = "#52514e"
 C_SURFACE = "#fcfcfb"
+
+
+def _reject_control_caches(paths: list[str]) -> list[str]:
+    """Drop provenance-suffixed control caches (_RANDINIT/_FIXEDCOND/_DEG) from a glob
+    result. Without this, a control cache sitting in the tree satisfies the same glob and
+    can be silently probed as a real arm -- the exact poisoning the suffixes exist to
+    prevent (2026-09-04 review)."""
+    kept = [p for p in paths if not any(tag in p for tag in ("_RANDINIT", "_FIXEDCOND", "_DEG"))]
+    dropped = sorted(set(paths) - set(kept))
+    if dropped:
+        print(f"  note: ignoring {len(dropped)} control cache(s): {dropped}")
+    return kept
 
 
 def unit(x: np.ndarray) -> np.ndarray:
@@ -92,7 +110,9 @@ def main() -> None:
     p.add_argument("--seed", type=int, default=42)
     args = p.parse_args()
 
-    paths = sorted(glob.glob(os.path.join(args.token_dir, "*", "multistep_train_tokens_*.npz")))
+    paths = _reject_control_caches(
+        sorted(glob.glob(os.path.join(args.token_dir, "*", "multistep_train_tokens_*.npz")))
+    )
     if not paths:
         raise SystemExit(f"FATAL: no token caches under {args.token_dir}")
     os.makedirs(args.out_dir, exist_ok=True)
@@ -119,8 +139,20 @@ def main() -> None:
                 )
 
     fields = [
-        "arm", "t_a", "t_b", "t_gap", "same_mean", "same_std", "null_mean", "null_std",
-        "gap", "top1", "top1_chance", "pct_rank", "L", "N",
+        "arm",
+        "t_a",
+        "t_b",
+        "t_gap",
+        "same_mean",
+        "same_std",
+        "null_mean",
+        "null_std",
+        "gap",
+        "top1",
+        "top1_chance",
+        "pct_rank",
+        "L",
+        "N",
     ]
     csv_path = os.path.join(args.out_dir, "alignment_table.csv")
     with open(csv_path, "w", newline="") as f:
@@ -142,8 +174,7 @@ def plot(rows: list[dict], out_png: str) -> None:
     arms = sorted({r["arm"] for r in rows})
     # sharey on the cosine row: the arms are only comparable on a common scale, and the
     # inversion-vs-oneshot difference in the same-vs-null gap is the point of the panel.
-    fig, axes = plt.subplots(2, len(arms), figsize=(5.6 * len(arms), 8.0), squeeze=False,
-                             sharey="row")
+    fig, axes = plt.subplots(2, len(arms), figsize=(5.6 * len(arms), 8.0), squeeze=False, sharey="row")
     fig.patch.set_facecolor(C_SURFACE)
 
     for col, arm in enumerate(arms):
@@ -154,21 +185,52 @@ def plot(rows: list[dict], out_png: str) -> None:
         # --- row 0: cosine, same-token vs random-token null
         ax = axes[0][col]
         ax.set_facecolor(C_SURFACE)
-        ax.errorbar(x - 0.06, [r["same_mean"] for r in rs], yerr=[r["same_std"] for r in rs],
-                    fmt="o", ms=9, lw=2, capsize=4, color=C_SIGNAL, label="same token")
-        ax.errorbar(x + 0.06, [r["null_mean"] for r in rs], yerr=[r["null_std"] for r in rs],
-                    fmt="s", ms=9, lw=2, capsize=4, color=C_NULL, label="random-token null")
+        ax.errorbar(
+            x - 0.06,
+            [r["same_mean"] for r in rs],
+            yerr=[r["same_std"] for r in rs],
+            fmt="o",
+            ms=9,
+            lw=2,
+            capsize=4,
+            color=C_SIGNAL,
+            label="same token",
+        )
+        ax.errorbar(
+            x + 0.06,
+            [r["null_mean"] for r in rs],
+            yerr=[r["null_std"] for r in rs],
+            fmt="s",
+            ms=9,
+            lw=2,
+            capsize=4,
+            color=C_NULL,
+            label="random-token null",
+        )
         # selective direct labels: the gap only, clear of the error-bar cap
         for xi, r in zip(x, rs, strict=True):
-            ax.annotate(f"Δ{r['gap']:+.3f}", (xi, r["same_mean"] + r["same_std"]),
-                        textcoords="offset points", xytext=(0, 10), ha="center",
-                        fontsize=9, color=C_MUTED)
+            ax.annotate(
+                f"Δ{r['gap']:+.3f}",
+                (xi, r["same_mean"] + r["same_std"]),
+                textcoords="offset points",
+                xytext=(0, 10),
+                ha="center",
+                fontsize=9,
+                color=C_MUTED,
+            )
         ax.set_title(f"{arm} — token self-similarity", color=C_TEXT, fontsize=12, pad=26)
         if col == 0:
             ax.set_ylabel("cosine", color=C_MUTED, fontsize=10)
         # legend above the axes so it cannot land on the null markers
-        ax.legend(frameon=False, fontsize=9, ncol=2, loc="lower left",
-                  bbox_to_anchor=(0.0, 1.0, 1.0, 0.14), mode="expand", borderaxespad=0.0)
+        ax.legend(
+            frameon=False,
+            fontsize=9,
+            ncol=2,
+            loc="lower left",
+            bbox_to_anchor=(0.0, 1.0, 1.0, 0.14),
+            mode="expand",
+            borderaxespad=0.0,
+        )
 
         # --- row 1: retrieval top-1, the sharper identity test
         ax = axes[1][col]
@@ -177,8 +239,15 @@ def plot(rows: list[dict], out_png: str) -> None:
         ch = rs[0]["top1_chance"]
         ax.axhline(ch, ls="--", lw=2, color=C_NULL, label=f"chance (1/L = {ch:.4f})")
         for xi, r in zip(x, rs, strict=True):
-            ax.annotate(f"{r['top1']:.2f}", (xi, r["top1"]), textcoords="offset points",
-                        xytext=(0, 12), ha="center", fontsize=9, color=C_MUTED)
+            ax.annotate(
+                f"{r['top1']:.2f}",
+                (xi, r["top1"]),
+                textcoords="offset points",
+                xytext=(0, 12),
+                ha="center",
+                fontsize=9,
+                color=C_MUTED,
+            )
         ax.set_ylim(-0.04, 1.12)
         ax.set_title(f"{arm} — self-retrieval", color=C_TEXT, fontsize=12, pad=14)
         if col == 0:
@@ -200,8 +269,12 @@ def plot(rows: list[dict], out_png: str) -> None:
     lo, hi = axes[0][0].get_ylim()
     axes[0][0].set_ylim(lo, hi + 0.28 * (hi - lo))
 
-    fig.suptitle("Token alignment across the denoising chain (EuroSAT, block 28, g=1.0)",
-                 color=C_TEXT, fontsize=13, y=0.985)
+    fig.suptitle(
+        "Token alignment across the denoising chain (EuroSAT, block 28, g=1.0)",
+        color=C_TEXT,
+        fontsize=13,
+        y=0.985,
+    )
     fig.tight_layout(rect=(0, 0, 1, 0.96))
     fig.savefig(out_png, dpi=150, facecolor=C_SURFACE)
     print(f"wrote {out_png}")

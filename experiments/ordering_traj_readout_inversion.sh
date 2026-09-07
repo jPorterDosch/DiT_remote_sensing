@@ -2,7 +2,7 @@
 # ============================================================================
 # Ordering experiment — nonlinear trajectory readout on the INVERSION cache (the gate).
 #   Runs experiments/traj_readout.py over the 500-image inversion cache:
-#     arms  {traj, mlp, shuffle}  x  norms {raw, normalized}  x  seeds {0..4}
+#     arms  {traj, mlp, shuffle}  x  norms {raw, normalized}  x  seeds {42..46}
 #   traj vs shuffle isolates whether ORDERING of the 7 chain states is readable;
 #   mlp is the parameter-matched single-timestep content baseline. Ordering does its
 #   OWN 5-fold stratified CV on the cache — it does not use a test cache.
@@ -66,7 +66,9 @@ echo "cache: $CACHE_PATH"
 
 BEST_T="${BEST_T:-260}"
 
-# Positional-encoding controls. Defaults reproduce the original sweep exactly; export
+# Positional-encoding controls. Defaults reproduce the LOCAL sweep in
+# results/ordering_*.csv (seeds 42..46 -- NOT the {0..4} of main's old sbatch; new rows
+# pair by (seed, fold) against the local CSVs only). Export
 # POS_ENC=sinusoidal to re-run with the fixed table that the direction control showed
 # does not collapse into a permutation-invariant solution (learned collapsed 23/50).
 POS_ENC="${POS_ENC:-learned}"

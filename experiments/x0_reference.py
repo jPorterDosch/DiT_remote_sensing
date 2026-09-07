@@ -8,7 +8,12 @@ all K timesteps, so x0 is exactly recoverable from any two cached timesteps by s
     x_b = b*eps + (1-b)*x0
 (the adversarial review verified this reconstruction to <=2.5e-4 relative and recovers eps at
 std 1.0005).
+
+FINDINGS (2026-08-22, RESEARCH_NOTES 6e). Clean-latent x0 reference: EuroSAT 0.7397,
+RESISC45 0.3145 -- the raw x_t arm at t=100 (0.7366/0.3159) is already AT the x0 ceiling, so
+the entire raw decay is descent from clean-latent performance, as audit W6/W9 predicted.
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -42,14 +47,21 @@ def main():
         # Solve the 2x2 linear system per element.
         x0 = (b * xa - a * xb) / (b - a)
         n, dim = x0.shape
-        hw = int(round((dim // 16) ** 0.5)); ch = dim // (hw * hw)
+        hw = int(round((dim // 16) ** 0.5))
+        ch = dim // (hw * hw)
         t0 = torch.from_numpy(x0).reshape(n, ch, hw, hw)
         pooled = F.adaptive_avg_pool2d(t0, (g, g)).reshape(n, ch * g * g).numpy()
-        jobs = [(tr, va) for s in SEEDS
-                for tr, va in StratifiedKFold(5, shuffle=True, random_state=s).split(pooled, y)]
+        jobs = [
+            (tr, va)
+            for s in SEEDS
+            for tr, va in StratifiedKFold(5, shuffle=True, random_state=s).split(pooled, y)
+        ]
         accs = Parallel(n_jobs=5)(delayed(_fold)(pooled, y, tr, va, c) for tr, va in jobs)
-        print(f"{ds}: clean-latent x0 reference ({g}x{g}, {pooled.shape[1]}d, C={c}): "
-              f"{np.mean(accs):.4f} +- {np.std(accs):.4f}", flush=True)
+        print(
+            f"{ds}: clean-latent x0 reference ({g}x{g}, {pooled.shape[1]}d, C={c}): "
+            f"{np.mean(accs):.4f} +- {np.std(accs):.4f}",
+            flush=True,
+        )
 
 
 if __name__ == "__main__":

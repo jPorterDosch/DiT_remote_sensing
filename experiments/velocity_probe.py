@@ -28,6 +28,12 @@ carries information the trajectory's states do not".
 
 Probe/fold/seed conventions and the in-fold PCA parity scheme are inherited from
 experiments/token_geometry_probe.py.
+
+FINDINGS, updated (RESEARCH_NOTES 3 + 2026-08-19 audit S2). The null is real AND
+instrument-validated: a synthetic block at the same D is detected down to +0.008 (an order
+of magnitude below the observed -0.005), and a block WEAKER than velocity is still caught.
+Scope caveat: vel_pooled is R^2=0.9988 with the pooled VAE latent -- the claim is about the
+SPATIALLY POOLED velocity; token-resolution velocity was only ever tested at two extremes.
 """
 
 from __future__ import annotations
@@ -80,9 +86,7 @@ def main() -> None:
     args = p.parse_args()
 
     vd, vpath = load_one(os.path.join(args.cache_dir, "*", "multistep_train_vels_*.npz"), "velocity")
-    pd_, ppath = load_one(
-        os.path.join(args.cache_dir, "*", "multistep_train_feats_*.npz"), "pooled"
-    )
+    pd_, ppath = load_one(os.path.join(args.cache_dir, "*", "multistep_train_feats_*.npz"), "pooled")
     vels, labels = vd["vels"], vd["labels"]  # N, K, T, d
     pool = pd_["feats"]  # N, K, C
     if not np.array_equal(labels, pd_["labels"]):
@@ -104,13 +108,17 @@ def main() -> None:
         if np.array_equal(old["subset_indices"], pd_["subset_indices"]):
             same = np.array_equal(old["feats"], pool)
             if same:
-                print("\nfeature-identity check: pooled caches are BIT-IDENTICAL to the "
-                      "pre-velocity run — want_velocity is inert wrt features. OK")
+                print(
+                    "\nfeature-identity check: pooled caches are BIT-IDENTICAL to the "
+                    "pre-velocity run — want_velocity is inert wrt features. OK"
+                )
             else:
                 diff = np.abs(old["feats"].astype(np.float64) - pool.astype(np.float64))
                 rel = diff.sum() / (np.abs(old["feats"]).sum() + 1e-12)
-                print(f"\nfeature-identity check: NOT bit-identical. max abs {diff.max():.3e}, "
-                      f"rel-L1 {rel:.3e} — inspect before trusting velocity results")
+                print(
+                    f"\nfeature-identity check: NOT bit-identical. max abs {diff.max():.3e}, "
+                    f"rel-L1 {rel:.3e} — inspect before trusting velocity results"
+                )
         else:
             # Silence here would be indistinguishable from a pass to anyone skimming the log,
             # and RESEARCH_NOTES cites this very line as evidence the check passed.
@@ -123,8 +131,8 @@ def main() -> None:
         print(f"\nfeature-identity check: skipped (no cache matched {args.compare_pooled_to})")
 
     n, k, t_tok, d = vels.shape
-    vel_pooled = vels.mean(axis=2).reshape(n, -1)          # N, K*d   — spatially pooled
-    vel_tokens = vels.reshape(n, -1)                       # N, K*T*d — full spatial detail
+    vel_pooled = vels.mean(axis=2).reshape(n, -1)  # N, K*d   — spatially pooled
+    vel_tokens = vels.reshape(n, -1)  # N, K*T*d — full spatial detail
 
     rows: list[dict] = []
     for norm in ("raw", "normalized"):
@@ -142,9 +150,9 @@ def main() -> None:
 
         best_c, best_m = C_GRID[0], -1.0
         for c in C_GRID:
-            m = float(np.mean([
-                np.mean(cv_fold_accs(feats[kk], labels, c, SEEDS[0], args.dim)) for kk in feats
-            ]))
+            m = float(
+                np.mean([np.mean(cv_fold_accs(feats[kk], labels, c, SEEDS[0], args.dim)) for kk in feats])
+            )
             print(f"  C={c:<7} mean-across-sets acc {m:.4f}", flush=True)
             if m > best_m:
                 best_c, best_m = c, m
@@ -153,17 +161,25 @@ def main() -> None:
         for fs in feats:
             for seed in SEEDS:
                 for fold, acc in enumerate(cv_fold_accs(feats[fs], labels, best_c, seed, args.dim)):
-                    rows.append({
-                        "feature_set": fs, "norm": norm, "seed": seed, "fold": fold,
-                        "acc": round(acc, 6), "D": min(args.dim, raw_dims[fs]),
-                        "D_cap": args.dim, "raw_D": raw_dims[fs], "C": best_c,
-                        "t_set": "|".join(str(x) for x in vd["timesteps"]),
-                        "subset_seed": int(vd["subset_seed"]),
-                        "n_classes": n_cls, "chance": round(1.0 / n_cls, 6),
-                    })
+                    rows.append(
+                        {
+                            "feature_set": fs,
+                            "norm": norm,
+                            "seed": seed,
+                            "fold": fold,
+                            "acc": round(acc, 6),
+                            "D": min(args.dim, raw_dims[fs]),
+                            "D_cap": args.dim,
+                            "raw_D": raw_dims[fs],
+                            "C": best_c,
+                            "t_set": "|".join(str(x) for x in vd["timesteps"]),
+                            "subset_seed": int(vd["subset_seed"]),
+                            "n_classes": n_cls,
+                            "chance": round(1.0 / n_cls, 6),
+                        }
+                    )
             a = [r["acc"] for r in rows if r["feature_set"] == fs and r["norm"] == norm]
-            print(f"  {fs:<24} acc {np.mean(a):.4f} +/- {np.std(a):.4f} (raw D {raw_dims[fs]})",
-                  flush=True)
+            print(f"  {fs:<24} acc {np.mean(a):.4f} +/- {np.std(a):.4f} (raw D {raw_dims[fs]})", flush=True)
 
     os.makedirs(os.path.dirname(os.path.abspath(args.out_csv)), exist_ok=True)
     write_header = not os.path.exists(args.out_csv)
@@ -190,11 +206,15 @@ def main() -> None:
             lo, hi = boot_ci(diffs)
             adds = lo > 0
             verdicts.append(adds)
-            print(f"  {cand:<24} mean {np.mean(diffs):+.4f}  95% CI [{lo:+.4f}, {hi:+.4f}]  "
-                  f"n={len(diffs)}  {'ADDS SIGNAL' if adds else 'adds nothing'}")
+            print(
+                f"  {cand:<24} mean {np.mean(diffs):+.4f}  95% CI [{lo:+.4f}, {hi:+.4f}]  "
+                f"n={len(diffs)}  {'ADDS SIGNAL' if adds else 'adds nothing'}"
+            )
     print("\n" + "-" * 78)
-    print(f"VERDICT: velocity {'IS' if any(verdicts) else 'is NOT'} non-redundant with the states "
-          f"({sum(verdicts)}/{len(verdicts)} candidate-x-norm comparisons cleared)")
+    print(
+        f"VERDICT: velocity {'IS' if any(verdicts) else 'is NOT'} non-redundant with the states "
+        f"({sum(verdicts)}/{len(verdicts)} candidate-x-norm comparisons cleared)"
+    )
     print("-" * 78)
 
 

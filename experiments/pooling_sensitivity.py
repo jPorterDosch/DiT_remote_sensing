@@ -13,10 +13,20 @@ saved `full` arrays, so it costs no re-extraction.
 
 Read the ens8-ens1 column as the POSITIVE CONTROL. A pooling that cannot see it cannot be
 trusted to report a null on anything else.
+
+FINDINGS (2026-08-18, RESEARCH_NOTES 6). At n=500 RESISC45 fails the arithmetic ens8-ens1
+control at EVERY grid (blind instrument, not a null); EuroSAT passes at every grid. At
+n=5000 all grids detect the control and 4x4 becomes best -- the n=500 'no protocol effect'
+reading was sample size.
 """
+
 from __future__ import annotations
-import argparse, os, sys
-import numpy as np, torch, torch.nn.functional as F
+import argparse
+import os
+import sys
+import numpy as np
+import torch
+import torch.nn.functional as F
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from raw_xt_probe import best_over_c
@@ -40,11 +50,16 @@ def _assert_paired(path, d):
 
 
 def repool(path, g):
-    d = np.load(path); _assert_paired(path, d); f = d["feats"]; N, K, D = f.shape
-    hw = int(round((D // 16) ** 0.5)); C = D // (hw * hw)
+    d = np.load(path)
+    _assert_paired(path, d)
+    f = d["feats"]
+    N, K, D = f.shape
+    hw = int(round((D // 16) ** 0.5))
+    C = D // (hw * hw)
     x = torch.from_numpy(f).reshape(N, K, C, hw, hw)
     p = F.adaptive_avg_pool2d(x.reshape(N * K, C, hw, hw), (g, g))
     return p.reshape(N, K, C * g * g).numpy(), d["labels"]
+
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
@@ -55,16 +70,28 @@ def main():
     ap.add_argument("--pca", type=int, default=400)
     args = ap.parse_args()
 
-    arms = {"ens1": f"{args.dataset}_rawxt_ens1_full.npz",
-            "ens8": f"{args.dataset}_rawxt_ens8_full.npz",
-            "inv":  f"{args.dataset}_invstate_n50_full.npz"}
+    arms = {
+        "ens1": f"{args.dataset}_rawxt_ens1_full.npz",
+        "ens8": f"{args.dataset}_rawxt_ens8_full.npz",
+        "inv": f"{args.dataset}_invstate_n50_full.npz",
+    }
     # The inversion-state arm costs a full chain per image, so it does not exist at every n.
     # Its absence must not block the positive control, which needs only the two raw arms.
     arms = {k: v for k, v in arms.items() if os.path.exists(os.path.join(args.raw_dir, v))}
+    # Only 'inv' is legitimately optional -- the positive control NEEDS both raw arms, and a
+    # missing one previously surfaced as a bare KeyError only after the full probe sweep.
+    for req in ("ens1", "ens8"):
+        if req not in arms:
+            raise SystemExit(
+                f"FATAL: required raw cache missing: "
+                f"{os.path.join(args.raw_dir, f'{args.dataset}_rawxt_{req}_full.npz')}"
+            )
     print(f"{args.dataset}  t-index={args.t_index}  dir={args.raw_dir}  arms={list(arms)}")
     print("(positive control = ens8 - ens1; it CANNOT truly be zero)\n")
-    print(f"{'grid':>6}{'dims':>7}{'ens1':>9}{'ens8':>9}{'inv':>9}"
-          f"{'ens8-ens1':>12}{'95% CI':>22}{'  sensitive?':>13}")
+    print(
+        f"{'grid':>6}{'dims':>7}{'ens1':>9}{'ens8':>9}{'inv':>9}"
+        f"{'ens8-ens1':>12}{'95% CI':>22}{'  sensitive?':>13}"
+    )
     print("-" * 90)
     for g in args.grids:
         acc, fold = {}, {}
@@ -72,13 +99,15 @@ def main():
             x, y = repool(os.path.join(args.raw_dir, fn), g)
             m, _c, f = best_over_c(x[:, args.t_index, :], y, args.pca)
             acc[k], fold[k] = m, f
-            n_img = x.shape[0]
         d = [a - b for a, b in zip(fold["ens8"], fold["ens1"], strict=True)]
         lo, hi = boot_ci(d)
         sens = "YES" if lo > 0 else "no (blind)"
-        iv = f"{acc['inv']:>9.4f}" if 'inv' in acc else f"{'-':>9}"
-        print(f"{f'{g}x{g}':>6}{x.shape[2]:>7}{acc['ens1']:>9.4f}{acc['ens8']:>9.4f}"
-              f"{iv}{np.mean(d):>+12.4f}{f'[{lo:+.4f}, {hi:+.4f}]':>22}{sens:>13}")
+        iv = f"{acc['inv']:>9.4f}" if "inv" in acc else f"{'-':>9}"
+        print(
+            f"{f'{g}x{g}':>6}{x.shape[2]:>7}{acc['ens1']:>9.4f}{acc['ens8']:>9.4f}"
+            f"{iv}{np.mean(d):>+12.4f}{f'[{lo:+.4f}, {hi:+.4f}]':>22}{sens:>13}"
+        )
+
 
 if __name__ == "__main__":
     main()

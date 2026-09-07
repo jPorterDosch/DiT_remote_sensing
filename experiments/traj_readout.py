@@ -260,8 +260,9 @@ def sinusoidal_pos_table(k: int, d: int) -> torch.Tensor:
 class TrajEncoder(nn.Module):
     """Transformer encoder over K ordered timestep tokens -> mean-pool -> linear head."""
 
-    def __init__(self, c: int, k: int, n_classes: int,
-                 pos_enc: str | None = None, pos_scale: float | None = None):
+    def __init__(
+        self, c: int, k: int, n_classes: int, pos_enc: str | None = None, pos_scale: float | None = None
+    ):
         super().__init__()
         # Explicit args beat the module globals so tests and multi-config processes can
         # build both encoders side by side; None falls back to the globals main() sets.
@@ -316,8 +317,9 @@ def count_params(model: nn.Module) -> int:
     return sum(p.numel() for p in model.parameters())
 
 
-def build_model(arm: str, c: int, k: int, n_classes: int,
-                pos_enc: str | None = None, pos_scale: float | None = None) -> nn.Module:
+def build_model(
+    arm: str, c: int, k: int, n_classes: int, pos_enc: str | None = None, pos_scale: float | None = None
+) -> nn.Module:
     if arm in ("traj", "shuffle"):
         return TrajEncoder(c, k, n_classes, pos_enc=pos_enc, pos_scale=pos_scale)
     if arm == "mlp":
@@ -669,8 +671,11 @@ def _append(out_csv: str, rows: list[dict], norm: str, fields: list[str]) -> Non
         for r in rows:
             # Row-level value wins over the module global (rows built by run_cv /
             # run_control_arm stamp the encoder actually constructed).
-            w.writerow({"pos_enc": POS_ENC, "pos_scale": POS_SCALE,
-                        **r, "norm": norm, "timestamp": ts})
+            # pos_scale is only APPLIED on the sinusoidal path; stamping it on learned rows
+            # would let a scale-sensitivity groupby read "no effect" from runs where the
+            # scale was never in force.
+            _scale = POS_SCALE if POS_ENC == "sinusoidal" else ""
+            w.writerow({"pos_enc": POS_ENC, "pos_scale": _scale, **r, "norm": norm, "timestamp": ts})
     print(f"appended {len(rows)} row(s) to {out_csv}")
 
 
@@ -695,6 +700,19 @@ def report_param_counts(c: int, k: int, n_classes: int, best_t: int) -> None:
     print(f"  |Δ|/traj     : {diff_pct:.2f}%")
     if diff_pct > 10.0:
         raise SystemExit(f"FATAL: arm param counts differ by {diff_pct:.1f}% (> 10%); adjust MLP_HIDDEN.")
+
+
+def _validate_output_header(args) -> None:
+    # Validate the output-CSV header BEFORE any training: a schema mismatch discovered at
+    # append time costs the entire GPU sweep and is then swallowed by the caller's `|| WARN`.
+    # Scope to the CSV the SELECTED MODE actually writes -- checking both unconditionally
+    # made every invocation (self-test included) die on whichever default file was stale.
+    if getattr(args, "control", False):
+        path, fields = getattr(args, "control_out_csv", None), CONTROL_CSV_FIELDS
+    else:
+        path, fields = getattr(args, "out_csv", None), CSV_FIELDS
+    if path and os.path.exists(path):
+        _check_existing_header(path, fields)
 
 
 def main() -> None:
@@ -762,16 +780,11 @@ def main() -> None:
     )
     args = p.parse_args()
 
-    # Validate the output-CSV header BEFORE any training: a schema mismatch discovered at
-    # append time costs the entire GPU sweep and is then swallowed by the caller's `|| WARN`.
-    # Scope to the CSV the SELECTED MODE actually writes -- checking both unconditionally
-    # made every invocation (self-test included) die on whichever default file was stale.
-    if getattr(args, "control", False):
-        path, fields = getattr(args, "control_out_csv", None), CONTROL_CSV_FIELDS
-    else:
-        path, fields = getattr(args, "out_csv", None), CSV_FIELDS
-    if path and os.path.exists(path):
-        _check_existing_header(path, fields)
+    # No-write modes must not be gated on a CSV they never touch: a stale default
+    # --out-csv otherwise kills --self-test, which the sweep script interprets as a
+    # self-test FAILURE and aborts the whole sweep (2026-09-04 review).
+    if not (args.self_test or args.dry_run):
+        _validate_output_header(args)
 
     global POS_ENC, POS_SCALE
     POS_ENC = args.pos_enc

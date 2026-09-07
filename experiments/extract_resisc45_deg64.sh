@@ -17,6 +17,9 @@
 #
 # This is the first experiment in the project able to BREAK the resolution/domain collinearity
 # rather than document it (cf. the RESOLUTION CONFOUND block in RESEARCH_NOTES.md section 4).
+# OUTCOME (RESEARCH_NOTES 6d): untrained fraction UNCHANGED under degradation (56.6% -> 54.9%)
+# -- resolution eliminated as the dissociation's cause; trained model loses only 2.6 points
+# despite 13x less high-frequency energy.
 set -u
 cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 

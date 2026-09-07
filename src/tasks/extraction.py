@@ -52,19 +52,25 @@ def env_provenance(cfg):
             "provenance."
         )
 
-    suffix = ""
+    # SINGLE SOURCE OF TRUTH for control provenance parts. Both consumers derive their
+    # suffix from this list -- the cache tag joins with '_' UPPER, the run name (run.py)
+    # joins with '+' lower -- so a new control flag added here propagates to both formats
+    # and cannot be added to one and forgotten in the other (verified hazard, 2026-09-03
+    # review: the two formats were previously maintained by hand in different modules).
+    parts = []
     if randinit:
-        suffix += "_RANDINIT"
+        parts.append("randinit")
     if fixedcond:
-        suffix += f"_FIXEDCOND{fixedcond}"
+        parts.append(f"fixedcond{fixedcond}")
     if degrade:
-        suffix += f"_DEG{degrade}"
+        parts.append(f"deg{degrade}")
+    suffix = "".join("_" + p.upper() for p in parts)
     meta = {
         "weights": "random_init" if randinit else "flux-dev",
         "fixed_cond_t": int(fixedcond) if fixedcond else None,
         "degrade_to": int(degrade) if degrade else None,
     }
-    return suffix, meta
+    return suffix, meta, parts
 
 
 def _stratified_indices(labels: np.ndarray, subset_size: int, seed: int) -> np.ndarray:
@@ -129,7 +135,7 @@ class ExtractionTask:
         # run. Every downstream sweep locates caches by GLOB, so an untrained cache
         # sitting at the expected path would be probed as if it were FLUX. Mark it in the
         # filename, where a `*_oneshot_g1.0.npz` glob cannot reach it.
-        prov_suffix, prov_meta = env_provenance(cfg)
+        prov_suffix, prov_meta, _ = env_provenance(cfg)
         cache_tag = f"{cfg.extraction_mode.value.lower()}_g{cfg.guidance_scale}" + prov_suffix
         if inversion:
             cache_tag += f"_n{cfg.num_inversion_steps}"

@@ -209,14 +209,12 @@ class RunConfig:
         # directory as the real-weights run with the same settings. Tag the directory too,
         # so provenance is visible without opening the cache. Real runs are unaffected,
         # so no previously-extracted cache changes path.
-        suffix = ""
-        from utils import env_value as _env
-        if _env("FLUX_RANDOM_INIT"):
-            suffix += "+randinit"
-        if _env("FIXED_COND_T"):
-            suffix += f"+fixedcond{_env('FIXED_COND_T')}"
-        if _env("DEGRADE_TO"):
-            suffix += f"+deg{_env('DEGRADE_TO')}"
+        # Control-provenance suffix, derived from the SAME parts list the cache tag uses
+        # (tasks.extraction.env_provenance) -- one source of truth for both formats.
+        from tasks.extraction import env_provenance
+
+        _, _, parts = env_provenance(self)
+        suffix = "".join("+" + p for p in parts)
         if suffix:
             return f"{dataset_name}_{model_name}_{self.config_hash()}+{seed}{suffix}"
         return f"{dataset_name}_{model_name}_{self.config_hash()}+{seed}"

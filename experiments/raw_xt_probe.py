@@ -26,6 +26,12 @@ t=100 on EuroSAT ens=1.
 
 PAIRING. Raw and DiT arms are built from the same stratified subset in the same order, so
 folds are identical and deltas are paired per (seed, fold); the loader asserts this.
+
+FINDINGS (RESEARCH_NOTES 6). EuroSAT: the Tier-1 pattern reproduces against the raw-latent
+baseline. Audit S3/S4: the best-over-18-configs selection is NOT materially inflating the
+baseline (nested check: bias -0.007, wrong sign for the worry). Terminology caveat: this
+baseline is VAE-latent, not model-free -- pooled pixels reach only 43% of above-chance vs
+the latent's 74% (EuroSAT).
 """
 
 from __future__ import annotations
@@ -58,9 +64,7 @@ def _assert_ens(path: str, expected: int) -> None:
     if os.path.exists(meta):
         got = json.load(open(meta)).get("ensemble_size")
         if got is not None and int(got) != expected:
-            raise SystemExit(
-                f"FATAL: {path} has ensemble_size={got}, expected {expected} — arms swapped?"
-            )
+            raise SystemExit(f"FATAL: {path} has ensemble_size={got}, expected {expected} — arms swapped?")
 
 
 SEEDS = [0, 1, 2]
@@ -72,8 +76,13 @@ def load(path_or_glob: str) -> dict:
     if len(paths) != 1:
         raise SystemExit(f"FATAL: {len(paths)} files matched {path_or_glob}: {paths}")
     d = np.load(paths[0], allow_pickle=False)
-    return {"feats": d["feats"], "labels": d["labels"],
-            "ts": [int(t) for t in d["timesteps"]], "idx": d["subset_indices"], "path": paths[0]}
+    return {
+        "feats": d["feats"],
+        "labels": d["labels"],
+        "ts": [int(t) for t in d["timesteps"]],
+        "idx": d["subset_indices"],
+        "path": paths[0],
+    }
 
 
 def best_over_c(x: np.ndarray, y: np.ndarray, d_cap: int) -> tuple[float, float, list[float]]:
@@ -114,15 +123,20 @@ def main() -> None:
     p.add_argument("--dataset", required=True)
     p.add_argument("--ens", type=int, required=True)
     p.add_argument("--dit", required=True, help="glob for the DiT one-shot pooled cache")
-    p.add_argument("--pca", type=int, default=400,
-                   help="in-fold PCA cap; 400 = n_train-1 at n=500/5-fold, i.e. lossless")
+    p.add_argument(
+        "--pca", type=int, default=400, help="in-fold PCA cap; 400 = n_train-1 at n=500/5-fold, i.e. lossless"
+    )
     p.add_argument("--out-csv", default=None)
     args = p.parse_args()
 
     dit = load(args.dit)
+
+    # The DiT cache's filename does not encode ensemble size; only meta.json does.
+
+    _assert_ens(dit["path"], args.ens)
     y, ts = dit["labels"], dit["ts"]
     n_cls = len(np.unique(y))
-    print(f"{args.dataset} ens={args.ens}  n={len(y)}  classes={n_cls}  chance={1/n_cls:.4f}")
+    print(f"{args.dataset} ens={args.ens}  n={len(y)}  classes={n_cls}  chance={1 / n_cls:.4f}")
     print(f"  DiT: {dit['path']}\n")
 
     raws = {}
@@ -137,16 +151,18 @@ def main() -> None:
         raws[how] = r
 
     dims = {h: raws[h]["feats"].shape[2] for h in POOLINGS}
-    print(f"dims: raw mean={dims['mean']}  q2={dims['q2']}  full={dims['full']}  "
-          f"DiT={dit['feats'].shape[2]}\n")
+    print(
+        f"dims: raw mean={dims['mean']}  q2={dims['q2']}  full={dims['full']}  DiT={dit['feats'].shape[2]}\n"
+    )
 
     rows = []
     hdr = f"{'t':<8}{'eta':>7}" + "".join(f"{'raw ' + h:>11}" for h in POOLINGS)
     hdr += f"{'best':>7}{'DiT':>10}{'DiT-best':>10}{'95% CI':>22}"
-    print(hdr); print("-" * len(hdr))
+    print(hdr)
+    print("-" * len(hdr))
 
     def one(name: str, t_nom: int | None, sl):
-        eta = "" if t_nom is None else f"{(t_nom/1000)/(1-t_nom/1000):>7.2f}"
+        eta = "" if t_nom is None else f"{(t_nom / 1000) / (1 - t_nom / 1000):>7.2f}"
         accs, folds = {}, {}
         for how in POOLINGS:
             m, c, f = best_over_c(sl(raws[how]["feats"]), y, args.pca)
@@ -156,16 +172,27 @@ def main() -> None:
         win = max(POOLINGS, key=lambda h: accs[h])
         d = [a - b for a, b in zip(df, folds[win], strict=True)]
         lo, hi = boot_ci(d)
-        print(f"{name:<8}{eta}" + "".join(f"{accs[h]:>11.4f}" for h in POOLINGS)
-              + f"{win:>7}{dm:>10.4f}{np.mean(d):>+10.4f}{f'[{lo:+.4f}, {hi:+.4f}]':>22}")
-        rows.append({"dataset": args.dataset, "ens": args.ens, "comparison": name,
-                     "eta": None if t_nom is None else round((t_nom/1000)/(1-t_nom/1000), 4),
-                     **{f"raw_{h}": round(accs[h], 6) for h in POOLINGS},
-                     "raw_best_pooling": win, "raw_best": round(accs[win], 6),
-                     "dit": round(dm, 6), "delta_dit_minus_rawbest": round(float(np.mean(d)), 6),
-                     "ci_lo": round(lo, 6), "ci_hi": round(hi, 6),
-                     "verdict": ("DiT better" if lo > 0 else
-                                 "RAW better" if hi < 0 else "not distinguishable")})
+        print(
+            f"{name:<8}{eta}"
+            + "".join(f"{accs[h]:>11.4f}" for h in POOLINGS)
+            + f"{win:>7}{dm:>10.4f}{np.mean(d):>+10.4f}{f'[{lo:+.4f}, {hi:+.4f}]':>22}"
+        )
+        rows.append(
+            {
+                "dataset": args.dataset,
+                "ens": args.ens,
+                "comparison": name,
+                "eta": None if t_nom is None else round((t_nom / 1000) / (1 - t_nom / 1000), 4),
+                **{f"raw_{h}": round(accs[h], 6) for h in POOLINGS},
+                "raw_best_pooling": win,
+                "raw_best": round(accs[win], 6),
+                "dit": round(dm, 6),
+                "delta_dit_minus_rawbest": round(float(np.mean(d)), 6),
+                "ci_lo": round(lo, 6),
+                "ci_hi": round(hi, 6),
+                "verdict": ("DiT better" if lo > 0 else "RAW better" if hi < 0 else "not distinguishable"),
+            }
+        )
 
     for i, t in enumerate(ts):
         one(f"t={t}", t, lambda f, i=i: f[:, i, :])

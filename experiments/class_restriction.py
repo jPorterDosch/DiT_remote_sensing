@@ -15,7 +15,13 @@ that is left standing.
 Both a top-10 (easiest) and a random-10 (median) restriction are reported, because "most
 separable" biases toward classes that random features may also find easy -- the random-10
 figure guards that read.
+
+FINDINGS (2026-08-22, RESEARCH_NOTES 6e). Restricting RESISC45 to its 10 most-separable
+classes reproduces EuroSAT's untrained fraction (87.9% vs 84.4%); random-10 moves it only to
+61.7%. The random-weight dissociation is CLASS DIFFICULTY -- not class count, not resolution
+(6d), not domain.
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -23,7 +29,9 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import StratifiedKFold
 from sklearn.preprocessing import StandardScaler
 
-TRAINED = "models/n5000_resisc45_oneshot_ens1/resisc45_flux_19044381+42/multistep_train_feats_oneshot_g1.0.npz"
+TRAINED = (
+    "models/n5000_resisc45_oneshot_ens1/resisc45_flux_19044381+42/multistep_train_feats_oneshot_g1.0.npz"
+)
 UNTRAINED = "models/n5000_resisc45_deg64_random/../../n5000_resisc45_randinit_ens1/resisc45_flux_19044381+42+randinit/multistep_train_feats_oneshot_g1.0_RANDINIT.npz"
 UNTRAINED = "models/n5000_resisc45_randinit_ens1/resisc45_flux_19044381+42+randinit/multistep_train_feats_oneshot_g1.0_RANDINIT.npz"
 T_IDX = 0  # t=100
@@ -51,7 +59,8 @@ def acc_on(x, y, keep, c):
 def main():
     dt = np.load(TRAINED)
     du = np.load(UNTRAINED)
-    assert np.array_equal(dt["labels"], du["labels"]), "arms not paired"
+    if not (np.array_equal(dt["labels"], du["labels"])):
+        raise RuntimeError("arms not paired")
     y = dt["labels"]
     xt, xu = dt["feats"][:, T_IDX, :], du["feats"][:, T_IDX, :]
 
@@ -66,11 +75,12 @@ def main():
     print("top-10 classes by trained recall:", [int(c) for c in top10], flush=True)
     print("random-10 classes:", [int(c) for c in rand10], flush=True)
 
-    print(f"\n{'restriction':<22}{'chance':>8}{'trained':>10}{'untrained':>11}{'untr frac':>11}",
-          flush=True)
-    for name, keep, ch in [("all 45", classes, 1 / 45),
-                           ("top-10 separable", top10, 0.1),
-                           ("random-10", rand10, 0.1)]:
+    print(f"\n{'restriction':<22}{'chance':>8}{'trained':>10}{'untrained':>11}{'untr frac':>11}", flush=True)
+    for name, keep, ch in [
+        ("all 45", classes, 1 / 45),
+        ("top-10 separable", top10, 0.1),
+        ("random-10", rand10, 0.1),
+    ]:
         at = acc_on(xt, y, list(keep), C_BY_ARM["trained"])
         au = acc_on(xu, y, list(keep), C_BY_ARM["untrained"])
         frac = (au - ch) / (at - ch)

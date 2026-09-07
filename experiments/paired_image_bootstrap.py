@@ -13,7 +13,13 @@ modal frozen choice; section 8's C-sweep shows the ORDERING is C-invariant, and 
 avoids the different-operating-point problem for this paired test).
 
 Comparisons, per timestep and endpoint: ens8 - inversion, inversion - ens1, ens8 - ens1.
+
+FINDINGS (2026-08-22, RESEARCH_NOTES 6e). At n=5000 with the correct (image-level) unit:
+high-t inversion-over-ens1 is large and significant on both datasets (+0.075 EuroSAT,
++0.129 RESISC45 at t=580); ens8 and inversion are numerically IDENTICAL on EuroSAT t=580
+(+0.0001 ns); ens8 holds a small significant edge on RESISC45 (+0.0065/+0.0143).
 """
+
 from __future__ import annotations
 
 import sys
@@ -79,14 +85,16 @@ def main():
         print(f"\n=== {ds}  n={len(y)}  C={C} (shared)  seeds={SEEDS} ===", flush=True)
         for t_idx in (0, len(ts) - 1):
             corr = {k: per_image_correct(v["feats"][:, t_idx, :], y, n_jobs) for k, v in d.items()}
-            print(f"  t={ts[t_idx]}  acc: " + "  ".join(f"{k}={corr[k].mean():.4f}" for k in corr),
-                  flush=True)
+            print(
+                f"  t={ts[t_idx]}  acc: " + "  ".join(f"{k}={corr[k].mean():.4f}" for k in corr), flush=True
+            )
             for a, b in [("ens8", "inv"), ("inv", "ens1"), ("ens8", "ens1")]:
                 diff = corr[a] - corr[b]
                 lo, hi = boot(diff)
-                verdict = ("SIGNIF " if lo > 0 or hi < 0 else "       ")
-                print(f"    {a}-{b}: {diff.mean():+.4f}  image-CI [{lo:+.4f}, {hi:+.4f}] {verdict}",
-                      flush=True)
+                verdict = "SIGNIF " if lo > 0 or hi < 0 else "       "
+                print(
+                    f"    {a}-{b}: {diff.mean():+.4f}  image-CI [{lo:+.4f}, {hi:+.4f}] {verdict}", flush=True
+                )
 
 
 if __name__ == "__main__":

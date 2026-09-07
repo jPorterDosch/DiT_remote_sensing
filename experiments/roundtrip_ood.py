@@ -15,7 +15,13 @@ Two uses:
 Also runs the MATCHED-NFE integrator ablation (audit finding O3): REPORT.md compared Euler and
 RF-Solver at the same step count, but the order-2 step evaluates the velocity twice per step,
 so it had 2x the NFE. Euler@2N vs RF-Solver@N is the fair comparison.
+
+FINDINGS (2026-08-22/30, RESEARCH_NOTES 6e/6k). EuroSAT inverts 2.4x worse than RESISC45
+(rel-L2 0.103 vs 0.042). Matched-NFE integrator ablation: order 2 still wins (0.071 vs 0.129
+RESISC45; 0.086 vs 0.102 EuroSAT) -- REPORT.md's conclusion survives with the honest ~1.2-1.8x
+figure. Per-image correlation with the inversion advantage: NULL (rho -0.05/-0.03, 6k).
 """
+
 from __future__ import annotations
 
 import argparse
@@ -52,15 +58,23 @@ def main() -> None:
     p.add_argument("--n", type=int, default=200, help="images (subsampled from the n=5000 subset)")
     p.add_argument("--t-stop", type=int, default=580)
     p.add_argument("--num-steps", type=int, default=50)
-    p.add_argument("--nfe-ablation", action="store_true",
-                   help="also run Euler@2N vs RF-Solver@N on the first 10 images")
+    p.add_argument(
+        "--nfe-ablation", action="store_true", help="also run Euler@2N vs RF-Solver@N on the first 10 images"
+    )
     p.add_argument("--out", required=True)
     args = p.parse_args()
 
-    cfg = RunConfig(task="extract", model=ModelConfig(name="flux", ensemble_size=1),
-                    dataset=DatasetConfig(name=args.dataset, path=args.path),
-                    img_size=list(args.img_size), subset_size=5000, subset_seed=42,
-                    batch_size=1, num_workers=4, label_fraction=1.0)
+    cfg = RunConfig(
+        task="extract",
+        model=ModelConfig(name="flux", ensemble_size=1),
+        dataset=DatasetConfig(name=args.dataset, path=args.path),
+        img_size=list(args.img_size),
+        subset_size=5000,
+        subset_seed=42,
+        batch_size=1,
+        num_workers=4,
+        label_fraction=1.0,
+    )
     seed_all(cfg.seed)
     dataset = DATASETS[cfg.dataset.name](cfg)
     train_ds = dataset.get_data(cfg)["train"].dataset
@@ -73,8 +87,7 @@ def main() -> None:
     indices = idx5000[pos]
 
     model = MODELS["flux"](cfg, dataset.category_list)
-    loader = DataLoader(Subset(train_ds, indices.tolist()), batch_size=1, shuffle=False,
-                        num_workers=2)
+    loader = DataLoader(Subset(train_ds, indices.tolist()), batch_size=1, shuffle=False, num_workers=2)
 
     from models.flux.feat_flux import prepare  # packed clean latent for the error metric
 
@@ -82,44 +95,66 @@ def main() -> None:
     with torch.no_grad():
         for i, batch in enumerate(loader):
             img = batch["img"].to("cuda").squeeze(0)  # invert_chain expects (C, H, W)
-            rec, clean = model.roundtrip(img, t_stop=args.t_stop,
-                                         num_inversion_steps=args.num_steps,
-                                         block_idx=28, guidance=1.0)
-            rows.append({"subset_pos": int(pos[i]), "train_index": int(indices[i]),
-                         "label": int(batch["label"][0]),
-                         "rel_err": rel_err(rec, clean)})
+            rec, clean = model.roundtrip(
+                img, t_stop=args.t_stop, num_inversion_steps=args.num_steps, block_idx=28, guidance=1.0
+            )
+            rows.append(
+                {
+                    "subset_pos": int(pos[i]),
+                    "train_index": int(indices[i]),
+                    "label": int(batch["label"][0]),
+                    "rel_err": rel_err(rec, clean),
+                }
+            )
             if i % 20 == 0:
                 print(f"  {i}/{args.n}  rel_err={rows[-1]['rel_err']:.5f}", flush=True)
 
     errs = np.array([r["rel_err"] for r in rows])
-    print(f"\n{args.dataset}: roundtrip rel-L2 @ t_stop={args.t_stop}, N={args.num_steps}: "
-          f"mean {errs.mean():.5f}  median {np.median(errs):.5f}  p90 {np.quantile(errs, .9):.5f}",
-          flush=True)
+    print(
+        f"\n{args.dataset}: roundtrip rel-L2 @ t_stop={args.t_stop}, N={args.num_steps}: "
+        f"mean {errs.mean():.5f}  median {np.median(errs):.5f}  p90 {np.quantile(errs, 0.9):.5f}",
+        flush=True,
+    )
     with open(args.out, "w") as f:
-        json.dump({"dataset": args.dataset, "t_stop": args.t_stop,
-                   "num_steps": args.num_steps, "rows": rows}, f)
+        json.dump(
+            {"dataset": args.dataset, "t_stop": args.t_stop, "num_steps": args.num_steps, "rows": rows}, f
+        )
     print(f"wrote {args.out}", flush=True)
 
     if args.nfe_ablation:
         print("\nMATCHED-NFE integrator ablation (10 images):", flush=True)
-        loader10 = DataLoader(Subset(train_ds, indices[:10].tolist()), batch_size=1,
-                              shuffle=False, num_workers=2)
+        loader10 = DataLoader(
+            Subset(train_ds, indices[:10].tolist()), batch_size=1, shuffle=False, num_workers=2
+        )
         for order, steps in [(2, args.num_steps), (1, args.num_steps), (1, 2 * args.num_steps)]:
             es = []
             with torch.no_grad():
                 for batch in loader10:
                     img = batch["img"].to("cuda").squeeze(0)  # invert_chain expects (C, H, W)
                     out = model._inner.invert_chain(
-                        img, cache_timesteps=[], num_inversion_steps=steps, block_idx=28,
-                        guidance=1.0, order=order, t_stop=args.t_stop)
+                        img,
+                        cache_timesteps=[],
+                        num_inversion_steps=steps,
+                        block_idx=28,
+                        guidance=1.0,
+                        order=order,
+                        t_stop=args.t_stop,
+                    )
                     gen = model._inner.generate_chain(
-                        out["z_final"], out["img_ids"], t_start=args.t_stop,
-                        num_inversion_steps=steps, guidance=1.0, order=order)
+                        out["z_final"],
+                        out["img_ids"],
+                        t_start=args.t_stop,
+                        num_inversion_steps=steps,
+                        guidance=1.0,
+                        order=order,
+                    )
                     clean_packed, _ = prepare(img=out["latents_clean"])
                     es.append(rel_err(gen, clean_packed))
             nfe = steps * (2 if order == 2 else 1)
-            print(f"  order={order} steps={steps:<4} NFE/leg={nfe:<4} "
-                  f"rel_err mean {np.mean(es):.5f}", flush=True)
+            print(
+                f"  order={order} steps={steps:<4} NFE/leg={nfe:<4} rel_err mean {np.mean(es):.5f}",
+                flush=True,
+            )
 
 
 if __name__ == "__main__":

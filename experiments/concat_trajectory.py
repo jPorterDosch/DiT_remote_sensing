@@ -6,7 +6,13 @@ question is not: concat won everywhere it appeared but was never separated from 
 features". This measures the concat margins at n=5000 with the image-level machinery.
 In-fold PCA to 512 keeps the 21504-dim concat comparable to a 3072-dim single t under the
 same probe (lossy but equally lossy for every arm; margins, not levels, are the object).
+
+FINDINGS (v2, 2026-08-23, RESEARCH_NOTES 6h). With honest best-t baselines, concatenating
+the trajectory adds NOTHING significant on any arm, either dataset (ens8 +0.0016/+0.0025 ns,
+inv +0.0036/+0.0029 ns) and HURTS ens1 (-0.0061/-0.0103 SIG). v1's "+0.014 SIG concat gain"
+was a wrong-baseline artifact (t=100 assumed best; ens8 peaks at t=180/260) -- see 6g.
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -62,7 +68,8 @@ def main():
         d = {k: np.load(v) for k, v in paths.items()}
         y = d["ens1"]["labels"]
         for v in d.values():
-            assert np.array_equal(v["labels"], y)
+            if not (np.array_equal(v["labels"], y)):
+                raise RuntimeError("assertion failed: np.array_equal(v['labels'], y)")
         print(f"\n=== {ds}  n={len(y)}  C={C}  PCA-512 on concat ===", flush=True)
         res = {}
         for k, v in d.items():
@@ -77,13 +84,18 @@ def main():
             best_t = max(per_t, key=lambda t: per_t[t].mean())
             res[f"{k}_single"] = per_t[best_t]
             res[f"{k}_concat"] = correct(f.reshape(len(y), -1), y)
-            print(f"  {k}: best single t={best_t} {res[f'{k}_single'].mean():.4f}  "
-                  f"concat {res[f'{k}_concat'].mean():.4f}", flush=True)
-        for name, a, b in [("concat gain, ens1", "ens1_concat", "ens1_single"),
-                           ("concat gain, ens8", "ens8_concat", "ens8_single"),
-                           ("concat gain, inv", "inv_concat", "inv_single"),
-                           ("inv concat - ens8 concat", "inv_concat", "ens8_concat"),
-                           ("inv concat - ens1 concat", "inv_concat", "ens1_concat")]:
+            print(
+                f"  {k}: best single t={best_t} {res[f'{k}_single'].mean():.4f}  "
+                f"concat {res[f'{k}_concat'].mean():.4f}",
+                flush=True,
+            )
+        for name, a, b in [
+            ("concat gain, ens1", "ens1_concat", "ens1_single"),
+            ("concat gain, ens8", "ens8_concat", "ens8_single"),
+            ("concat gain, inv", "inv_concat", "inv_single"),
+            ("inv concat - ens8 concat", "inv_concat", "ens8_concat"),
+            ("inv concat - ens1 concat", "inv_concat", "ens1_concat"),
+        ]:
             diff = res[a] - res[b]
             lo, hi = boot(diff)
             sig = "SIGNIF" if lo > 0 or hi < 0 else ""

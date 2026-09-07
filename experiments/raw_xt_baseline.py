@@ -40,6 +40,12 @@ Cost: VAE encode only (load_ae, no DiT / T5 / CLIP), so this is minutes, not hou
 NOT COVERED. The INVERSION arm's states are not constructible in closed form -- they are the
 ODE trajectory and cost a full chain per image. This script covers the one-shot arm only; the
 inversion-state analogue is a separate, expensive run.
+
+FINDINGS, updated (RESEARCH_NOTES 6). n=5000: EuroSAT raw 0.737 at t=100 (74% of the DiT
+arm's above-chance) with the ens8-ens1 control monotone and significant; RESISC45 0.316
+(36%). TERMINOLOGY CORRECTION (audit F3): this baseline uses the TRAINED FLUX VAE encoder --
+it is not model-free. Genuinely model-free pooled pixels reach 0.472 on EuroSAT (43%); the
+VAE contributes more than the entire transformer stack adds on top of it.
 """
 
 from __future__ import annotations
@@ -79,6 +85,30 @@ def pool(x: torch.Tensor, how: str) -> torch.Tensor:
     if how == "full":
         return x.flatten()
     raise ValueError(how)
+
+
+def _env_suffix_and_meta():
+    """Provenance stamp for the extraction-control env vars, mirroring
+    tasks.extraction.env_provenance: these standalone extractors honor FLUX_RANDOM_INIT
+    (via load_flow_model) and DEGRADE_TO (via the dataset hook) but previously wrote
+    UN-suffixed cache names -- a stale export would poison the exact filenames the
+    downstream probes glob (2026-09-04 review)."""
+    from utils import env_value
+
+    parts = []
+    if env_value("FLUX_RANDOM_INIT"):
+        parts.append("RANDINIT")
+    if env_value("FIXED_COND_T"):
+        parts.append(f"FIXEDCOND{env_value('FIXED_COND_T')}")
+    if env_value("DEGRADE_TO"):
+        parts.append(f"DEG{env_value('DEGRADE_TO')}")
+    suffix = "".join("_" + p for p in parts)
+    meta = {
+        "weights": "random_init" if env_value("FLUX_RANDOM_INIT") else "flux-dev",
+        "degrade_to": int(env_value("DEGRADE_TO")) if env_value("DEGRADE_TO") else None,
+        "fixed_cond_t": int(env_value("FIXED_COND_T")) if env_value("FIXED_COND_T") else None,
+    }
+    return suffix, meta
 
 
 def main() -> None:
@@ -147,9 +177,7 @@ def main() -> None:
                     # ae.encode samples the VAE posterior, so members differ here too --
                     # mirroring the real path, which re-encodes per ensemble member.
                     lat = ae.encode(img).to(torch.bfloat16)
-                    eps = torch.randn(
-                        lat.shape, generator=gens[m], device=device, dtype=lat.dtype
-                    )
+                    eps = torch.randn(lat.shape, generator=gens[m], device=device, dtype=lat.dtype)
                     # x_t for every timestep from ONE (lat, eps) pair — the real path also
                     # reuses both across all K timesteps and asserts they do not change.
                     xt = torch.stack([t * eps + (1.0 - t) * lat for t in ts])  # K,1,C,h,w
@@ -166,7 +194,7 @@ def main() -> None:
     os.makedirs(args.out_dir, exist_ok=True)
     for (m, how), rows in out.items():
         feats = np.stack(rows).astype(np.float32)  # N, K, D
-        base = f"{args.dataset}_rawxt_ens{m}_{how}"
+        base = f"{args.dataset}_rawxt_ens{m}_{how}" + _env_suffix_and_meta()[0]
         np.savez(
             os.path.join(args.out_dir, base + ".npz"),
             feats=feats,
@@ -176,10 +204,17 @@ def main() -> None:
             subset_seed=np.array(cfg.subset_seed),
         )
         meta = {
-            "dataset": args.dataset, "img_size": list(args.img_size), "t": list(args.t),
-            "ensemble_size": m, "pooling": how, "eps_seed": args.eps_seed,
-            "subset_size": int(len(indices)), "subset_seed": cfg.subset_seed,
-            "feats_shape": list(feats.shape), "extraction_mode": "RAW_XT_NO_DIT",
+            **_env_suffix_and_meta()[1],
+            "dataset": args.dataset,
+            "img_size": list(args.img_size),
+            "t": list(args.t),
+            "ensemble_size": m,
+            "pooling": how,
+            "eps_seed": args.eps_seed,
+            "subset_size": int(len(indices)),
+            "subset_seed": cfg.subset_seed,
+            "feats_shape": list(feats.shape),
+            "extraction_mode": "RAW_XT_NO_DIT",
             "noising": "x_t = (t/1000)*eps + (1-t/1000)*x0, bf16, eps per image",
         }
         with open(os.path.join(args.out_dir, base + "_meta.json"), "w") as f:

@@ -11,6 +11,12 @@ Reports, per timestep and for the concatenated trajectory:
 
 A positive interval means one-shot genuinely beats the chain; an interval straddling zero
 means the observed gap is not distinguishable from noise, regardless of its sign.
+
+FINDINGS + CAVEATS (RESEARCH_NOTES 4 + audit). Established the original three-arm result
+(ens8 >= inversion >= ens1). Audit updates: the (seed,fold) bootstrap unit is
+anti-conservative (use paired_image_bootstrap.py at n=5000 for the corrected verdicts); the
+ordering is C-invariant across four decades (S4) but per-timestep ens8-vs-inv significance
+did not survive the image-level unit.
 """
 
 from __future__ import annotations
@@ -36,8 +42,13 @@ def load_arm(pattern: str) -> dict:
     if len(paths) > 1:
         raise SystemExit(f"FATAL: {len(paths)} caches matched {pattern}: {paths}")
     d = np.load(paths[0], allow_pickle=False)
-    return {"feats": d["feats"], "labels": d["labels"], "ts": [int(t) for t in d["timesteps"]],
-            "idx": d["subset_indices"], "path": paths[0]}
+    return {
+        "feats": d["feats"],
+        "labels": d["labels"],
+        "ts": [int(t) for t in d["timesteps"]],
+        "idx": d["subset_indices"],
+        "path": paths[0],
+    }
 
 
 def main() -> None:
@@ -60,13 +71,14 @@ def main() -> None:
 
     y, ts = inv["labels"], inv["ts"]
     n_cls = len(np.unique(y))
-    print(f"{args.label}: n={len(y)} classes={n_cls} chance={1 / n_cls:.4f} "
-          f"timesteps={ts}  C={args.c}  PCA={args.dim}")
+    print(
+        f"{args.label}: n={len(y)} classes={n_cls} chance={1 / n_cls:.4f} "
+        f"timesteps={ts}  C={args.c}  PCA={args.dim}"
+    )
     print(f"  inversion: {inv['path']}\n  oneshot:   {one['path']}\n")
 
     rows = []
-    print(f"{'comparison':<18}{'inversion':>11}{'oneshot':>10}{'one-inv':>10}"
-          f"{'95% CI':>22}  verdict")
+    print(f"{'comparison':<18}{'inversion':>11}{'oneshot':>10}{'one-inv':>10}{'95% CI':>22}  verdict")
     print("-" * 88)
 
     def compare(name: str, xi: np.ndarray, xo: np.ndarray):
@@ -80,12 +92,24 @@ def main() -> None:
             v = "INVERSION better"
         else:
             v = "not distinguishable"
-        print(f"{name:<18}{np.mean(ai):>11.4f}{np.mean(ao):>10.4f}{np.mean(d):>+10.4f}"
-              f"{f'[{lo:+.4f}, {hi:+.4f}]':>22}  {v}")
-        rows.append({"comparison": name, "inversion": round(float(np.mean(ai)), 6),
-                     "oneshot": round(float(np.mean(ao)), 6), "delta": round(float(np.mean(d)), 6),
-                     "ci_lo": round(lo, 6), "ci_hi": round(hi, 6), "verdict": v,
-                     "n_pairs": len(d), "C": args.c, "dataset": args.label})
+        print(
+            f"{name:<18}{np.mean(ai):>11.4f}{np.mean(ao):>10.4f}{np.mean(d):>+10.4f}"
+            f"{f'[{lo:+.4f}, {hi:+.4f}]':>22}  {v}"
+        )
+        rows.append(
+            {
+                "comparison": name,
+                "inversion": round(float(np.mean(ai)), 6),
+                "oneshot": round(float(np.mean(ao)), 6),
+                "delta": round(float(np.mean(d)), 6),
+                "ci_lo": round(lo, 6),
+                "ci_hi": round(hi, 6),
+                "verdict": v,
+                "n_pairs": len(d),
+                "C": args.c,
+                "dataset": args.label,
+            }
+        )
 
     for i, t in enumerate(ts):
         compare(f"t={t}", inv["feats"][:, i, :], one["feats"][:, i, :])

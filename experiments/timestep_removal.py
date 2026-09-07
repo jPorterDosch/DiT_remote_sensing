@@ -22,7 +22,14 @@ Mechanisms tried, cheapest first:
   both   white -> inlp
 
 All transforms are fit on the TRAIN fold only and applied to val (no leakage).
+
+FINDINGS (2026-09-01, RESEARCH_NOTES 1). Only per-timestep ZCA whitening passes the
+nonlinear gate (MLP t-ID 0.176 vs chance 0.143); z-scoring leaves 0.646, INLP 0.739 --
+removing per-t COVARIANCE is what matters, not means/scales/linear discriminants. Class
+signal survives at 0.873 (from 0.940). See timestep_removal_verify.py for why even this
+substrate fails the test that matters.
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -39,7 +46,7 @@ PCA_DIM = 256
 INLP_ROUNDS = 12
 
 
-def fit_shared_pca(tr):                      # (N, K, C) -> PCA on all timesteps pooled
+def fit_shared_pca(tr):  # (N, K, C) -> PCA on all timesteps pooled
     n, k, c = tr.shape
     p = PCA(n_components=PCA_DIM, svd_solver="randomized", random_state=0)
     p.fit(tr.reshape(n * k, c))
@@ -51,7 +58,7 @@ def apply_pca(p, x):
     return p.transform(x.reshape(n * k, c)).reshape(n, k, -1)
 
 
-def fit_white(tr):                            # per-timestep ZCA in the shared basis
+def fit_white(tr):  # per-timestep ZCA in the shared basis
     stats = []
     for i in range(tr.shape[1]):
         z = tr[:, i, :]
@@ -74,8 +81,8 @@ def fit_inlp(tr_flat, t_lab, rounds=INLP_ROUNDS):
     x = tr_flat.copy()
     for _ in range(rounds):
         clf = LogisticRegression(max_iter=1000, C=1.0).fit(x, t_lab)
-        W = clf.coef_                                   # (7, d)
-        Q, _ = np.linalg.qr(W.T)                        # orthonormal basis of the subspace
+        W = clf.coef_  # (7, d)
+        Q, _ = np.linalg.qr(W.T)  # orthonormal basis of the subspace
         Pi = np.eye(d) - Q @ Q.T
         P = P @ Pi
         x = x @ Pi
@@ -89,8 +96,11 @@ def t_recoverable(tr, va, probe):
     xva, yva = va.reshape(-1, va.shape[2]), np.tile(np.arange(k), va.shape[0])
     sc = StandardScaler().fit(xtr)
     a, b = sc.transform(xtr), sc.transform(xva)
-    m = (LogisticRegression(C=0.01, max_iter=2000) if probe == "linear"
-         else MLPClassifier(hidden_layer_sizes=(256,), max_iter=400, random_state=0))
+    m = (
+        LogisticRegression(C=0.01, max_iter=2000)
+        if probe == "linear"
+        else MLPClassifier(hidden_layer_sizes=(256,), max_iter=400, random_state=0)
+    )
     m.fit(a, ytr)
     return float((m.predict(b) == yva).mean())
 
@@ -108,20 +118,21 @@ def main():
         d = np.load(path)
         f, y = d["feats"].astype(np.float64), d["labels"]
         k = f.shape[1]
-        itr, iva = train_test_split(np.arange(len(y)), test_size=0.3, random_state=0,
-                                    stratify=y)
+        itr, iva = train_test_split(np.arange(len(y)), test_size=0.3, random_state=0, stratify=y)
         chance_t, chance_y = 1 / k, 1 / len(np.unique(y))
-        print(f"\n=== {ds}  n={len(y)}  K={k}  chance(t)={chance_t:.4f} "
-              f"chance(class)={chance_y:.4f} ===", flush=True)
-        print(f"{'substrate':<26}{'t-ID linear':>12}{'t-ID MLP':>10}{'class acc':>11}  gates",
-              flush=True)
+        print(
+            f"\n=== {ds}  n={len(y)}  K={k}  chance(t)={chance_t:.4f} chance(class)={chance_y:.4f} ===",
+            flush=True,
+        )
+        print(f"{'substrate':<26}{'t-ID linear':>12}{'t-ID MLP':>10}{'class acc':>11}  gates", flush=True)
 
         pca = fit_shared_pca(f[itr])
         base_tr, base_va = apply_pca(pca, f[itr]), apply_pca(pca, f[iva])
         variants = {"raw (PCA only)": (base_tr, base_va)}
 
         # z-score
-        mu = base_tr.mean(0, keepdims=True); sd = base_tr.std(0, keepdims=True) + 1e-8
+        mu = base_tr.mean(0, keepdims=True)
+        sd = base_tr.std(0, keepdims=True) + 1e-8
         variants["z per-timestep"] = ((base_tr - mu) / sd, (base_va - mu) / sd)
 
         # whitening
@@ -141,9 +152,10 @@ def main():
             mlp = t_recoverable(a, b, "mlp")
             ca = class_acc(a, b, y[itr], y[iva])
             g1 = mlp < chance_t * 1.5
-            g2 = ca > 0.6 * variants["raw (PCA only)"][0].shape[0] * 0 + 0.5  # placeholder below
-            print(f"{name:<26}{lin:>12.4f}{mlp:>10.4f}{ca:>11.4f}  "
-                  f"{'GATE1 PASS' if g1 else 'gate1 fail'}", flush=True)
+            print(
+                f"{name:<26}{lin:>12.4f}{mlp:>10.4f}{ca:>11.4f}  {'GATE1 PASS' if g1 else 'gate1 fail'}",
+                flush=True,
+            )
 
 
 if __name__ == "__main__":

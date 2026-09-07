@@ -38,14 +38,27 @@ class TokenExtractionTask:
     def run(self, cfg, model, dataset) -> dict:
         if not isinstance(cfg.t, list):
             raise ValueError(
-                "task='extract_tokens' requires a list of timesteps, e.g. --t 260 420 580; "
-                f"got t={cfg.t}"
+                f"task='extract_tokens' requires a list of timesteps, e.g. --t 260 420 580; got t={cfg.t}"
             )
         if cfg.subset_size is None:
             raise ValueError(
                 "task='extract_tokens' requires subset_size: the per-token rider is L~=196-256"
                 " times the pooled cache, and an unbounded run (~25k images) needs ~240 GB host"
                 " RAM that OOMs only AFTER the full GPU extraction."
+            )
+        # Quantitative RAM guard: the rider accumulates fp32 (N, S, L, C) DURING extraction,
+        # so an over-budget config OOM-kills the loop before the pooled cache is saved --
+        # losing the GPU work the save-order fix exists to protect. L is bounded above by
+        # (img/16)^2 tokens (patchified latent); C=3072. Budget 48 GB (~cat doubles peak).
+        _n = int(cfg.subset_size)
+        _s = len(cfg.per_token_t) if cfg.per_token_t else 0
+        _l = (max(cfg.img_size) // 16) ** 2
+        _bytes = _n * _s * _l * 3072 * 4
+        if _bytes > 48 * 1024**3:
+            raise ValueError(
+                f"extract_tokens rider would need ~{_bytes / 1024**3:.0f} GB host RAM "
+                f"(n={_n}, S={_s}, L~{_l}, C=3072, fp32) before the torch.cat copy doubles "
+                "it. Reduce subset_size or per_token_t."
             )
         if not cfg.per_token_t:
             raise ValueError(
@@ -72,7 +85,7 @@ class TokenExtractionTask:
         # Provenance suffix shared with ExtractionTask: without it a FLUX_RANDOM_INIT /
         # DEGRADE_TO / FIXED_COND_T run writes a cache byte-identically NAMED to a
         # real-weights one, and every downstream glob probes poisoned features as real.
-        prov_suffix, prov_meta = env_provenance(cfg)
+        prov_suffix, prov_meta, _ = env_provenance(cfg)
         cache_tag = f"{cfg.extraction_mode.value.lower()}_g{cfg.guidance_scale}" + prov_suffix
         if inversion:
             cache_tag += f"_n{cfg.num_inversion_steps}"
@@ -215,7 +228,6 @@ class TokenExtractionTask:
             f"(bf16 noise) over {len(cos)} (image, timestep) pairs"
         )
 
-
         # per_token_t is deliberately excluded from the config hash (it cannot change the
         # pooled cache), so the rider's timesteps go in the FILENAME instead — otherwise
         # two runs differing only in per_token_t would resolve to the same path.
@@ -253,9 +265,7 @@ class TokenExtractionTask:
             if vels.shape[2] != h * w:
                 # Velocity is packed latent; its token axis must match the feature grid or
                 # the two cannot be indexed against each other per patch.
-                raise RuntimeError(
-                    f"velocity token axis {vels.shape[2]} != feature grid {h}x{w}={h * w}"
-                )
+                raise RuntimeError(f"velocity token axis {vels.shape[2]} != feature grid {h}x{w}={h * w}")
             vel_path = os.path.join(cfg.save_dir, f"multistep_train_vels_{cache_tag}.npz")
             np.savez(
                 vel_path,
@@ -271,9 +281,7 @@ class TokenExtractionTask:
                 guidance_scale=np.array(cfg.guidance_scale),
                 **mode_extra,
             )
-            print(
-                f"cached velocities {vels.shape} ({vels.nbytes / 1024**3:.2f} GB) to {vel_path}"
-            )
+            print(f"cached velocities {vels.shape} ({vels.nbytes / 1024**3:.2f} GB) to {vel_path}")
 
         meta = {
             **prov_meta,

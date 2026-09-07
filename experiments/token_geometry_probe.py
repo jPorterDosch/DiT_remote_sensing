@@ -41,6 +41,13 @@ Probe/fold/seed conventions are inherited from experiments/linear_probes.py (Sta
 -> multinomial L2 logistic regression, stratified 5-fold). The L2 penalty is swept ONCE on
 the mean across feature sets and then frozen, so the comparison measures features, not
 per-feature-set tuning.
+
+AUDIT VERDICT (2026-08-19, RESEARCH_NOTES 6/8). align_null is a feature SUBSTITUTION in
+every variant (indistinguishable from a zero-temporal-information dispersion control;
+shuffled >= aligned in 8/8 blocks) and space_no_time is crippled by its 3072->8 random
+projection (~2x understated). The FAIL verdict survives only via time_no_space, whose
+7-vs-3-timestep advantage was measured at +0.0127 (immaterial against ~0.46). The
+candidate-vs-null rows should not be cited.
 """
 
 from __future__ import annotations
@@ -81,9 +88,9 @@ QUANTILES = np.linspace(0.1, 0.9, 9)
 # each decile would be estimated from too few tokens. Revisit when n grows; see the
 # ablation note in RESEARCH_NOTES.md.
 PARTITIONS = {
-    "global": [(1, 1)],          # 99 dims
-    "q2": [(2, 2)],              # 396 dims
-    "q2g": [(1, 1), (2, 2)],     # 495 dims
+    "global": [(1, 1)],  # 99 dims
+    "q2": [(2, 2)],  # 396 dims
+    "q2g": [(1, 1), (2, 2)],  # 495 dims
 }
 CANDIDATES = [f"token_geom_{k}" for k in PARTITIONS]
 NULLS = [f"align_null_{k}" for k in PARTITIONS]
@@ -94,6 +101,20 @@ FEATURE_SETS = CANDIDATES + BASELINES
 # ---------------------------------------------------------------------------------------
 # shared probe conventions (mirrors experiments/linear_probes.py)
 # ---------------------------------------------------------------------------------------
+
+
+def _reject_control_caches(paths: list[str]) -> list[str]:
+    """Drop provenance-suffixed control caches (_RANDINIT/_FIXEDCOND/_DEG) from a glob
+    result. Without this, a control cache sitting in the tree satisfies the same glob and
+    can be silently probed as a real arm -- the exact poisoning the suffixes exist to
+    prevent (2026-09-04 review)."""
+    kept = [p for p in paths if not any(tag in p for tag in ("_RANDINIT", "_FIXEDCOND", "_DEG"))]
+    dropped = sorted(set(paths) - set(kept))
+    if dropped:
+        print(f"  note: ignoring {len(dropped)} control cache(s): {dropped}")
+    return kept
+
+
 def make_probe(c: float, n_components: int | None = None):
     """StandardScaler -> [PCA to a common D] -> multinomial L2 logistic regression.
 
@@ -117,9 +138,7 @@ def make_probe(c: float, n_components: int | None = None):
     return make_pipeline(*steps)
 
 
-def cv_fold_accs(
-    x: np.ndarray, y: np.ndarray, c: float, seed: int, d_cap: int | None = None
-) -> list[float]:
+def cv_fold_accs(x: np.ndarray, y: np.ndarray, c: float, seed: int, d_cap: int | None = None) -> list[float]:
     """Per-FOLD accuracies (not just the mean) — the deltas are paired per fold."""
     skf = StratifiedKFold(n_splits=N_FOLDS, shuffle=True, random_state=seed)
     out = []
@@ -342,7 +361,8 @@ def main() -> None:
 
     tok_glob = os.path.join(args.cache_dir, "*", f"multistep_train_tokens_{args.arm}_*.npz")
     pool_glob = os.path.join(args.cache_dir, "*", f"multistep_train_feats_{args.arm}_*.npz")
-    tok_paths, pool_paths = sorted(glob.glob(tok_glob)), sorted(glob.glob(pool_glob))
+    tok_paths = _reject_control_caches(sorted(glob.glob(tok_glob)))
+    pool_paths = _reject_control_caches(sorted(glob.glob(pool_glob)))
     if not tok_paths or not pool_paths:
         raise SystemExit(f"FATAL: missing caches for arm={args.arm} under {args.cache_dir}")
     td = np.load(tok_paths[0], allow_pickle=False)
@@ -353,6 +373,20 @@ def main() -> None:
     pool, pool_ts = pd_["feats"], [int(t) for t in pd_["timesteps"]]
     if not np.array_equal(labels, pd_["labels"]):
         raise SystemExit("FATAL: token and pooled caches disagree on labels — not paired")
+    # Labels alone pass for ANY two caches of the same subset_seed; require the actual
+    # image subset AND same-run-directory too, since tok_paths[0]/pool_paths[0] are picked
+    # independently across run dirs (2026-09-04 review).
+    if "subset_indices" in td.files and "subset_indices" in pd_.files:
+        if not np.array_equal(td["subset_indices"], pd_["subset_indices"]):
+            raise SystemExit("FATAL: token and pooled caches cover different images — not paired")
+    import os as _os
+
+    if _os.path.dirname(tok_paths[0]) != _os.path.dirname(pool_paths[0]):
+        raise SystemExit(
+            f"FATAL: token and pooled caches come from different run directories:\n"
+            f"  {tok_paths[0]}\n  {pool_paths[0]}\n"
+            "pass a more specific --cache-dir."
+        )
     if args.best_t not in tok_ts:
         raise SystemExit(f"FATAL: --best-t {args.best_t} not in token cache timesteps {tok_ts}")
     mods_all = pd_["mods"]
@@ -376,9 +410,7 @@ def main() -> None:
         feats: dict[str, np.ndarray] = {}
         for name, parts in PARTITIONS.items():
             feats[f"token_geom_{name}"] = build_token_geom_regional(t_use, grid_hw, parts)
-            feats[f"align_null_{name}"] = build_token_geom_regional(
-                t_use, grid_hw, parts, shuffle_seed=1234
-            )
+            feats[f"align_null_{name}"] = build_token_geom_regional(t_use, grid_hw, parts, shuffle_seed=1234)
         feats["space_no_time"] = build_space_no_time(
             t_use, tok_ts.index(args.best_t), args.per_token_dim, args.proj_seed
         )
@@ -391,9 +423,11 @@ def main() -> None:
         # freeze one L2 penalty across all feature sets (measure features, not tuning)
         best_c, best_m = C_GRID[0], -1.0
         for c in C_GRID:
-            m = float(np.mean([
-                np.mean(cv_fold_accs(feats[k], labels, c, SEEDS[0], args.dim)) for k in FEATURE_SETS
-            ]))
+            m = float(
+                np.mean(
+                    [np.mean(cv_fold_accs(feats[k], labels, c, SEEDS[0], args.dim)) for k in FEATURE_SETS]
+                )
+            )
             print(f"  C={c:<7} mean-across-sets acc {m:.4f}", flush=True)
             if m > best_m:
                 best_c, best_m = c, m
@@ -402,21 +436,44 @@ def main() -> None:
         for fs in FEATURE_SETS:
             for seed in SEEDS:
                 for fold, acc in enumerate(cv_fold_accs(feats[fs], labels, best_c, seed, args.dim)):
-                    rows.append({
-                        "arm": args.arm, "feature_set": fs, "norm": norm, "seed": seed,
-                        "fold": fold, "acc": round(acc, 6),
-                        "D": min(args.dim, raw_dims[fs]),
-                        "D_cap": args.dim, "raw_D": raw_dims[fs], "C": best_c,
-                        "t_set": "|".join(map(str, tok_ts)),
-                        "best_t": args.best_t, "subset_seed": int(td["subset_seed"]),
-                        "n_classes": n_cls, "chance": round(1.0 / n_cls, 6),
-                    })
+                    rows.append(
+                        {
+                            "arm": args.arm,
+                            "feature_set": fs,
+                            "norm": norm,
+                            "seed": seed,
+                            "fold": fold,
+                            "acc": round(acc, 6),
+                            "D": min(args.dim, raw_dims[fs]),
+                            "D_cap": args.dim,
+                            "raw_D": raw_dims[fs],
+                            "C": best_c,
+                            "t_set": "|".join(map(str, tok_ts)),
+                            "best_t": args.best_t,
+                            "subset_seed": int(td["subset_seed"]),
+                            "n_classes": n_cls,
+                            "chance": round(1.0 / n_cls, 6),
+                        }
+                    )
             a = [r["acc"] for r in rows if r["feature_set"] == fs and r["norm"] == norm]
-            print(f"  {fs:<20} acc {np.mean(a):.4f} +/- {np.std(a):.4f}  "
-                  f"(raw D {raw_dims[fs]}, used {min(args.dim, raw_dims[fs])})", flush=True)
+            print(
+                f"  {fs:<20} acc {np.mean(a):.4f} +/- {np.std(a):.4f}  "
+                f"(raw D {raw_dims[fs]}, used {min(args.dim, raw_dims[fs])})",
+                flush=True,
+            )
 
     os.makedirs(os.path.dirname(os.path.abspath(args.out_csv)), exist_ok=True)
-    write_header = not os.path.exists(args.out_csv)
+    write_header = not os.path.exists(args.out_csv) or os.path.getsize(args.out_csv) == 0
+    if not write_header:
+        # The schema has drifted once already (D_cap column); appending new-width rows
+        # under an old header silently misaligns every column downstream.
+        with open(args.out_csv, newline="") as f:
+            existing = next(csv.reader(f), None)
+        if existing is not None and existing != list(rows[0].keys()):
+            raise SystemExit(
+                f"FATAL: {args.out_csv} has header {existing} but this run writes "
+                f"{list(rows[0].keys())}. Point --out-csv at a fresh file."
+            )
     with open(args.out_csv, "a", newline="") as f:
         w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
         if write_header:
@@ -433,6 +490,7 @@ def summarize_deltas(rows: list[dict]) -> None:
     the full null, the dist-only feature against the dist-only null. Pairing the dist
     candidate against the full null would compare across two differences at once.
     """
+
     def key(r):
         return (r["seed"], r["fold"])
 
@@ -463,8 +521,10 @@ def summarize_deltas(rows: list[dict]) -> None:
                 lo, hi = boot_ci(d)
                 beats = lo > 0
                 verdicts.append(beats)
-                print(f"    vs {base:<17} mean {np.mean(d):+.4f}  95% CI [{lo:+.4f}, {hi:+.4f}]  "
-                      f"n={len(d)}  {'BEATS' if beats else 'does NOT beat'}")
+                print(
+                    f"    vs {base:<17} mean {np.mean(d):+.4f}  95% CI [{lo:+.4f}, {hi:+.4f}]  "
+                    f"n={len(d)}  {'BEATS' if beats else 'does NOT beat'}"
+                )
             per_norm[(cand, norm)] = verdicts
 
     print("\n" + "-" * 78)
@@ -474,12 +534,16 @@ def summarize_deltas(rows: list[dict]) -> None:
         for norm in ("raw", "normalized"):
             v = per_norm.get((cand, norm), [])
             results[norm] = all(v) and bool(v)
-            print(f"  {cand:<18} [{norm:<10}] {'PASSES' if results[norm] else 'FAILS'}  "
-                  f"({sum(v)}/{len(v)} baselines cleared)")
+            print(
+                f"  {cand:<18} [{norm:<10}] {'PASSES' if results[norm] else 'FAILS'}  "
+                f"({sum(v)}/{len(v)} baselines cleared)"
+            )
         if results["raw"] != results["normalized"]:
-            print(f"  >>> {cand}: NORM-DEPENDENT — passes under "
-                  f"{'raw' if results['raw'] else 'normalized'} only. Report this rather than "
-                  "averaging it away; it localizes the effect to the normalization.")
+            print(
+                f"  >>> {cand}: NORM-DEPENDENT — passes under "
+                f"{'raw' if results['raw'] else 'normalized'} only. Report this rather than "
+                "averaging it away; it localizes the effect to the normalization."
+            )
     print("-" * 78)
 
 

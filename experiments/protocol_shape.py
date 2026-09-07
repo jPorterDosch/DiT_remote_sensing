@@ -23,6 +23,12 @@ so the asymmetry is real and lives entirely on the raw side. This script therefo
 
 Pooling grids are re-derived offline from the saved `full` array, so no re-extraction is
 needed to change the grid.
+
+FINDINGS (2026-08-19..22). EuroSAT frozen point 1x1/C=1000: ens1 decay -17.8% with the
+ens8-ens1 arithmetic control monotone and significant from t=180. RESISC45 4x4/C=0.01:
+-15.5%. SUPERSEDED IN PART by audit finding F1 (RESEARCH_NOTES 6, adversarial review):
+decay-vs-C spans -0.6%..-18.0% (EuroSAT) and -6.7%..-33.7% (RESISC45), so endpoint decay at
+a selected C is not identified across arms -- quote the RANGE, never the point.
 """
 
 from __future__ import annotations
@@ -126,14 +132,12 @@ def main() -> None:
     for g in GRIDS:
         x = pooled[(1, g)]
         for c in C_GRID:
-            a = float(np.mean([np.mean(fold_accs(x[:, k, :], y, c, [0], args.n_jobs))
-                               for k in ends]))
+            a = float(np.mean([np.mean(fold_accs(x[:, k, :], y, c, [0], args.n_jobs)) for k in ends]))
             print(f"  grid={g}x{g} dims={x.shape[2]:<5} C={c:<8} endpoint-mean={a:.4f}", flush=True)
             if a > best_acc:
                 best, best_acc = (g, c), a
     g_star, c_star = best
-    print(f"\nFROZEN: grid={g_star}x{g_star} ({pooled[(1, g_star)].shape[2]} dims)  C={c_star}\n",
-          flush=True)
+    print(f"\nFROZEN: grid={g_star}x{g_star} ({pooled[(1, g_star)].shape[2]} dims)  C={c_star}\n", flush=True)
 
     # --- Stage 2: the full curve at that frozen point, both ensemble sizes.
     print(f"{'t':>6}{'eta':>7}{'ens1':>9}{'ens8':>9}{'ens8-ens1':>11}{'95% CI':>24}", flush=True)
@@ -146,8 +150,11 @@ def main() -> None:
         lo, hi = boot_ci(d)
         curve[t] = (float(np.mean(f1)), float(np.mean(f8)))
         eta = (t / 1000) / (1 - t / 1000)
-        print(f"{t:>6}{eta:>7.2f}{np.mean(f1):>9.4f}{np.mean(f8):>9.4f}"
-              f"{np.mean(d):>+11.4f}   [{lo:+.4f}, {hi:+.4f}]", flush=True)
+        print(
+            f"{t:>6}{eta:>7.2f}{np.mean(f1):>9.4f}{np.mean(f8):>9.4f}"
+            f"{np.mean(d):>+11.4f}   [{lo:+.4f}, {hi:+.4f}]",
+            flush=True,
+        )
 
     # --- Decay, three ways. They disagree; that disagreement is the finding.
     lo_t, hi_t = ts[0], ts[-1]
@@ -156,9 +163,12 @@ def main() -> None:
     print(f"{'arm':>6}{'acc rel':>11}{'above-ch rel':>15}{'err ratio':>12}", flush=True)
     for i, name in ((0, "ens1"), (1, "ens8")):
         a, b = curve[lo_t][i], curve[hi_t][i]
-        print(f"{name:>6}{(b - a) / a * 100:>+10.1f}%"
-              f"{((b - chance) / (a - chance) - 1) * 100:>+14.1f}%"
-              f"{(1 - b) / (1 - a):>11.2f}x", flush=True)
+        print(
+            f"{name:>6}{(b - a) / a * 100:>+10.1f}%"
+            f"{((b - chance) / (a - chance) - 1) * 100:>+14.1f}%"
+            f"{(1 - b) / (1 - a):>11.2f}x",
+            flush=True,
+        )
 
 
 if __name__ == "__main__":

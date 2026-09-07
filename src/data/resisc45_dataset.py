@@ -158,8 +158,10 @@ class RESISC45Dataset(Dataset):
         # effective resolution can be varied while dataset, content, subset, token grid and
         # timesteps all stay fixed. Without it, resolution is perfectly collinear with the
         # in-distribution/OOD axis across our two datasets and neither can be attributed.
-        _deg = os.getenv("DEGRADE_TO", "")
-        if _deg and _deg != "0":
+        from utils import env_value  # shared "0 means off" rule -- see src/utils.py
+
+        _deg = env_value("DEGRADE_TO")
+        if _deg:
             n = int(_deg)
             img = img.resize((n, n), Image.Resampling.BICUBIC)
         img = img.resize((self.img_size, self.img_size), Image.Resampling.BICUBIC)

@@ -129,7 +129,9 @@ def load_flow_model(name: str, device: str | torch.device = "cuda", hf_download:
     # more label information than x_t, so a level gap over the raw baseline is NOT by
     # itself evidence of a representation. hf_download is forced off too, otherwise a
     # None ckpt_path silently falls through to downloading the real weights.
-    if os.getenv("FLUX_RANDOM_INIT", "") not in ("", "0"):
+    from utils import env_value
+
+    if env_value("FLUX_RANDOM_INIT"):
         print("FLUX_RANDOM_INIT set — building UNTRAINED Flux (no checkpoint)")
         ckpt_path, hf_download = None, False
     if (

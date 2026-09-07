@@ -6,6 +6,8 @@
 # structure carries signal beyond generic view diversity -- the surviving positive form of
 # the trajectory hypothesis. Member 1 is the existing eps_seed=42 ens1 cache; this extracts
 # members 2-7 (eps_seed 43..48) at t=100 only (the best single t everywhere at n=5000).
+# OUTCOME (RESEARCH_NOTES 6h): consumed by diversity_matched.py -- the trajectory set LOSES
+# to draws at matched NFE (-0.010/-0.016 SIG), closing the trajectory-as-set hypothesis.
 set -u
 cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export AE=ditf_models/FLUX.1-dev/ae.safetensors FLUX_DEV=ditf_models/FLUX.1-dev/flux1-dev.safetensors WANDB_MODE=offline

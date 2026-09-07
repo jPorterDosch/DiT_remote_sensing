@@ -15,6 +15,8 @@
 # (NaN/inf from activation blow-up, or near-zero across-image variance if it collapses). Each
 # random leg therefore runs a 30-image probe FIRST and is skipped if the output is not finite
 # and varying -- otherwise a dead 1.5 h run looks like a scientific null.
+# OUTCOME: all legs completed 2026-08-21..22; random-init guards passed (finite, std 0.17/0.12).
+# Results: RESEARCH_NOTES 6b (random-weight control), 6c (matched-n curves), 6f (fixed-cond).
 set -u
 cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 

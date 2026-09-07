@@ -10,6 +10,10 @@ the lossless rotation it is in the wide-D raw-x_t case.
 
 Reports decay under three metrics because they disagree, and the disagreement is load-bearing:
 relative accuracy is ceiling-compressed, and the EuroSAT DiT arm sits near 0.91.
+
+FINDINGS. Produced every per-arm n=5000 curve in RESEARCH_NOTES 6c/6e/6f: one-shot ens1
+(EuroSAT 0.9564->0.8555, RESISC45 0.8405->0.6127), ens8 and inversion (~-3.5%/-3.7% EuroSAT,
+~-11%/-12% RESISC45 -- the two arms trace the SAME curve), untrained (6b), fixed-cond (6f).
 """
 
 from __future__ import annotations
@@ -62,8 +66,11 @@ def main() -> None:
     ts = [int(t) for t in d["timesteps"]]
     n_cls = len(np.unique(y))
     label = args.label or os.path.basename(args.cache)
-    print(f"{label}\n  {args.cache}\n  feats={f.shape} n={len(y)} classes={n_cls} "
-          f"chance={1 / n_cls:.4f} ts={ts}\n", flush=True)
+    print(
+        f"{label}\n  {args.cache}\n  feats={f.shape} n={len(y)} classes={n_cls} "
+        f"chance={1 / n_cls:.4f} ts={ts}\n",
+        flush=True,
+    )
 
     ends = [0, len(ts) - 1]
     print("selecting C (endpoints, seed 0):", flush=True)
@@ -88,15 +95,20 @@ def main() -> None:
     ch = 1 / n_cls
     d_ends = [x - z for z, x in zip(per_t[lo_t], per_t[hi_t], strict=True)]
     ci = boot_ci(d_ends)
-    print(f"\ndecay {lo_t} -> {hi_t}:  {a:.4f} -> {b:.4f}   paired 95% CI "
-          f"[{ci[0]:+.4f}, {ci[1]:+.4f}]", flush=True)
-    print(f"  acc rel {(b - a) / a * 100:+.1f}%   above-ch rel "
-          f"{((b - ch) / (a - ch) - 1) * 100:+.1f}%   err ratio {(1 - b) / (1 - a):.2f}x",
-          flush=True)
+    print(
+        f"\ndecay {lo_t} -> {hi_t}:  {a:.4f} -> {b:.4f}   paired 95% CI [{ci[0]:+.4f}, {ci[1]:+.4f}]",
+        flush=True,
+    )
+    print(
+        f"  acc rel {(b - a) / a * 100:+.1f}%   above-ch rel "
+        f"{((b - ch) / (a - ch) - 1) * 100:+.1f}%   err ratio {(1 - b) / (1 - a):.2f}x",
+        flush=True,
+    )
 
     if args.out_npz:
-        np.savez(args.out_npz, ts=np.array(ts), C=np.array(best),
-                 accs=np.array([per_t[t] for t in ts]), labels=y)
+        np.savez(
+            args.out_npz, ts=np.array(ts), C=np.array(best), accs=np.array([per_t[t] for t in ts]), labels=y
+        )
         print(f"\nwrote {args.out_npz}", flush=True)
 
 

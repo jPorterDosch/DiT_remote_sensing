@@ -14,6 +14,8 @@
 # guidance-scale 1.0 is NOT the run.py default (3.5) but IS what every existing paired cache
 # used -- see models/paired_500_*/**/*_g1.0.npz. Omitting it silently produces a cache that
 # cannot be paired with the n=500 arms.
+# OUTCOME: superseded by extract_n5000_dit_v2.sh after legs 1-2 (driver reordered mid-queue
+# to insert the random-weight control); kept for provenance of legs 1-3.
 set -u
 cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 

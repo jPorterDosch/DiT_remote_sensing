@@ -13,7 +13,13 @@ Both are 7 forwards and 7x3072 dims. If the trajectory set wins, the multi-t str
 draw set wins or ties, the concat gain is generic averaging and the trajectory framing dies
 at the set level too. Also reported: mean-of-draws (the ens7 analogue) so averaging vs
 concatenation is visible.
+
+FINDINGS (2026-08-24, RESEARCH_NOTES 6h). The trajectory set LOSES to plain draws at matched
+NFE and dims: traj_concat - draw_concat = -0.0099 (EuroSAT) / -0.0162 (RESISC45), both SIG;
+draw_mean beats both. Walking the noise ladder is a strictly inferior allocation of the same
+compute -- the trajectory-as-set hypothesis fails its diversity-matched test.
 """
+
 from __future__ import annotations
 
 import glob
@@ -55,7 +61,7 @@ def correct(x, y, n_jobs=7):
 def boot(d, n=10000, seed=0):
     rng = np.random.default_rng(seed)
     m = d[rng.integers(0, len(d), (n, len(d)))].mean(axis=1)
-    return float(np.quantile(m, .025)), float(np.quantile(m, .975))
+    return float(np.quantile(m, 0.025)), float(np.quantile(m, 0.975))
 
 
 def main():
@@ -69,7 +75,8 @@ def main():
             if not (np.array_equal(dm["labels"], y) and np.array_equal(dm["subset_indices"], idx)):
                 raise SystemExit(f"FATAL: {p} not paired")
             members.append(dm["feats"][:, 0, :])  # t=100 slice
-        assert len(members) == 7, f"expected 7 members, got {len(members)}"
+        if not (len(members) == 7):
+            raise RuntimeError(f"expected 7 members, got {len(members)}")
         draws = np.stack(members, axis=1)  # (N, 7, 3072)
 
         print(f"\n=== {ds}  n={len(y)}  7 NFE both arms, PCA-512, C={C} ===", flush=True)
@@ -81,9 +88,11 @@ def main():
         }
         for k, v in res.items():
             print(f"  {k}: {v.mean():.4f}", flush=True)
-        for name, a, b in [("traj_concat - draw_concat", "traj_concat (7t x 1eps)", "draw_concat (1t x 7eps)"),
-                           ("traj_concat - draw_mean", "traj_concat (7t x 1eps)", "draw_mean   (ens7@t100)"),
-                           ("draw_concat - draw_mean", "draw_concat (1t x 7eps)", "draw_mean   (ens7@t100)")]:
+        for name, a, b in [
+            ("traj_concat - draw_concat", "traj_concat (7t x 1eps)", "draw_concat (1t x 7eps)"),
+            ("traj_concat - draw_mean", "traj_concat (7t x 1eps)", "draw_mean   (ens7@t100)"),
+            ("draw_concat - draw_mean", "draw_concat (1t x 7eps)", "draw_mean   (ens7@t100)"),
+        ]:
             d = res[a] - res[b]
             lo, hi = boot(d)
             sig = "SIGNIF" if lo > 0 or hi < 0 else ""

@@ -14,13 +14,18 @@ The two raw arms differ in exactly one way that matters: the one-shot input carr
 per-image eps at relative magnitude eta = t/(1-t), while the inversion state carries none --
 it is a deterministic function of x0. So the contrast between the two raw columns isolates
 the eps-variance term with the DiT held out of the picture entirely.
+
+FINDINGS + CAVEATS (RESEARCH_NOTES 6, audit W6/W9/W10 + F4). The inv-state column is a
+near-invertible recoding of x0, so its flatness is close to tautological -- read it as the
+x0 reference line (x0_reference.py). Raw ens8 averages INPUTS while DiT ens8 averages
+FEATURES: valid as a within-arm control, not as a cross-arm magnitude comparison. The per-t
+best-over-C/pooling selection here was retired by protocol_shape.py's frozen-point rule.
 """
 
 from __future__ import annotations
 
 import argparse
 import csv
-import glob
 import os
 import sys
 
@@ -42,10 +47,7 @@ def _assert_ens(path: str, expected: int) -> None:
     if os.path.exists(meta):
         got = json.load(open(meta)).get("ensemble_size")
         if got is not None and int(got) != expected:
-            raise SystemExit(
-                f"FATAL: {path} has ensemble_size={got}, expected {expected} — arms swapped?"
-            )
-
+            raise SystemExit(f"FATAL: {path} has ensemble_size={got}, expected {expected} — arms swapped?")
 
 
 def raw_arm(stem: str, raw_dir: str, y: np.ndarray, idx: np.ndarray, ts: list[int]) -> dict:
@@ -73,9 +75,15 @@ def main() -> None:
     p.add_argument("--out-csv", default=None)
     args = p.parse_args()
 
-    dits = {"DiT one ens1": load(args.dit_one_ens1),
-            "DiT one ens8": load(args.dit_one_ens8),
-            "DiT inv": load(args.dit_inv)}
+    dits = {
+        "DiT one ens1": load(args.dit_one_ens1),
+        "DiT one ens8": load(args.dit_one_ens8),
+        "DiT inv": load(args.dit_inv),
+    }
+    # ens1/ens8 caches share filenames and pass every pairing guard when swapped -- the
+    # meta.json ensemble_size is the only distinguishing record, so check it.
+    _assert_ens(dits["DiT one ens1"]["path"], 1)
+    _assert_ens(dits["DiT one ens8"]["path"], 8)
     ref = dits["DiT one ens1"]
     y, ts, idx = ref["labels"], ref["ts"], ref["idx"]
     for k, v in dits.items():
@@ -85,16 +93,19 @@ def main() -> None:
             raise SystemExit(f"FATAL: {k} timesteps differ")
 
     stem = args.invstate_stem or f"{args.dataset}_invstate_n50"
-    raws = {"raw x_t ens1": raw_arm(f"{args.dataset}_rawxt_ens1", args.raw_dir, y, idx, ts),
-            "raw x_t ens8": raw_arm(f"{args.dataset}_rawxt_ens8", args.raw_dir, y, idx, ts),
-            "inv state": raw_arm(stem, args.raw_dir, y, idx, ts)}
+    raws = {
+        "raw x_t ens1": raw_arm(f"{args.dataset}_rawxt_ens1", args.raw_dir, y, idx, ts),
+        "raw x_t ens8": raw_arm(f"{args.dataset}_rawxt_ens8", args.raw_dir, y, idx, ts),
+        "inv state": raw_arm(stem, args.raw_dir, y, idx, ts),
+    }
 
     n_cls = len(np.unique(y))
-    print(f"{args.dataset}: n={len(y)} classes={n_cls} chance={1/n_cls:.4f}  PCA={args.pca}\n")
+    print(f"{args.dataset}: n={len(y)} classes={n_cls} chance={1 / n_cls:.4f}  PCA={args.pca}\n")
 
     cols = ["raw x_t ens1", "raw x_t ens8", "inv state", "DiT one ens1", "DiT one ens8", "DiT inv"]
     hdr = f"{'t':<8}{'eta':>7}" + "".join(f"{c:>14}" for c in cols)
-    print(hdr); print("-" * len(hdr))
+    print(hdr)
+    print("-" * len(hdr))
 
     rows = []
 
@@ -103,26 +114,33 @@ def main() -> None:
         for c in cols:
             if c in raws:
                 best = max(
-                    ((best_over_c(sl(raws[c][h]), y, args.pca), h) for h in POOLINGS),
-                    key=lambda z: z[0][0])
+                    ((best_over_c(sl(raws[c][h]), y, args.pca), h) for h in POOLINGS), key=lambda z: z[0][0]
+                )
                 (m, _cc, f), how = best
                 pooled[c] = how
             else:
                 m, _cc, f = best_over_c(sl(dits[c]["feats"]), y, args.pca)
                 pooled[c] = "-"
             acc[c], folds[c] = m, f
-        eta = "" if t_nom is None else f"{(t_nom/1000)/(1-t_nom/1000):>7.2f}"
+        eta = "" if t_nom is None else f"{(t_nom / 1000) / (1 - t_nom / 1000):>7.2f}"
         print(f"{name:<8}{eta}" + "".join(f"{acc[c]:>14.4f}" for c in cols))
-        row = {"dataset": args.dataset, "comparison": name,
-               "eta": None if t_nom is None else round((t_nom/1000)/(1-t_nom/1000), 4)}
+        row = {
+            "dataset": args.dataset,
+            "comparison": name,
+            "eta": None if t_nom is None else round((t_nom / 1000) / (1 - t_nom / 1000), 4),
+        }
         for c in cols:
             row[c.replace(" ", "_")] = round(acc[c], 6)
             if c in raws:
                 row[c.replace(" ", "_") + "_pool"] = pooled[c]
         # The contrast of interest: does removing eps from the INPUT alone (one-shot -> ODE
         # state) reproduce the direction the DiT arms show?
-        for a, b in [("inv state", "raw x_t ens1"), ("raw x_t ens8", "raw x_t ens1"),
-                     ("DiT inv", "DiT one ens1"), ("DiT one ens8", "DiT one ens1")]:
+        for a, b in [
+            ("inv state", "raw x_t ens1"),
+            ("raw x_t ens8", "raw x_t ens1"),
+            ("DiT inv", "DiT one ens1"),
+            ("DiT one ens8", "DiT one ens1"),
+        ]:
             d = [u - v for u, v in zip(folds[a], folds[b], strict=True)]
             lo, hi = boot_ci(d)
             key = f"{a}_minus_{b}".replace(" ", "_")
@@ -135,8 +153,12 @@ def main() -> None:
     line("concat", None, lambda f: f.reshape(f.shape[0], -1))
 
     print("\nPaired deltas (mean, 95% CI over 3 seeds x 5 folds):")
-    for key in ["inv_state_minus_raw_x_t_ens1", "raw_x_t_ens8_minus_raw_x_t_ens1",
-                "DiT_inv_minus_DiT_one_ens1", "DiT_one_ens8_minus_DiT_one_ens1"]:
+    for key in [
+        "inv_state_minus_raw_x_t_ens1",
+        "raw_x_t_ens8_minus_raw_x_t_ens1",
+        "DiT_inv_minus_DiT_one_ens1",
+        "DiT_one_ens8_minus_DiT_one_ens1",
+    ]:
         print(f"\n  {key}")
         for r in rows:
             print(f"    {r['comparison']:<10}{r[key]:>+10.4f}  {r[key + '_ci']}")

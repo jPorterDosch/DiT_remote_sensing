@@ -15,6 +15,10 @@ the input the network is handed, not of what the network computes from it.
 Pooling matches raw_xt_baseline.py exactly. States are packed (1, T, d); they are unpacked
 back to (1, 16, h, w) -- the inverse of feat_flux.prepare -- so `mean`/`q2`/`full` mean the
 same operation on both arms and the dimensionalities line up.
+
+FINDINGS. n=500 raw-state caches behind RESEARCH_NOTES 6 (inv-state column) and the
+path-geometry probe (6g). Superseded for curvature work by solver_curvature.py, which
+captures states AND velocities in one pass at n=5000.
 """
 
 from __future__ import annotations
@@ -52,6 +56,30 @@ def unpack(z: torch.Tensor, h: int, w: int) -> torch.Tensor:
     return rearrange(z, "b (h w) (c ph pw) -> b c (h ph) (w pw)", h=h // 2, w=w // 2, ph=2, pw=2)
 
 
+def _env_suffix_and_meta():
+    """Provenance stamp for the extraction-control env vars, mirroring
+    tasks.extraction.env_provenance: these standalone extractors honor FLUX_RANDOM_INIT
+    (via load_flow_model) and DEGRADE_TO (via the dataset hook) but previously wrote
+    UN-suffixed cache names -- a stale export would poison the exact filenames the
+    downstream probes glob (2026-09-04 review)."""
+    from utils import env_value
+
+    parts = []
+    if env_value("FLUX_RANDOM_INIT"):
+        parts.append("RANDINIT")
+    if env_value("FIXED_COND_T"):
+        parts.append(f"FIXEDCOND{env_value('FIXED_COND_T')}")
+    if env_value("DEGRADE_TO"):
+        parts.append(f"DEG{env_value('DEGRADE_TO')}")
+    suffix = "".join("_" + p for p in parts)
+    meta = {
+        "weights": "random_init" if env_value("FLUX_RANDOM_INIT") else "flux-dev",
+        "degrade_to": int(env_value("DEGRADE_TO")) if env_value("DEGRADE_TO") else None,
+        "fixed_cond_t": int(env_value("FIXED_COND_T")) if env_value("FIXED_COND_T") else None,
+    }
+    return suffix, meta
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--dataset", required=True, choices=["eurosat", "resisc45"])
@@ -72,9 +100,13 @@ def main() -> None:
         task="extract",
         model=ModelConfig(name="flux", ensemble_size=1),
         dataset=DatasetConfig(name=args.dataset, path=args.path),
-        img_size=list(args.img_size), t=list(args.t),
-        subset_size=args.subset_size, subset_seed=args.subset_seed,
-        batch_size=1, num_workers=4, label_fraction=1.0,
+        img_size=list(args.img_size),
+        t=list(args.t),
+        subset_size=args.subset_size,
+        subset_seed=args.subset_seed,
+        batch_size=1,
+        num_workers=4,
+        label_fraction=1.0,
     )
     seed_all(cfg.seed)
 
@@ -84,8 +116,14 @@ def main() -> None:
     indices = _stratified_indices(all_labels, cfg.subset_size, cfg.subset_seed)
     if args.max_images is not None:
         indices = indices[: args.max_images]
-    loader = DataLoader(Subset(train_ds, indices.tolist()), batch_size=1, shuffle=False,
-                        num_workers=cfg.num_workers, pin_memory=True, worker_init_fn=seed_worker)
+    loader = DataLoader(
+        Subset(train_ds, indices.tolist()),
+        batch_size=1,
+        shuffle=False,
+        num_workers=cfg.num_workers,
+        pin_memory=True,
+        worker_init_fn=seed_worker,
+    )
 
     print("loading FLUX (the chain needs the DiT)")
     fz = Featurizer4Eval(cat_list=list(dataset.category_list), ensemble_size=1)
@@ -98,9 +136,12 @@ def main() -> None:
             img = batch["img"].to(device)[0]  # C, H, W — invert_chain unsqueezes
             labels.append(int(batch["label"][0]))
             res = fz.invert_chain(
-                img, cache_timesteps=list(args.t),
+                img,
+                cache_timesteps=list(args.t),
                 num_inversion_steps=args.num_inversion_steps,
-                block_idx=args.k, guidance=args.guidance, want_states=True,
+                block_idx=args.k,
+                guidance=args.guidance,
+                want_states=True,
             )
             missing = [t for t in args.t if t not in res["states"]]
             if missing:
@@ -120,18 +161,35 @@ def main() -> None:
     os.makedirs(args.out_dir, exist_ok=True)
     for how in POOLINGS:
         feats = np.stack(out[how]).astype(np.float32)
-        base = f"{args.dataset}_invstate_n{args.num_inversion_steps}_{how}"
-        np.savez(os.path.join(args.out_dir, base + ".npz"), feats=feats, labels=y,
-                 timesteps=np.array(args.t), subset_indices=indices,
-                 subset_seed=np.array(cfg.subset_seed))
+        base = f"{args.dataset}_invstate_n{args.num_inversion_steps}_{how}" + _env_suffix_and_meta()[0]
+        np.savez(
+            os.path.join(args.out_dir, base + ".npz"),
+            feats=feats,
+            labels=y,
+            timesteps=np.array(args.t),
+            subset_indices=indices,
+            subset_seed=np.array(cfg.subset_seed),
+        )
         with open(os.path.join(args.out_dir, base + "_meta.json"), "w") as f:
-            json.dump({"dataset": args.dataset, "img_size": list(args.img_size),
-                       "t": list(args.t), "pooling": how, "latent_chw": list(hw),
-                       "num_inversion_steps": args.num_inversion_steps,
-                       "guidance": args.guidance, "k": args.k,
-                       "subset_size": int(len(indices)), "subset_seed": cfg.subset_seed,
-                       "feats_shape": list(feats.shape),
-                       "extraction_mode": "INVERSION_RAW_STATE_NO_BLOCK_FEATS"}, f, indent=2)
+            json.dump(
+                {
+                    **_env_suffix_and_meta()[1],
+                    "dataset": args.dataset,
+                    "img_size": list(args.img_size),
+                    "t": list(args.t),
+                    "pooling": how,
+                    "latent_chw": list(hw),
+                    "num_inversion_steps": args.num_inversion_steps,
+                    "guidance": args.guidance,
+                    "k": args.k,
+                    "subset_size": int(len(indices)),
+                    "subset_seed": cfg.subset_seed,
+                    "feats_shape": list(feats.shape),
+                    "extraction_mode": "INVERSION_RAW_STATE_NO_BLOCK_FEATS",
+                },
+                f,
+                indent=2,
+            )
         print(f"wrote {base}.npz  {feats.shape}")
 
 

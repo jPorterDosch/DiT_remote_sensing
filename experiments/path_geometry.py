@@ -22,7 +22,16 @@ Design: non-redundancy against the states, mirroring the velocity harness the au
 validated (S2): states_concat vs states+increments vs states+curvature, plus each block
 alone. 4x4 pooling per state (256d x 7 = 1792d states; 6x256 incr; 5x256 curv), paired
 folds, C in {0.01, 0.1, 1.0} reported at each so no operating-point games.
+
+FINDINGS + SELF-CORRECTION (2026-08-26/23.., RESEARCH_NOTES 6g). Increments and second
+differences of cached states are LINEAR functions of the state concat, so the states+X
+non-redundancy deltas here are basis/conditioning artifacts, not information -- the original
+"+0.021 SIG increments beyond states" reading is RETRACTED. Only the restrictions are
+meaningful: curvature-alone 0.113 (5x chance) < states 0.203 < increments-alone 0.227. The
+admissible wall instrument is solver curvature (pred_mid - pred), which is nonlinear in the
+state -- see solver_curvature*.py.
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -43,7 +52,8 @@ CACHES = {
 
 def pool4(f):
     n, k, dim = f.shape
-    hw = int(round((dim // 16) ** 0.5)); c = dim // (hw * hw)
+    hw = int(round((dim // 16) ** 0.5))
+    c = dim // (hw * hw)
     x = torch.from_numpy(f).reshape(n, k, c, hw, hw)
     return F.adaptive_avg_pool2d(x.reshape(n * k, c, hw, hw), (4, 4)).reshape(n, k, c * 16).numpy()
 
@@ -55,15 +65,16 @@ def _fold(x, y, tr, va, c):
 
 
 def accs(x, y, c, n_jobs=7):
-    jobs = [(tr, va) for s in SEEDS
-            for tr, va in StratifiedKFold(5, shuffle=True, random_state=s).split(x, y)]
+    jobs = [
+        (tr, va) for s in SEEDS for tr, va in StratifiedKFold(5, shuffle=True, random_state=s).split(x, y)
+    ]
     return np.array(Parallel(n_jobs=n_jobs)(delayed(_fold)(x, y, tr, va, c) for tr, va in jobs))
 
 
 def ci(d, n=10000, seed=0):
     rng = np.random.default_rng(seed)
     m = d[rng.integers(0, len(d), (n, len(d)))].mean(axis=1)
-    return float(np.quantile(m, .025)), float(np.quantile(m, .975))
+    return float(np.quantile(m, 0.025)), float(np.quantile(m, 0.975))
 
 
 def main():
@@ -75,10 +86,16 @@ def main():
         z = f
         d1 = np.diff(z, axis=1)
         d2 = np.diff(z, axis=1, n=2)
-        rms = lambda a: float(np.sqrt((a ** 2).mean()))
+
+        def rms(a):
+            return float(np.sqrt((a**2).mean()))
+
         print(f"\n=== {ds}  n={len(y)}  ts={ts} ===", flush=True)
-        print(f"  gate: rms(z)={rms(z):.4f}  rms(d1)={rms(d1):.4f}  rms(d2)={rms(d2):.4f}  "
-              f"d2/z={rms(d2)/rms(z):.4f}  (bf16 floor ~0.004)", flush=True)
+        print(
+            f"  gate: rms(z)={rms(z):.4f}  rms(d1)={rms(d1):.4f}  rms(d2)={rms(d2):.4f}  "
+            f"d2/z={rms(d2) / rms(z):.4f}  (bf16 floor ~0.004)",
+            flush=True,
+        )
         p = pool4(f)
         states = p.reshape(len(y), -1)
         incr = np.diff(p, axis=1).reshape(len(y), -1)
@@ -86,11 +103,13 @@ def main():
         chance = 1 / len(np.unique(y))
         for c in CS:
             a_states = accs(states, y, c)
-            rows = [("states (7x256)", a_states, None),
-                    ("incr alone (6x256)", accs(incr, y, c), None),
-                    ("curv alone (5x256)", accs(curv, y, c), None),
-                    ("states+incr", accs(np.hstack([states, incr]), y, c), a_states),
-                    ("states+curv", accs(np.hstack([states, curv]), y, c), a_states)]
+            rows = [
+                ("states (7x256)", a_states, None),
+                ("incr alone (6x256)", accs(incr, y, c), None),
+                ("curv alone (5x256)", accs(curv, y, c), None),
+                ("states+incr", accs(np.hstack([states, incr]), y, c), a_states),
+                ("states+curv", accs(np.hstack([states, curv]), y, c), a_states),
+            ]
             print(f"  C={c}  (chance {chance:.4f})", flush=True)
             for name, a, base in rows:
                 if base is None:
@@ -99,8 +118,10 @@ def main():
                     dd = a - base
                     lo, hi = ci(dd)
                     sig = "SIGNIF" if lo > 0 or hi < 0 else ""
-                    print(f"    {name:<22} {a.mean():.4f}  delta {dd.mean():+.4f} "
-                          f"[{lo:+.4f}, {hi:+.4f}] {sig}", flush=True)
+                    print(
+                        f"    {name:<22} {a.mean():.4f}  delta {dd.mean():+.4f} [{lo:+.4f}, {hi:+.4f}] {sig}",
+                        flush=True,
+                    )
 
 
 if __name__ == "__main__":
