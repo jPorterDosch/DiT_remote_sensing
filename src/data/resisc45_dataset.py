@@ -152,6 +152,17 @@ class RESISC45Dataset(Dataset):
     def __getitem__(self, idx):
         img_path, class_idx, class_name = self.samples[idx]
         img = Image.open(img_path).convert("RGB")
+        # RESOLUTION-DEGRADATION CONTROL. With DEGRADE_TO=N the image is first downsampled to
+        # NxN and then upsampled back to img_size, both BICUBIC. This reproduces EuroSAT's
+        # pipeline (64px native, BICUBIC up to 224) on a natively-high-resolution dataset, so
+        # effective resolution can be varied while dataset, content, subset, token grid and
+        # timesteps all stay fixed. Without it, resolution is perfectly collinear with the
+        # in-distribution/OOD axis across our two datasets and neither can be attributed.
+        from utils import env_int  # shared "0 means off" rule + validation -- see src/utils.py
+
+        _deg = env_int("DEGRADE_TO")
+        if _deg:
+            img = img.resize((_deg, _deg), Image.Resampling.BICUBIC)
         img = img.resize((self.img_size, self.img_size), Image.Resampling.BICUBIC)
 
         # Normalize to [-1, 1]

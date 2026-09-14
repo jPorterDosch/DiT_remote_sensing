@@ -134,7 +134,7 @@ one arm per cache, and prints:
 It also prints `best single t (inversion)` — **use that as `BEST_T` for B2** (its `mlp`
 content-baseline defaults to t=260, which was measured on the one-shot cache).
 
-### Tier 3 / gate — B2 transformer traj vs shuffle vs mlp — `experiments/b2_traj_readout_inversion.sbatch`
+### Tier 3 / gate — B2 transformer traj vs shuffle vs mlp — `experiments/ordering_traj_readout_inversion.sh`
 
 Self-test first (login-node, seconds, CPU) — the permutation-sensitivity gate. Do NOT
 sweep until it prints `self-test OK`:
@@ -146,12 +146,12 @@ python experiments/traj_readout.py --cache-path "$CACHE" --arm traj --dry-run   
 ```
 
 Then the sweep on the inversion cache — `{traj, mlp, shuffle} × {raw, normalized} × 5 seeds`
-= 30 CV runs, appended to `results/b2_inversion_g1.0.csv`. The script re-runs the self-test
+= 30 CV runs, appended to `results/ordering_inversion_g1.0.csv`. The script re-runs the self-test
 as a gate and aborts if it fails:
 
 ```bash
 mkdir -p logs results
-BEST_T=<best t from Tier 1> sbatch experiments/b2_traj_readout_inversion.sbatch
+BEST_T=<best t from Tier 1> sbatch experiments/ordering_traj_readout_inversion.sh
 ```
 
 `traj > shuffle` (beyond the shuffle-seed spread) is the ordering signal — the gate the

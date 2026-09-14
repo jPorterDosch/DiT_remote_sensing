@@ -49,6 +49,10 @@ target-version = "py310"
 extend-exclude = ["/usr/lib/*"]
 
 [tool.ruff.lint]
+# Pin the rule set explicitly: CI installs latest ruff, and ruff 0.16 changed the default
+# selection (dropped E402, added RUF/UP/I/SIM/...), which flipped a clean branch to 82 "new"
+# issues overnight. This is the classic default set the codebase is written against.
+select = ["E4", "E7", "E9", "F"]
 ignore = [
   "E501", # line too long - will be fixed in format
 ]

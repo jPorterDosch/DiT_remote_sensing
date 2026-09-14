@@ -1,1 +1,7 @@
-from . import classification, correspondence, extraction, train_diffusion  # noqa: F401
+from . import (  # noqa: F401
+    classification,
+    correspondence,
+    extraction,
+    token_extraction,
+    train_diffusion,
+)

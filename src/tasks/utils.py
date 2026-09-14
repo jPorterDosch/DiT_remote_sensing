@@ -29,8 +29,48 @@ def log_scalars_recursive(prefix, values):
     wandb.log(flat)
 
 
+def _sink_tokens(sink: dict, timesteps: list[int], feats_bchw: torch.Tensor) -> None:
+    """Stash PRE-POOL tokens for the subset of `timesteps` listed in sink["timesteps"].
+
+    feats_bchw is (S, C, h, w) covering `timesteps` in order. Stored as (1, S_sel, L, C)
+    with L = h*w, i.e. the same layout the pooled cache would have had before
+    `.mean(dim=[2,3])` collapsed the spatial axes. Token order is row-major over (h, w)
+    and is identical across timesteps, which is exactly the correspondence the
+    alignment check exists to verify rather than assume.
+
+    MEMORY CEILING: every image is retained here and concatenated only at the end, so host
+    RAM peaks at ~2x the final array (the list plus the cat). At N=500, S=3, L=256, C=3072
+    that is ~4.4 GB -> ~8.8 GB peak. It scales linearly in N*S*L, and the failure would
+    land AFTER the full extraction, so raising any of those materially (a 7-timestep rider
+    is ~10 GB -> ~20 GB) wants preallocating one array and filling it by index instead.
+    """
+    want = sink["timesteps"]
+    sel = [i for i, t in enumerate(timesteps) if t in want]
+    if not sel:
+        return
+    toks = feats_bchw[sel]  # S_sel, C, h, w
+    s, c, h, w = toks.shape
+    if sink.setdefault("hw", (h, w)) != (h, w):
+        # Every image must land on the same token grid or the stacked (N, S, L, C) array is
+        # meaningless. Cannot happen at fixed img_size, but failing here names the cause
+        # instead of surfacing as a confusing reshape error at save time.
+        raise RuntimeError(f"token grid changed mid-extraction: {sink['hw']} -> {(h, w)}")
+    # (S_sel, C, h, w) -> (S_sel, L, C)
+    toks = toks.reshape(s, c, h * w).transpose(1, 2).contiguous()
+    # .cpu() BEFORE .float(): features are bf16 on device, so converting first would double
+    # the bytes crossing PCIe on a per-image hot path.
+    sink["feats"].append(toks.cpu().float().unsqueeze(0))  # 1, S_sel, L, C
+
+
 @torch.inference_mode()
-def extract_features(cfg, model, dataloader, split_name: str):
+def extract_features(
+    cfg,
+    model,
+    dataloader,
+    split_name: str,
+    token_sink: dict | None = None,
+    vel_sink: list | None = None,
+):
     """Extract and return features and labels for all images in dataloader.
 
     cfg.t is an int: single-timestep mode (unchanged behavior) — returns
@@ -88,13 +128,20 @@ def extract_features(cfg, model, dataloader, split_name: str):
         for single_img, single_label in zip(img, label, strict=True):
             # TODO: if GPU can tolerate higher batch sizes, we can extract features for the whole batch at once instead of looping through images one by one.
             if inversion:
-                feats_k, mods_k = model.extract_inversion(
+                feats_k, mods_k, vels_k = model.extract_inversion(
                     single_img,
                     timesteps=cfg.t,
                     num_inversion_steps=cfg.num_inversion_steps,
                     block_idx=cfg.k,
                     guidance=cfg.guidance_scale,
-                )  # feats_k: K, C, h, w; mods_k: K, 3, C
+                    want_velocity=vel_sink is not None,
+                )  # feats_k: K, C, h, w; mods_k: K, 3, C; vels_k: K, T, d or None
+                if vel_sink is not None:
+                    if vels_k is None:
+                        raise RuntimeError("velocity requested but the chain returned none")
+                    vel_sink.append(vels_k.unsqueeze(0).cpu().float())  # 1, K, T, d
+                if token_sink is not None:
+                    _sink_tokens(token_sink, list(cfg.t), feats_k)
                 per_t = feats_k.mean(dim=[2, 3])  # K, C — global average pool, pre-normalization
                 all_feats.append(per_t.unsqueeze(0).cpu())  # 1, K, C
                 if not mods:
@@ -104,6 +151,10 @@ def extract_features(cfg, model, dataloader, split_name: str):
                 latents = None
                 noise = None
                 per_t_feats: list[torch.Tensor] = []
+                # Pre-pool tokens for this image, gathered across timesteps and sunk ONCE
+                # after the loop so the oneshot arm yields (1, S, L, C) per image — the
+                # same layout the inversion arm produces in a single call.
+                per_t_tokens: list[torch.Tensor] = []
                 for t_idx, timestep in enumerate(cfg.t):
                     feat_raw, ada, latents_used, noise_used = model.extract_raw(
                         single_img,
@@ -131,11 +182,22 @@ def extract_features(cfg, model, dataloader, split_name: str):
                                 "latent-consistency violation: clean latents at timestep %s differ "
                                 "from those encoded at timestep %s for the same image." % (timestep, cfg.t[0])
                             )
+                    if token_sink is not None and timestep in token_sink["timesteps"]:
+                        # clone: this reference is held until after the timestep loop, and
+                        # extract_raw may hand back a reused buffer that later iterations
+                        # overwrite in place. The pooled path is immune because .mean()
+                        # below materialises a new tensor immediately.
+                        per_t_tokens.append(feat_raw.detach().clone())  # 1, C, h, w
                     per_t_feats.append(
                         feat_raw.mean(dim=[2, 3])
                     )  # 1, C — global average pool, pre-normalization
                     if len(mods) < len(cfg.t):
                         mods.append(ada[0].unsqueeze(0).cpu())  # 1, 3, C — image-independent
+                if token_sink is not None and per_t_tokens:
+                    # cat over the wanted timesteps -> (S, C, h, w), matching the layout
+                    # _sink_tokens expects from the inversion arm.
+                    wanted = [t for t in cfg.t if t in token_sink["timesteps"]]
+                    _sink_tokens(token_sink, wanted, torch.cat(per_t_tokens, dim=0))
                 all_feats.append(torch.cat(per_t_feats, dim=0).unsqueeze(0).cpu())  # 1, K, C
             else:
                 feat = model.extract(
@@ -220,12 +282,22 @@ def train_probe(
 
 
 @torch.no_grad()
-def evaluate_probe(probe, test_feats, test_labels, device):
+def evaluate_probe(probe, test_feats, test_labels, device, num_classes: int | None = None):
+    """-> (top1, macro_f1, weighted_f1, per_class_f1).
+
+    per_class_f1 is indexed by CLASS ID when num_classes is given. Without it, sklearn's
+    average=None returns one entry per label PRESENT in y_true|y_pred, so callers doing
+    `per_class_f1[cls_idx]` over the full category_list either IndexError or silently read
+    the wrong class whenever a class is missing from the test split (2026-09-10: a
+    single-class smoke split crashed exactly this way). macro/weighted are deliberately
+    left unlabelled so their values are unchanged from every previously reported run.
+    """
     probe.eval()
     X = torch.from_numpy(test_feats).float().to(device)
     preds = probe(X).cpu().numpy().argmax(axis=1)
     top1 = (preds == test_labels).mean() * 100.0
     macro_f1 = f1_score(test_labels, preds, average="macro") * 100.0
     weighted_f1 = f1_score(test_labels, preds, average="weighted") * 100.0
-    per_class_f1 = f1_score(test_labels, preds, average=None) * 100.0
+    labels = np.arange(num_classes) if num_classes is not None else None
+    per_class_f1 = f1_score(test_labels, preds, average=None, labels=labels) * 100.0
     return top1, macro_f1, weighted_f1, per_class_f1
