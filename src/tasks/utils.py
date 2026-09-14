@@ -282,12 +282,22 @@ def train_probe(
 
 
 @torch.no_grad()
-def evaluate_probe(probe, test_feats, test_labels, device):
+def evaluate_probe(probe, test_feats, test_labels, device, num_classes: int | None = None):
+    """-> (top1, macro_f1, weighted_f1, per_class_f1).
+
+    per_class_f1 is indexed by CLASS ID when num_classes is given. Without it, sklearn's
+    average=None returns one entry per label PRESENT in y_true|y_pred, so callers doing
+    `per_class_f1[cls_idx]` over the full category_list either IndexError or silently read
+    the wrong class whenever a class is missing from the test split (2026-09-10: a
+    single-class smoke split crashed exactly this way). macro/weighted are deliberately
+    left unlabelled so their values are unchanged from every previously reported run.
+    """
     probe.eval()
     X = torch.from_numpy(test_feats).float().to(device)
     preds = probe(X).cpu().numpy().argmax(axis=1)
     top1 = (preds == test_labels).mean() * 100.0
     macro_f1 = f1_score(test_labels, preds, average="macro") * 100.0
     weighted_f1 = f1_score(test_labels, preds, average="weighted") * 100.0
-    per_class_f1 = f1_score(test_labels, preds, average=None) * 100.0
+    labels = np.arange(num_classes) if num_classes is not None else None
+    per_class_f1 = f1_score(test_labels, preds, average=None, labels=labels) * 100.0
     return top1, macro_f1, weighted_f1, per_class_f1

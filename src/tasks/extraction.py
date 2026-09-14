@@ -22,11 +22,25 @@ POOLING = "spatial_mean"  # global average pool over the feature map, pre-normal
 _DEGRADE_AWARE_DATASETS = {"resisc45", "eurosat"}
 
 
-def env_provenance(cfg):
+ALL_CONTROL_FLAGS = ("FLUX_RANDOM_INIT", "FIXED_COND_T", "DEGRADE_TO")
+
+
+def env_provenance(cfg, honors: tuple[str, ...] = ALL_CONTROL_FLAGS):
     """Read the three extraction-control env vars, validate them against the config, and
-    return (cache_tag_suffix, meta_fields). Shared by ExtractionTask and TokenExtractionTask
-    so a control cache can NEVER carry an unsuffixed name (the poisoning both task docstrings
-    warn about). Uniform semantics: unset, "" and "0" all mean OFF for every flag.
+    return (cache_tag_suffix, meta_fields, parts). Shared by ExtractionTask,
+    TokenExtractionTask and the standalone extractors in experiments/, so a control cache can
+    NEVER carry an unsuffixed name (the poisoning both task docstrings warn about). Uniform
+    semantics: unset, "" and "0" all mean OFF for every flag.
+
+    `honors` declares which flags the CALLER'S code path actually implements. A flag that is
+    set but not honored raises here, because the alternative is worse than a no-op: the cache
+    gets the control's suffix and meta while holding vanilla features, so the control-vs-
+    vanilla comparison silently compares vanilla against itself. Three standalone extractors
+    hand-copied this stamp without the contract and had exactly that defect (2026-09-06
+    pre-merge review, findings 1-3): the two chain scripts stamped _FIXEDCOND on a path where
+    invert_chain never reads it, and raw_xt_baseline -- which loads only the VAE -- stamped
+    _RANDINIT over trained-VAE features. Pass the narrowest honors tuple that is true of your
+    path; do not re-implement this function.
     """
     from config_types import ExtractionMode
 
@@ -39,6 +53,18 @@ def env_provenance(cfg):
     # than as a bare ValueError during run-name generation (PR #5 review).
     fixedcond_i = env_int("FIXED_COND_T", 1, 1000)
     degrade_i = env_int("DEGRADE_TO", 1)
+
+    unknown = [f for f in honors if f not in ALL_CONTROL_FLAGS]
+    if unknown:
+        raise ValueError(f"unknown control flag(s) in honors={honors}: {unknown}")
+    for flag, value in (("FLUX_RANDOM_INIT", randinit), ("FIXED_COND_T", fixedcond), ("DEGRADE_TO", degrade)):
+        if value and flag not in honors:
+            raise ValueError(
+                f"{flag} is set but this path does not honor it consistently "
+                f"(honors={list(honors)}). The features would be VANILLA while the cache name "
+                f"and meta claimed the control -- the comparison would pit vanilla against "
+                f"itself. Unset {flag} for this script."
+            )
 
     if fixedcond and cfg.extraction_mode == ExtractionMode.INVERSION:
         # feat_flux reads FIXED_COND_T only in the one-shot forward; invert_chain never sees

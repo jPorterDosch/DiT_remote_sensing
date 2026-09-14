@@ -70,7 +70,7 @@ class ClassificationTask:
             polynomial_order=cfg.polynomial_order,
         )
         top1, macro_f1, weighted_f1, per_class_f1 = evaluate_probe(
-            probe, test_feats, test_labels, torch.device(cfg.device)
+            probe, test_feats, test_labels, torch.device(cfg.device), num_classes=num_classes
         )
 
         # per-class accuracy and F1 breakdown
@@ -82,6 +82,11 @@ class ClassificationTask:
         per_class_f1_dict: dict[str, float] = {}
         for cls_idx, cls_name in enumerate(class_names):
             mask = test_labels == cls_idx
+            if not mask.any():
+                # See evaluate_probe: absent class -> undefined, not 0.0.
+                per_class_acc[cls_name] = None
+                per_class_f1_dict[cls_name] = None
+                continue
             cls_acc = (preds[mask] == test_labels[mask]).mean() * 100.0
             per_class_acc[cls_name] = round(float(cls_acc), 2)
             per_class_f1_dict[cls_name] = round(float(per_class_f1[cls_idx]), 2)

@@ -54,7 +54,9 @@ GRIDS = [1, 2, 4, 8]
 SEEDS = [0, 1, 2]
 N_FOLDS = 5
 MAX_ITER = 2000
-D_CAP = 512  # in-fold PCA cap; lossless for L2 whenever <= n_train-1 and >= rank
+D_CAP = 1024  # in-fold PCA cap. 512 fired ONLY for the 8x8 grid (dims 16/64/256/1024),
+# so the stage-1 argmax compared a HALF-RANK 8x8 arm against three untouched arms (6o-C).
+# 1024 >= every grid's rank and remains << n_train-1, so it is lossless for all four.
 
 
 def repool(path: str, g: int):
@@ -125,27 +127,41 @@ def main() -> None:
     n_cls = len(np.unique(y))
     print(f"n={len(y)} classes={n_cls} chance={1 / n_cls:.4f} ts={ts}\n", flush=True)
 
-    # --- Stage 1: freeze (grid, C) ONCE, on the endpoints, on a single CV seed, ens1 only.
-    ends = [ts.index(ts[0]), ts.index(ts[-1])]
-    print("selecting operating point (endpoints, seed 0, ens1):", flush=True)
+    # --- Stage 1: freeze (grid, C) ONCE, on a DISJOINT selection split, at ALL timesteps.
+    # v1 selected by argmax over 24 cells scored ONLY at the two endpoint timesteps, at
+    # seed 0, then reported the endpoint-to-endpoint decay ON seeds {0,1,2} -- the winner's
+    # curse landed exactly on the two timesteps that define the reported statistic (6o-B;
+    # the EuroSAT winner sat at both grid boundaries). Now: 40% of images (stratified,
+    # seed 99) are the SELECTION split; the operating point maximizes the mean over ALL K
+    # timesteps there; the curve and decay in stage 2 are computed on the OTHER 60% only.
+    # The reported numbers therefore never touch the data that chose their operating point.
+    from sklearn.model_selection import train_test_split
+
+    idx_sel, idx_eval = train_test_split(np.arange(len(y)), train_size=0.4, random_state=99, stratify=y)
+    y_sel, y_eval = y[idx_sel], y[idx_eval]
+    print(f"selection split: {len(idx_sel)} images (seed 99); eval split: {len(idx_eval)}", flush=True)
+    print("selecting operating point (ALL timesteps, selection split, ens1):", flush=True)
     best, best_acc = None, -1.0
     for g in GRIDS:
-        x = pooled[(1, g)]
+        x = pooled[(1, g)][idx_sel]
         for c in C_GRID:
-            a = float(np.mean([np.mean(fold_accs(x[:, k, :], y, c, [0], args.n_jobs)) for k in ends]))
-            print(f"  grid={g}x{g} dims={x.shape[2]:<5} C={c:<8} endpoint-mean={a:.4f}", flush=True)
+            a = float(
+                np.mean([np.mean(fold_accs(x[:, k, :], y_sel, c, [99], args.n_jobs)) for k in range(len(ts))])
+            )
+            print(f"  grid={g}x{g} dims={x.shape[2]:<5} C={c:<8} all-t-mean={a:.4f}", flush=True)
             if a > best_acc:
                 best, best_acc = (g, c), a
     g_star, c_star = best
-    print(f"\nFROZEN: grid={g_star}x{g_star} ({pooled[(1, g_star)].shape[2]} dims)  C={c_star}\n", flush=True)
+    print(f"\nFROZEN: grid={g_star}x{g_star} ({pooled[(1, g_star)].shape[2]} dims)  C={c_star}", flush=True)
+    print("(stage 2 below uses ONLY the eval split)\n", flush=True)
 
     # --- Stage 2: the full curve at that frozen point, both ensemble sizes.
     print(f"{'t':>6}{'eta':>7}{'ens1':>9}{'ens8':>9}{'ens8-ens1':>11}{'95% CI':>24}", flush=True)
     print("-" * 66, flush=True)
     curve = {}
     for k, t in enumerate(ts):
-        f1 = fold_accs(pooled[(1, g_star)][:, k, :], y, c_star, SEEDS, args.n_jobs)
-        f8 = fold_accs(pooled[(8, g_star)][:, k, :], y, c_star, SEEDS, args.n_jobs)
+        f1 = fold_accs(pooled[(1, g_star)][idx_eval][:, k, :], y_eval, c_star, SEEDS, args.n_jobs)
+        f8 = fold_accs(pooled[(8, g_star)][idx_eval][:, k, :], y_eval, c_star, SEEDS, args.n_jobs)
         d = [b - a for a, b in zip(f1, f8, strict=True)]
         lo, hi = boot_ci(d)
         curve[t] = (float(np.mean(f1)), float(np.mean(f8)))

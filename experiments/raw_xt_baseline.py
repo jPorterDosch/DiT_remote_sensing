@@ -66,7 +66,7 @@ sys.path.insert(0, os.path.join(_root, "src", "models"))
 import datasets  # noqa: F401,E402  — triggers @register_dataset
 from registry import DATASETS  # noqa: E402
 from run import DatasetConfig, ModelConfig, RunConfig  # noqa: E402
-from tasks.extraction import _stratified_indices  # noqa: E402
+from tasks.extraction import _stratified_indices, env_provenance  # noqa: E402
 from utils import seed_all, seed_worker  # noqa: E402
 
 from models.flux.util import load_ae  # noqa: E402
@@ -85,32 +85,6 @@ def pool(x: torch.Tensor, how: str) -> torch.Tensor:
     if how == "full":
         return x.flatten()
     raise ValueError(how)
-
-
-def _env_suffix_and_meta():
-    """Provenance stamp for the extraction-control env vars, mirroring
-    tasks.extraction.env_provenance: these standalone extractors honor FLUX_RANDOM_INIT
-    (via load_flow_model) and DEGRADE_TO (via the dataset hook) but previously wrote
-    UN-suffixed cache names -- a stale export would poison the exact filenames the
-    downstream probes glob (2026-09-04 review)."""
-    from utils import env_int, env_value
-
-    fixedcond = env_int("FIXED_COND_T", 1, 1000)
-    degrade = env_int("DEGRADE_TO")
-    parts = []
-    if env_value("FLUX_RANDOM_INIT"):
-        parts.append("RANDINIT")
-    if fixedcond:
-        parts.append(f"FIXEDCOND{fixedcond}")
-    if degrade:
-        parts.append(f"DEG{degrade}")
-    suffix = "".join("_" + p for p in parts)
-    meta = {
-        "weights": "random_init" if env_value("FLUX_RANDOM_INIT") else "flux-dev",
-        "degrade_to": degrade,
-        "fixed_cond_t": fixedcond,
-    }
-    return suffix, meta
 
 
 def main() -> None:
@@ -142,6 +116,10 @@ def main() -> None:
         label_fraction=1.0,
     )
     seed_all(cfg.seed)
+    # BEFORE any work: this script loads the VAE ONLY (no DiT / T5 / CLIP), so BOTH
+    # FLUX_RANDOM_INIT and FIXED_COND_T are inert here -- stamping either would put a control
+    # name and meta on ordinary trained-VAE features. Only the dataset DEGRADE_TO hook is real.
+    prov_suffix, prov_meta, _ = env_provenance(cfg, honors=("DEGRADE_TO",))
 
     dataset = DATASETS[cfg.dataset.name](cfg)
     train_ds = dataset.get_data(cfg)["train"].dataset
@@ -196,7 +174,7 @@ def main() -> None:
     os.makedirs(args.out_dir, exist_ok=True)
     for (m, how), rows in out.items():
         feats = np.stack(rows).astype(np.float32)  # N, K, D
-        base = f"{args.dataset}_rawxt_ens{m}_{how}" + _env_suffix_and_meta()[0]
+        base = f"{args.dataset}_rawxt_ens{m}_{how}" + prov_suffix
         np.savez(
             os.path.join(args.out_dir, base + ".npz"),
             feats=feats,
@@ -206,7 +184,7 @@ def main() -> None:
             subset_seed=np.array(cfg.subset_seed),
         )
         meta = {
-            **_env_suffix_and_meta()[1],
+            **prov_meta,
             "dataset": args.dataset,
             "img_size": list(args.img_size),
             "t": list(args.t),

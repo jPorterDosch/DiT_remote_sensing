@@ -65,9 +65,13 @@ params=(
     [dataset.path]="/lustre/isaac24/scratch/jdosch1/DeepLearning/datasets/EuroSAT"
     [model.name]="flux"
     [save-dir]="$SAVE_DIR"
-    [t]="260"
+    # NOTE: values here are SWEPT (Cartesian product), so the multi-timestep grid CANNOT go
+    # in this array -- "100 180 ..." would launch 7 single-t runs. It is a fixed flag below.
     [k]="28"
-    [mask-ratio]="0.75"
+    # PINNED values are passed EXPLICITLY here, never via run.py defaults: these three fields
+    # are config_hash inputs for every task, so moving their defaults would repoint every
+    # extraction run directory (2026-09-10 review, finding 1).
+    [mask-ratio]="0.0"
     [finetune-max-epochs]="10"
     [finetune-lr]="1e-3"
     [max-train-steps]="5000"
@@ -75,16 +79,34 @@ params=(
     [lora-rank]="4"
     [lora-alpha]="16.0"
     [lora-dropout]="0.0"
-    [guidance-scale]="3.5"
+    [guidance-scale]="1.0"
     [batch-size]="1"
     [num-workers]="4"
     [seed]="42"
-    [mim-loss-weight]="0.1 0.5 1.0"
+    [mim-loss-weight]="0.0"
+    # ens=1 matches every frozen cache; run.py's default is 8, which would make the
+    # post-training probe 8x more forwards AND protocol-incomparable (finding 3).
+    [model.ensemble-size]="1"
+    # blocker 4: train on the complement of the n=5000 probe subset, keyed on the cache's
+    # STORED subset_indices. Change alongside dataset.name if sweeping datasets.
+    [exclude-probe-indices]="models/n5000_eurosat_oneshot_ens1/eurosat_flux_0b91191d+42/multistep_train_feats_oneshot_g1.0.npz"
+    # 500 -> ~10 validations over the run. The run.py default of 50 would spend ~100
+    # validations x ~900 forwards each -- more GPU than training itself (2026-09-11 review).
+    [log-val-steps]="500"
 )
 
 expand_params_for_parallel
 print_summary
 countdown
+
+# Workstation weight paths (harmless no-op on ISAAC, where the run.py defaults point at
+# /lustre): only exported when the local files exist. Without this, a workstation launch
+# dies at model load looking for the ISAAC lustre path (see src/models/flux/util.py).
+if [ -f "ditf_models/FLUX.1-dev/flux1-dev.safetensors" ]; then
+    export FLUX_DEV="ditf_models/FLUX.1-dev/flux1-dev.safetensors"
+    export AE="ditf_models/FLUX.1-dev/ae.safetensors"
+    echo "Using local FLUX weights: $FLUX_DEV"
+fi
 
 # ============================================================================
 # RUN
@@ -93,14 +115,29 @@ countdown
 #   --use-gradient-accumulation   bool flag, no value
 #   --wrap-output                 bool flag, no value
 #   --label-fraction 1.0          full-label probe after fine-tuning
+#   --cd                          discard massive-activation channels in the probe --
+#                                 matches EVERY offline probe and eval sweep (finding 2);
+#                                 without it the per-t table sits at a different feature
+#                                 operating point than all frozen numbers
+#   --t $T_GRID                   multi-valued: training samples t per example over this grid
+#                                 (params-array values would be swept, not passed together)
+#
+# PINNED (train_diffusion.py enforces both, and run.py's defaults now match):
+#   guidance-scale 1.0    every feature cache is g=1.0; the field feeds train AND extraction
+#   mim-loss-weight 0.0   dropped angle; its decoder reads the probed block features
+#   mask-ratio 0.0        masking served MIM only; with MIM off it just hides the flow target
 # ============================================================================
+# The probe grid, matching extract_n5000_dit.sh -- every timestep the probes read is trained.
+T_GRID="100 180 260 340 420 500 580"
 print_delim "## START"
 set -x
 parallel -j $PARALLEL_JOBS --delay 15 --verbose \
     "$PYTHON" "$PROJECT_ROOT/run.py" \
         --use-gradient-accumulation \
         --wrap-output \
+        --cd \
         --label-fraction 1.0 \
+        --t $T_GRID \
         $SWEEP_PLACEHOLDERS \
     $SWEEP_VALUES
 set +x

@@ -9,11 +9,21 @@ same probe (lossy but equally lossy for every arm; margins, not levels, are the 
 
 FINDINGS (v2, 2026-08-23, RESEARCH_NOTES 6h). With honest best-t baselines, concatenating
 the trajectory adds NOTHING significant on any arm, either dataset (ens8 +0.0016/+0.0025 ns,
-inv +0.0036/+0.0029 ns) and HURTS ens1 (-0.0061/-0.0103 SIG). v1's "+0.014 SIG concat gain"
+inv +0.0036/+0.0029 ns) and HURTS ens1 (-0.0061/-0.0103 SIG -- but see the CAVEAT below:
+these two SIG cells are NOT established). v1's "+0.014 SIG concat gain"
 was a wrong-baseline artifact (t=100 assumed best; ens8 peaks at t=180/260) -- see 6g.
+
+CAVEAT (2026-09-06 review, RESEARCH_NOTES "Concat v2"): best_t is chosen by argmax over the
+SAME per-image correctness vectors the paired bootstrap then consumes -- a winner's curse
+over 7 correlated timesteps that biases the single-t baseline UP and the concat delta DOWN,
+plausibly by the size of the ens1 effects. The ns rows are safe (a downward-biased estimate
+that is still ns supports "no gain" conservatively); the ens1 SIG-negative cells must not be
+cited until best_t is selected NESTED (argmax on training folds only).
 """
 
 from __future__ import annotations
+
+import os
 
 import numpy as np
 from joblib import Parallel, delayed
@@ -48,13 +58,23 @@ def _fold(x, y, tr, va):
     return va, m.predict(b)
 
 
-def correct(x, y, n_jobs=7):
-    out = np.zeros(len(y))
-    for s in SEEDS:
+def correct_per_seed(x, y, n_jobs=7):
+    """-> (S, N) per-seed per-image correctness, plus per-seed fold membership.
+    Same fits as before; the per-seed detail is retained so best-t can be selected
+    NESTED (leave-fold-out) instead of on the evaluation data."""
+    out = np.zeros((len(SEEDS), len(y)))
+    folds = []
+    for si, s in enumerate(SEEDS):
         jobs = list(StratifiedKFold(5, shuffle=True, random_state=s).split(x, y))
+        folds.append([va for _, va in jobs])
         for va, pred in Parallel(n_jobs=n_jobs)(delayed(_fold)(x, y, tr, va) for tr, va in jobs):
-            out[va] += (pred == y[va]).astype(float)
-    return out / len(SEEDS)
+            out[si, va] = (pred == y[va]).astype(float)
+    return out, folds
+
+
+def correct(x, y, n_jobs=7):
+    out, _ = correct_per_seed(x, y, n_jobs)
+    return out.mean(axis=0)
 
 
 def boot(diff, n=10000, seed=0):
@@ -67,9 +87,14 @@ def main():
     for ds, paths in ARMS.items():
         d = {k: np.load(v) for k, v in paths.items()}
         y = d["ens1"]["labels"]
-        for v in d.values():
-            if not (np.array_equal(v["labels"], y)):
-                raise RuntimeError("assertion failed: np.array_equal(v['labels'], y)")
+        ref_idx = d["ens1"]["subset_indices"]
+        for k, v in d.items():
+            # labels alone cannot detect disjoint subsets (6o-F): sorted stratified labels
+            # are determined by (subset_size, n_classes) regardless of subset_seed.
+            if not np.array_equal(v["subset_indices"], ref_idx):
+                raise RuntimeError(f"arm {k} not paired: subset_indices differ")
+            if not np.array_equal(v["labels"], y):
+                raise RuntimeError(f"arm {k} not paired: labels differ")
         print(f"\n=== {ds}  n={len(y)}  C={C}  PCA-512 on concat ===", flush=True)
         res = {}
         for k, v in d.items():
@@ -80,13 +105,38 @@ def main():
             # handicapped baseline -- the same wrong-baseline defect the audit catalogued.
             # Compute per-image correctness at EVERY t under this protocol and take the
             # best-mean t as the single-t baseline.
-            per_t = {t: correct(f[:, i, :], y) for i, t in enumerate(ts)}
-            best_t = max(per_t, key=lambda t: per_t[t].mean())
-            res[f"{k}_single"] = per_t[best_t]
+            # v2 fold structure depends only on (y, seed), so it is IDENTICAL across
+            # timesteps of one arm -- folds from any t serve all t.
+            per_t_seed = {}
+            folds = None
+            for i, t in enumerate(ts):
+                per_t_seed[t], folds = correct_per_seed(f[:, i, :], y)
+            # NESTED best-t (6m item 1 / CLAUDE.md rule 1): for each (seed, fold), t* is
+            # the argmax of mean correctness over the images NOT in that fold, then fold
+            # images are scored at THEIR OWN t*. The old argmax over the full vectors
+            # selected on the same images it then evaluated -- a winner's curse over 7
+            # correlated timesteps, biased against concat. Kept below as *_single_BIASED
+            # for comparison only.
+            nested = np.zeros((len(SEEDS), len(y)))
+            picks = []
+            for si in range(len(SEEDS)):
+                for va in folds[si]:
+                    mask = np.ones(len(y), bool)
+                    mask[va] = False
+                    t_star = max(ts, key=lambda t: per_t_seed[t][si, mask].mean())
+                    nested[si, va] = per_t_seed[t_star][si, va]
+                    picks.append(t_star)
+            res[f"{k}_single"] = nested.mean(axis=0)
+            mean_per_t = {t: per_t_seed[t].mean() for t in ts}
+            best_t_biased = max(mean_per_t, key=mean_per_t.get)
+            res[f"{k}_single_BIASED"] = per_t_seed[best_t_biased].mean(axis=0)
             res[f"{k}_concat"] = correct(f.reshape(len(y), -1), y)
+            from collections import Counter
+
             print(
-                f"  {k}: best single t={best_t} {res[f'{k}_single'].mean():.4f}  "
-                f"concat {res[f'{k}_concat'].mean():.4f}",
+                f"  {k}: nested single-t {res[f'{k}_single'].mean():.4f} "
+                f"(picks {dict(Counter(picks))}; biased argmax t={best_t_biased} "
+                f"{res[f'{k}_single_BIASED'].mean():.4f})  concat {res[f'{k}_concat'].mean():.4f}",
                 flush=True,
             )
         for name, a, b in [
@@ -100,6 +150,13 @@ def main():
             lo, hi = boot(diff)
             sig = "SIGNIF" if lo > 0 or hi < 0 else ""
             print(f"    {name}: {diff.mean():+.4f}  [{lo:+.4f}, {hi:+.4f}] {sig}", flush=True)
+        os.makedirs("results", exist_ok=True)
+        np.savez(
+            f"results/concat_v2_{ds}.npz",
+            labels=y,
+            **{f"correct__{k}": v for k, v in res.items()},
+        )
+        print(f"  wrote results/concat_v2_{ds}.npz", flush=True)
 
 
 if __name__ == "__main__":

@@ -669,8 +669,13 @@ def _append(out_csv: str, rows: list[dict], norm: str, fields: list[str]) -> Non
         if write_header:
             w.writeheader()
         for r in rows:
-            # Row-level value wins over the module global (rows built by run_cv /
-            # run_control_arm stamp the encoder actually constructed).
+            # NOTE (2026-09-09 review): rows record the MODULE GLOBALS, not the encoder
+            # object -- run_cv / run_control_arm rows carry no pos_enc key, so the "row
+            # wins" merge below is currently a no-op. Correct for CLI runs, where main()
+            # syncs the globals from argparse before any append; an importing process that
+            # builds encoders via the explicit pos_enc/pos_scale constructor args while the
+            # globals say otherwise would be stamped WRONG. Set the module globals (or pass
+            # rows that carry their own pos_enc/pos_scale, which then win) before appending.
             # pos_scale is only APPLIED on the sinusoidal path; stamping it on learned rows
             # would let a scale-sensitivity groupby read "no effect" from runs where the
             # scale was never in force.

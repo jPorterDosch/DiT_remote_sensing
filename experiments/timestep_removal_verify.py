@@ -37,9 +37,16 @@ CACHE = (
 )
 
 
-def zca(z, ridge=1e-4):
+SHRINK_ALPHA = 0.05  # scale-relative shrinkage toward (trace/d)*I; the old absolute 1e-4
+# ridge regularized nothing against eigenvalues spanning 6 decades and injected a held-out
+# covariate shift the gate could read as removed-t (6o-D). Matches timestep_removal.py.
+
+
+def zca(z, alpha=SHRINK_ALPHA):
     mu = z.mean(0)
-    cov = np.cov((z - mu).T) + ridge * np.eye(z.shape[1])
+    cov = np.cov((z - mu).T)
+    d = cov.shape[0]
+    cov = (1 - alpha) * cov + alpha * (np.trace(cov) / d) * np.eye(d)
     w, V = np.linalg.eigh(cov)
     return mu, V @ np.diag(1 / np.sqrt(np.maximum(w, 1e-8))) @ V.T
 
@@ -53,18 +60,50 @@ def probes():
     }
 
 
-def run(xtr, ytr, xva, yva, chance):
+def run(xtr, ytr, xva, yva, chance, groups_va=None):
+    """Fit the four probe families; report each with an image-clustered z, plus the MAX
+    with its two corrections.
+
+    Two fixes over v1 (6o-E, 6n-A):
+      (a) v1 z-scored max(4 probes) against a single-test binomial SE with no correction --
+          on a truly null substrate the max of 4 probes on ~1050 vectors sits 1.5-2 SE
+          above chance, so v1 printed z ~ +2 for pure noise. The max is now selected on a
+          SELECTION HALF of val and z-scored on the disjoint EVALUATION half (selection is
+          then honest), and per-probe z's are printed so no max is needed at all.
+      (b) rows derived from the same image are not independent (7 vectors, 42 pairs per
+          image). SEs now cluster by image: z = mean / SE(per-image mean correctness).
+    """
     sc = StandardScaler().fit(xtr)
     a, b = sc.transform(xtr), sc.transform(xva)
-    best, out = 0.0, []
+    if groups_va is None:
+        groups_va = np.arange(len(yva))
+    uniq = np.unique(groups_va)
+    rng = np.random.default_rng(0)
+    sel_groups = rng.choice(uniq, size=len(uniq) // 2, replace=False)
+    sel_mask = np.isin(groups_va, sel_groups)
+
+    def cluster_z(correct_vec, mask):
+        g = groups_va[mask]
+        per_img = np.array([correct_vec[mask][g == u].mean() for u in np.unique(g)])
+        se = per_img.std(ddof=1) / len(per_img) ** 0.5
+        if se == 0:
+            return float("inf") if per_img.mean() > chance else 0.0  # perfect separation
+        return (per_img.mean() - chance) / se
+
+    accs, out = {}, []
+    correct_by_probe = {}
     for name, m in probes().items():
         m.fit(a, ytr)
-        acc = float((m.predict(b) == yva).mean())
-        best = max(best, acc)
-        out.append(f"{name} {acc:.4f}")
-    se = (chance * (1 - chance) / len(yva)) ** 0.5
-    z = (best - chance) / se
-    return best, z, "  ".join(out)
+        correct = (m.predict(b) == yva).astype(float)
+        correct_by_probe[name] = correct
+        accs[name] = correct.mean()
+        out.append(f"{name} {accs[name]:.4f} z={cluster_z(correct, np.ones(len(yva), bool)):+.1f}")
+    # honest max: choose on the selection half, score on the evaluation half
+    pick = max(accs, key=lambda nm: correct_by_probe[nm][sel_mask].mean())
+    ev = ~sel_mask
+    best_eval = correct_by_probe[pick][ev].mean()
+    z = cluster_z(correct_by_probe[pick], ev)
+    return best_eval, z, f"sel->{pick}; " + "  ".join(out)
 
 
 def main():
@@ -93,8 +132,9 @@ def main():
     for name, (a, b) in subs.items():
         xtr, ytr_ = a.reshape(-1, a.shape[2]), np.tile(np.arange(k), len(a))
         xva, yva_ = b.reshape(-1, b.shape[2]), np.tile(np.arange(k), len(b))
-        best, z, det = run(xtr, ytr_, xva, yva_, 1 / k)
-        print(f"  {name:<26} best {best:.4f}  z={z:+5.1f}   [{det}]", flush=True)
+        gva = np.repeat(np.arange(len(b)), k)  # cluster rows by source image (6n-A)
+        best, z, det = run(xtr, ytr_, xva, yva_, 1 / k, groups_va=gva)
+        print(f"  {name:<26} best(eval half) {best:.4f}  z_img={z:+5.1f}   [{det}]", flush=True)
 
     print(
         "\nPAIRWISE ordering: same image, two timesteps -- which came first? "
@@ -113,8 +153,12 @@ def main():
 
         xtr, ytr_ = build(a)
         xva, yva_ = build(b)
-        best, z, det = run(xtr, ytr_, xva, yva_, 0.5)
-        print(f"  {name:<26} best {best:.4f}  z={z:+5.1f}   [{det}]", flush=True)
+        # 42 ordered pairs per image are functions of the same 7 vectors: independent n is
+        # the IMAGE count, not the pair count (6n-A -- v1's binomial-n=6300 z's were
+        # inflated up to sqrt(42)~6.5x).
+        gva = np.tile(np.arange(len(b)), len(pairs))
+        best, z, det = run(xtr, ytr_, xva, yva_, 0.5, groups_va=gva)
+        print(f"  {name:<26} best(eval half) {best:.4f}  z_img={z:+5.1f}   [{det}]", flush=True)
 
 
 if __name__ == "__main__":

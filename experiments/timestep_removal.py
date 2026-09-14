@@ -58,12 +58,21 @@ def apply_pca(p, x):
     return p.transform(x.reshape(n * k, c)).reshape(n, k, -1)
 
 
+SHRINK_ALPHA = 0.05  # shrink toward (trace/d)*I -- SCALE-RELATIVE, unlike the old
+# absolute 1e-4 ridge, which against eigenvalues spanning 0.13..5e4 regularized nothing:
+# the smallest directions were inverted nearly raw, held-out data came out ~2.8x
+# anisotropic (8.6x in the 50 smallest directions), and the downstream t-recoverability
+# gate could read that covariate shift as removed timestep information (6o-D).
+
+
 def fit_white(tr):  # per-timestep ZCA in the shared basis
     stats = []
     for i in range(tr.shape[1]):
         z = tr[:, i, :]
         mu = z.mean(0)
-        cov = np.cov((z - mu).T) + 1e-4 * np.eye(z.shape[1])
+        cov = np.cov((z - mu).T)
+        d = cov.shape[0]
+        cov = (1 - SHRINK_ALPHA) * cov + SHRINK_ALPHA * (np.trace(cov) / d) * np.eye(d)
         w, V = np.linalg.eigh(cov)
         W = V @ np.diag(1.0 / np.sqrt(np.maximum(w, 1e-8))) @ V.T
         stats.append((mu, W))

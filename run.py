@@ -123,6 +123,14 @@ class RunConfig:
     polynomial_order: int = 3
 
     ## Diffusion/flow-matching training with LoRA
+    # DO NOT change this default to match the finetune pins. mask_ratio / mim_loss_weight /
+    # guidance_scale are NOT config_hash-blacklisted, so they hash for EVERY task -- changing
+    # a default silently repoints the run directory of every extraction config that does not
+    # pass the flag explicitly, and 7 probe scripts hardcode the old hashes (verified
+    # 2026-09-10: eurosat_flux_0b91191d -> f60bb2fe). The pinned training values are passed
+    # explicitly in experiments/train_diffusion.sh and ENFORCED in
+    # tasks/train_diffusion.py (PINNED_GUIDANCE / PINNED_MIM_LOSS_WEIGHT), which is where a
+    # pin belongs -- a default cannot be a pin without moving cache identity.
     mask_ratio: float = 0.75
     finetune_max_epochs: int = 10
     finetune_bs: int = 1
@@ -138,6 +146,11 @@ class RunConfig:
 
     # Path to a saved LoRA checkpoint to load before eval/training (empty = base model)
     lora_checkpoint: str = ""
+    # finetune-diffusion only: path to an .npz whose subset_indices are EXCLUDED from the
+    # training split (the probe subset). Without it the adapter trains on the very images
+    # the probes then evaluate, inflating every adapted-vs-frozen delta with memorization
+    # (blocker 4, RESEARCH_NOTES 6n). Keyed on the STORED indices, never re-derived.
+    exclude_probe_indices: str = ""
 
     # LoRA hyperparameters
     lora_wd: float = 0.0
@@ -145,9 +158,15 @@ class RunConfig:
     lora_alpha: float = 16.0
     lora_dropout: float = 0.0
     wrap_output: bool = True  # whether to wrap the output projection in attention and/or MLP blocks with LoRA (in addition to the input projections, which are always wrapped). Future work could explore more flexible options for which projections to wrap.
+    # Feeds BOTH extraction (tasks/utils.py) and finetune-diffusion training. Every feature
+    # cache in the project is g=1.0 and every extraction script passes --guidance-scale 1.0
+    # explicitly; finetune-diffusion PINS it to 1.0 (train_diffusion.PINNED_GUIDANCE). The
+    # default stays at FLUX's 3.5 for the cache-identity reason on mask_ratio above.
     guidance_scale: float = 3.5
 
-    # total_loss = flow_loss + mim_loss_weight * mim_loss. mim_loss_weight = the alpha
+    # total_loss = flow_loss + mim_loss_weight * mim_loss. mim_loss_weight = the alpha.
+    # The MIM angle is DROPPED: finetune-diffusion pins this to 0.0
+    # (train_diffusion.PINNED_MIM_LOSS_WEIGHT). Default unchanged for cache identity (above).
     mim_loss_weight: float = 1.0
 
     # Linear LR warmup to mitigate spikes early on
@@ -177,6 +196,10 @@ class RunConfig:
             # token cache FILENAME and its meta.json instead, so two riders that differ
             # only in per_token_t still cannot be confused for one another.
             "per_token_t",
+            # finetune-only training-set exclusion; hashing it would repoint every existing
+            # run dir (a new field changes the payload). Runs that SET it are distinguished
+            # in make_run_name by an +exclN-h suffix derived from the indices themselves.
+            "exclude_probe_indices",
             # Same reasoning: requesting the velocity adds an ADDITIONAL artifact and does
             # not alter the pooled features (the terminal step's forward_velocity_feat
             # returns the same block-k features as the early-exiting forward_feat), so it
@@ -213,8 +236,16 @@ class RunConfig:
         # (tasks.extraction.env_provenance) -- one source of truth for both formats.
         from tasks.extraction import env_provenance
 
-        _, _, parts = env_provenance(self)
+        _, _, parts = env_provenance(self, honors=_task_honors(self.task))
         suffix = "".join("+" + p for p in parts)
+        if self.exclude_probe_indices:
+            import hashlib
+
+            import numpy as np
+
+            idx = np.load(self.exclude_probe_indices)["subset_indices"]
+            h = hashlib.sha256(idx.tobytes()).hexdigest()[:8]
+            suffix += f"+excl{len(idx)}-{h}"
         if suffix:
             return f"{dataset_name}_{model_name}_{self.config_hash()}+{seed}{suffix}"
         return f"{dataset_name}_{model_name}_{self.config_hash()}+{seed}"
@@ -292,10 +323,12 @@ class RunConfig:
         if self.mask_ratio < 0 or self.mask_ratio >= 1:
             raise ValueError(f"mask_ratio must be in the range [0, 1), got {self.mask_ratio}")
 
-        if self.mask_ratio == 0:
+        if self.mask_ratio == 0 and self.mim_loss_weight != 0:
             warnings.warn(
-                "mask ratio is set to 0, meaning no masking will be applied during training. If this is intentional, you can ignore this warning."
-                " If you intended to apply masking, please set mask_ratio to a value in the range (0, 1)."
+                "mask_ratio=0 with a nonzero mim_loss_weight: the MIM loss is averaged over "
+                "masked positions, of which there are none, so the MIM term contributes "
+                "nothing. Set mask_ratio in (0, 1) if you intended to train the MIM head.",
+                stacklevel=2,
             )
 
         if self.finetune_max_epochs <= 0:
@@ -333,6 +366,9 @@ class RunConfig:
         if self.lora_checkpoint and not os.path.isfile(self.lora_checkpoint):
             raise ValueError(f"lora_checkpoint does not exist: {self.lora_checkpoint}")
 
+        if self.exclude_probe_indices and not os.path.isfile(self.exclude_probe_indices):
+            raise ValueError(f"exclude_probe_indices does not exist: {self.exclude_probe_indices}")
+
         if self.lora_wd < 0:
             raise ValueError(f"lora_wd must be non-negative, got {self.lora_wd}")
 
@@ -350,6 +386,25 @@ class RunConfig:
 
         if self.mim_loss_weight < 0:
             raise ValueError(f"mim_loss_weight must be non-negative, got {self.mim_loss_weight}")
+
+
+def _task_honors(task: str) -> tuple[str, ...]:
+    """Which extraction-control env flags each task's code path actually implements, for
+    env_provenance's set-but-not-honored guard.
+
+    finetune-diffusion is SPLIT on FIXED_COND_T and that is why it is rejected there
+    (CORRECTED 2026-09-10, finding 7 -- the earlier rationale, that the task never reads the
+    flag, was wrong): the training loop calls the flux model directly and ignores it, but the
+    post-training probe goes extract_features -> extract_raw -> Featurizer4Eval.forward,
+    which DOES read it. One run name cannot honestly describe vanilla training plus
+    fixed-conditioning probing, so the combination is refused rather than mislabelled; run
+    the probe separately under task=extract if you want it.
+
+    FLUX_RANDOM_INIT (model load) and DEGRADE_TO (dataset __getitem__, further guarded by
+    the degrade-aware-dataset check) genuinely apply to every task."""
+    if task == "finetune-diffusion":
+        return ("FLUX_RANDOM_INIT", "DEGRADE_TO")
+    return ("FLUX_RANDOM_INIT", "FIXED_COND_T", "DEGRADE_TO")
 
 
 def main(cfg: RunConfig) -> None:
@@ -386,7 +441,7 @@ def main(cfg: RunConfig) -> None:
     # tags were built to prevent.
     from tasks.extraction import env_provenance
 
-    env_provenance(cfg)
+    env_provenance(cfg, honors=_task_honors(cfg.task))
 
     wandb.init(
         entity=cfg.wandb_entity,

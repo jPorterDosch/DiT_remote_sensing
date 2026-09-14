@@ -250,19 +250,31 @@ def build_token_geom_regional(
     decile from fewer tokens; see the ablation note in RESEARCH_NOTES.md.
     """
     h, w = grid_hw
-    x = tok
-    if shuffle_seed is not None:
-        rng = np.random.default_rng(shuffle_seed)
-        x = np.empty_like(tok)
-        for i in range(tok.shape[0]):
-            for t in range(tok.shape[1]):
-                x[i, t] = tok[i, t, rng.permutation(tok.shape[2])]
-
-    fields = per_token_fields(x)  # N, F, L
-    n, f, _ = fields.shape
     blocks: list[np.ndarray] = []
     for gh, gw in partitions:
         rid = region_ids(h, w, gh, gw)
+        if shuffle_seed is None:
+            x = tok
+        else:
+            # ALIGNMENT NULL, corrected (6o-G). v1 permuted tokens GLOBALLY per (image,
+            # timestep) before partitioning, so for q2/q2g each cell afterwards summarized
+            # a random token subset -- the null destroyed purely spatial, time-free
+            # structure the candidate keeps, and the q2 deltas credited ordinary
+            # within-image spatial variation to space x time coupling. The null must be
+            # PARTITION-SPECIFIC: permute per (image, timestep) WITHIN each cell. Each
+            # cell's per-timestep token population (hence all time-free cell statistics)
+            # is preserved exactly; only the identification of a token's value at t_a with
+            # its value at t_b -- the temporal-profile coherence the candidate measures --
+            # is destroyed. For the (1,1) partition this reduces to v1's global null.
+            rng = np.random.default_rng(shuffle_seed)
+            x = np.empty_like(tok)
+            for i in range(tok.shape[0]):
+                for t in range(tok.shape[1]):
+                    for r in range(gh * gw):
+                        m = np.flatnonzero(rid == r)
+                        x[i, t, m] = tok[i, t, m[rng.permutation(len(m))]]
+        fields = per_token_fields(x)  # N, F, L
+        n, f, _ = fields.shape
         for r in range(gh * gw):
             sub = fields[:, :, rid == r]  # N, F, L_r
             for j in range(f):

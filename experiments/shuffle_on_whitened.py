@@ -32,12 +32,17 @@ CACHE = (
 )
 
 
+SHRINK_ALPHA = 0.05  # scale-relative shrinkage; see timestep_removal.py / 6o-D.
+
+
 def whiten_fit(tr):
     st = []
     for i in range(tr.shape[1]):
         z = tr[:, i, :]
         mu = z.mean(0)
-        cov = np.cov((z - mu).T) + 1e-4 * np.eye(z.shape[1])
+        cov = np.cov((z - mu).T)
+        _d = cov.shape[0]
+        cov = (1 - SHRINK_ALPHA) * cov + SHRINK_ALPHA * (np.trace(cov) / _d) * np.eye(_d)
         w, V = np.linalg.eigh(cov)
         st.append((mu, V @ np.diag(1 / np.sqrt(np.maximum(w, 1e-8))) @ V.T))
     return st
@@ -182,7 +187,9 @@ if __name__ == "__main__":
     diff = t - s
     boot = np.random.default_rng(0).integers(0, len(diff), (10000, len(diff)))
     lo, hi = np.quantile(diff[boot].mean(1), [0.025, 0.975])
-    print("\nWHITENED substrate (t-ID MLP 0.176 vs chance 0.143 -- ablation admissible)")
+    # (v2 shrinkage whitening: t-ID MLP 0.113 vs chance 0.143 per timestep_removal_v2 --
+    # the 0.176 in this script's docstring is the v1 ridge number, kept there as history.)
+    print("\nWHITENED substrate (t removed at gate level -- ablation admissible)")
     print(f"  traj     {t.mean():.4f} +- {t.std():.4f}")
     print(f"  shuffle  {s.mean():.4f} +- {s.std():.4f}")
     print(

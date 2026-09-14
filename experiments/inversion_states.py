@@ -40,7 +40,7 @@ sys.path.insert(0, os.path.join(_root, "src", "models"))
 import datasets  # noqa: F401,E402
 from registry import DATASETS  # noqa: E402
 from run import DatasetConfig, ModelConfig, RunConfig  # noqa: E402
-from tasks.extraction import _stratified_indices  # noqa: E402
+from tasks.extraction import _stratified_indices, env_provenance  # noqa: E402
 from utils import seed_all, seed_worker  # noqa: E402
 
 from models.flux.feat_flux import Featurizer4Eval  # noqa: E402
@@ -54,32 +54,6 @@ from raw_xt_baseline import POOLINGS, pool  # noqa: E402
 def unpack(z: torch.Tensor, h: int, w: int) -> torch.Tensor:
     """(1, T, d) packed -> (1, 16, h, w). Inverse of feat_flux.prepare's rearrange."""
     return rearrange(z, "b (h w) (c ph pw) -> b c (h ph) (w pw)", h=h // 2, w=w // 2, ph=2, pw=2)
-
-
-def _env_suffix_and_meta():
-    """Provenance stamp for the extraction-control env vars, mirroring
-    tasks.extraction.env_provenance: these standalone extractors honor FLUX_RANDOM_INIT
-    (via load_flow_model) and DEGRADE_TO (via the dataset hook) but previously wrote
-    UN-suffixed cache names -- a stale export would poison the exact filenames the
-    downstream probes glob (2026-09-04 review)."""
-    from utils import env_int, env_value
-
-    fixedcond = env_int("FIXED_COND_T", 1, 1000)
-    degrade = env_int("DEGRADE_TO")
-    parts = []
-    if env_value("FLUX_RANDOM_INIT"):
-        parts.append("RANDINIT")
-    if fixedcond:
-        parts.append(f"FIXEDCOND{fixedcond}")
-    if degrade:
-        parts.append(f"DEG{degrade}")
-    suffix = "".join("_" + p for p in parts)
-    meta = {
-        "weights": "random_init" if env_value("FLUX_RANDOM_INIT") else "flux-dev",
-        "degrade_to": degrade,
-        "fixed_cond_t": fixedcond,
-    }
-    return suffix, meta
 
 
 def main() -> None:
@@ -111,6 +85,9 @@ def main() -> None:
         label_fraction=1.0,
     )
     seed_all(cfg.seed)
+    # BEFORE any GPU work: invert_chain is the only model call and never reads FIXED_COND_T,
+    # so stamping it would label an ordinary inversion cache as a fixedcond control.
+    prov_suffix, prov_meta, _ = env_provenance(cfg, honors=("FLUX_RANDOM_INIT", "DEGRADE_TO"))
 
     dataset = DATASETS[cfg.dataset.name](cfg)
     train_ds = dataset.get_data(cfg)["train"].dataset
@@ -163,7 +140,7 @@ def main() -> None:
     os.makedirs(args.out_dir, exist_ok=True)
     for how in POOLINGS:
         feats = np.stack(out[how]).astype(np.float32)
-        base = f"{args.dataset}_invstate_n{args.num_inversion_steps}_{how}" + _env_suffix_and_meta()[0]
+        base = f"{args.dataset}_invstate_n{args.num_inversion_steps}_{how}" + prov_suffix
         np.savez(
             os.path.join(args.out_dir, base + ".npz"),
             feats=feats,
@@ -175,7 +152,7 @@ def main() -> None:
         with open(os.path.join(args.out_dir, base + "_meta.json"), "w") as f:
             json.dump(
                 {
-                    **_env_suffix_and_meta()[1],
+                    **prov_meta,
                     "dataset": args.dataset,
                     "img_size": list(args.img_size),
                     "t": list(args.t),

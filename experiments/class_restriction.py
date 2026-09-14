@@ -58,8 +58,13 @@ def acc_on(x, y, keep, c):
 def main():
     dt = np.load(TRAINED)
     du = np.load(UNTRAINED)
-    if not (np.array_equal(dt["labels"], du["labels"])):
-        raise RuntimeError("arms not paired")
+    # labels from sorted stratified indices are [0]*n0+[1]*n1+... -- determined by
+    # (subset_size, n_classes) alone, so DISJOINT subsets pass a labels check (6o-F).
+    # subset_indices is the identity of the image set; it is the pairing.
+    if not np.array_equal(dt["subset_indices"], du["subset_indices"]):
+        raise RuntimeError("arms not paired: subset_indices differ (disjoint image sets)")
+    if not np.array_equal(dt["labels"], du["labels"]):
+        raise RuntimeError("arms not paired: labels differ")
     y = dt["labels"]
     xt, xu = dt["feats"][:, T_IDX, :], du["feats"][:, T_IDX, :]
 

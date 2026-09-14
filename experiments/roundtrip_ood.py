@@ -41,7 +41,7 @@ import datasets  # noqa: F401,E402
 import models  # noqa: F401,E402
 from registry import DATASETS, MODELS  # noqa: E402
 from run import DatasetConfig, ModelConfig, RunConfig  # noqa: E402
-from tasks.extraction import _stratified_indices  # noqa: E402
+from tasks.extraction import _stratified_indices, env_provenance  # noqa: E402
 from utils import seed_all  # noqa: E402
 from torch.utils.data import DataLoader, Subset  # noqa: E402
 
@@ -115,11 +115,29 @@ def main() -> None:
         f"mean {errs.mean():.5f}  median {np.median(errs):.5f}  p90 {np.quantile(errs, 0.9):.5f}",
         flush=True,
     )
-    with open(args.out, "w") as f:
+    # Provenance: this script honors BOTH control flags on its path -- DEGRADE_TO via
+    # EuroSATDataset.__getitem__ and FLUX_RANDOM_INIT via load_flow_model -- but wrote an
+    # unstamped --out, so running it in a shell that still exported DEGRADE_TO=64 would
+    # silently overwrite the clean roundtrip numbers with degraded ones (2026-09-10 review,
+    # finding 8; same defect class as 6m findings 1-3). Suffix the filename and record the
+    # flags in the JSON.
+    prov_suffix, prov_meta, _ = env_provenance(cfg, honors=("FLUX_RANDOM_INIT", "DEGRADE_TO"))
+    out_path = args.out
+    if prov_suffix:
+        base, ext = os.path.splitext(out_path)
+        out_path = base + prov_suffix + ext
+    with open(out_path, "w") as f:
         json.dump(
-            {"dataset": args.dataset, "t_stop": args.t_stop, "num_steps": args.num_steps, "rows": rows}, f
+            {
+                **prov_meta,
+                "dataset": args.dataset,
+                "t_stop": args.t_stop,
+                "num_steps": args.num_steps,
+                "rows": rows,
+            },
+            f,
         )
-    print(f"wrote {args.out}", flush=True)
+    print(f"wrote {out_path}", flush=True)
 
     if args.nfe_ablation:
         print("\nMATCHED-NFE integrator ablation (10 images):", flush=True)

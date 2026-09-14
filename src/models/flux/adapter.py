@@ -25,25 +25,67 @@ class FluxModel:
 
             flux = self._inner.model
 
-            lora_wrap_flux(
-                flux,
-                cfg.k,
-                cfg.lora_rank,
-                cfg.lora_alpha,
-                cfg.lora_dropout,
-                wrap_o=cfg.wrap_output,
-            )
-
             # load all tensors onto cpu first regardless of where they were saved from
             ckpt = torch.load(cfg.lora_checkpoint, map_location="cpu", weights_only=False)
-            missing, unexpected = flux.load_state_dict(ckpt["lora_state_dict"], strict=False)
+            sd = ckpt["lora_state_dict"]
 
-            print(f"Loaded LoRA checkpoint: {cfg.lora_checkpoint}")
+            # Hyperparameters that leave NO trace in key names or tensor shapes must be
+            # verified against the checkpoint's recorded training config: lora_alpha exists
+            # only as LoRALinear.scaling, so an alpha mismatch loads cleanly and silently
+            # applies the adapter at the wrong strength (2026-09-11 review, finding 5).
+            # k/wrap_output/rank are also compared here for a clearer message than the
+            # key-set/shape errors below would give.
+            tcfg = ckpt.get("cfg", {}) or {}
+            for field in ("lora_alpha", "lora_rank", "k", "wrap_output", "lora_dropout"):
+                if field in tcfg and getattr(cfg, field) != tcfg[field]:
+                    raise ValueError(
+                        f"LoRA checkpoint was trained with {field}={tcfg[field]!r} but this "
+                        f"config has {field}={getattr(cfg, field)!r} -- the adapter would "
+                        f"load cleanly and behave differently from the trained model. "
+                        f"Match the training config ({cfg.lora_checkpoint})."
+                    )
 
-            if missing:
-                print(f"\tMissing keys: {missing}")
-            if unexpected:
-                print(f"\tUnexpected keys: {unexpected}")
+            # Fence the RNG around wrapping: kaiming init inside LoRALinear consumes global
+            # (CUDA) RNG draws that a frozen extraction never makes, desynchronizing every
+            # later global-RNG consumer -- most importantly ae.encode's VAE posterior
+            # sampling, which would give adapted-vs-frozen re-extractions DIFFERENT clean
+            # latents per image (2026-09-11 review, finding 8). The init values are
+            # irrelevant here (immediately overwritten by the checkpoint), so a fenced fork
+            # keeps the downstream stream byte-identical to the frozen arm's.
+            _dev = next(flux.parameters()).device
+            with torch.random.fork_rng(devices=[_dev] if _dev.type == "cuda" else []):
+                lora_wrap_flux(
+                    flux,
+                    cfg.k,
+                    cfg.lora_rank,
+                    cfg.lora_alpha,
+                    cfg.lora_dropout,
+                    wrap_o=cfg.wrap_output,
+                )
+            # HARD verification (2026-09-11 review): strict=False only PRINTED mismatches,
+            # so a wrap_output/k mismatch between the training and extraction configs
+            # yielded a silently un- or partly-adapted model carrying an "adapted" run
+            # name -- directly load-bearing for the frozen-vs-adapted comparison. Every
+            # checkpoint LoRA key must land on exactly one wrapped parameter, and every
+            # wrapped parameter must be covered by the checkpoint.
+            lora_params = {n for n, _ in flux.named_parameters() if n.endswith((".A", ".B"))}
+            ckpt_keys = set(sd.keys())
+            if ckpt_keys != lora_params:
+                raise ValueError(
+                    f"LoRA checkpoint does not match the wrapped model.\n"
+                    f"  in ckpt but not wrapped (wrong k/wrap_output at extraction?): "
+                    f"{sorted(ckpt_keys - lora_params)[:4]}\n"
+                    f"  wrapped but not in ckpt (wrong k/wrap_output at training?): "
+                    f"{sorted(lora_params - ckpt_keys)[:4]}\n"
+                    f"  ckpt={len(ckpt_keys)} keys, model={len(lora_params)} wrapped params. "
+                    f"Check --k / --wrap-output / --lora-rank against the training config "
+                    f"recorded in the checkpoint's 'cfg' field."
+                )
+            missing, unexpected = flux.load_state_dict(sd, strict=False)
+            bad = [k for k in missing if k.endswith((".A", ".B"))] + list(unexpected)
+            if bad:
+                raise ValueError(f"LoRA load failed for keys: {bad[:6]}")
+            print(f"Loaded LoRA checkpoint ({len(ckpt_keys)} adapter tensors): {cfg.lora_checkpoint}")
 
     @torch.no_grad()
     def extract_raw(

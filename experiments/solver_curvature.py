@@ -39,35 +39,11 @@ import datasets  # noqa: F401,E402
 import models  # noqa: F401,E402
 from registry import DATASETS, MODELS  # noqa: E402
 from run import DatasetConfig, ModelConfig, RunConfig  # noqa: E402
-from tasks.extraction import _stratified_indices  # noqa: E402
+from tasks.extraction import _stratified_indices, env_provenance  # noqa: E402
 from utils import seed_all  # noqa: E402
 from torch.utils.data import DataLoader, Subset  # noqa: E402
 
 T_GRID = [100, 180, 260, 340, 420, 500, 580]
-
-
-def _env_suffix_and_meta():
-    """Provenance stamp for the extraction-control env vars, mirroring
-    tasks.extraction.env_provenance: these standalone extractors honor FLUX_RANDOM_INIT
-    (via load_flow_model) and DEGRADE_TO (via the dataset hook) but previously wrote
-    UN-suffixed cache names -- a stale export would poison the exact filenames the
-    downstream probes glob (2026-09-04 review)."""
-    from utils import env_value
-
-    parts = []
-    if env_value("FLUX_RANDOM_INIT"):
-        parts.append("RANDINIT")
-    if env_value("FIXED_COND_T"):
-        parts.append(f"FIXEDCOND{env_value('FIXED_COND_T')}")
-    if env_value("DEGRADE_TO"):
-        parts.append(f"DEG{env_value('DEGRADE_TO')}")
-    suffix = "".join("_" + p for p in parts)
-    meta = {
-        "weights": "random_init" if env_value("FLUX_RANDOM_INIT") else "flux-dev",
-        "degrade_to": int(env_value("DEGRADE_TO")) if env_value("DEGRADE_TO") else None,
-        "fixed_cond_t": int(env_value("FIXED_COND_T")) if env_value("FIXED_COND_T") else None,
-    }
-    return suffix, meta
 
 
 def main() -> None:
@@ -92,6 +68,9 @@ def main() -> None:
         label_fraction=1.0,
     )
     seed_all(cfg.seed)
+    # BEFORE any GPU work: this script's only model call is invert_chain, which never reads
+    # FIXED_COND_T, so stamping it would label a vanilla chain as a fixedcond control.
+    prov_suffix, prov_meta, _ = env_provenance(cfg, honors=("FLUX_RANDOM_INIT", "DEGRADE_TO"))
     dataset = DATASETS[cfg.dataset.name](cfg)
     train_ds = dataset.get_data(cfg)["train"].dataset
     all_labels = np.array([c for _, c, _ in train_ds.samples])
@@ -127,7 +106,7 @@ def main() -> None:
     P, M = np.stack(preds), np.stack(mids)  # (N, 7, T, 64)
     y = np.array(labels)
     os.makedirs(args.out_dir, exist_ok=True)
-    base = f"{args.dataset}_solvercurv_n{args.num_steps}" + _env_suffix_and_meta()[0]
+    base = f"{args.dataset}_solvercurv_n{args.num_steps}" + prov_suffix
     S_ = np.stack(states)  # (N, 7, T, 64) packed raw chain states, fp32 -- paired by
     # construction with the curvature (same chain pass), so the n=5000 probe needs no
     # separate invstate extraction and no cross-cache pairing.
@@ -149,7 +128,7 @@ def main() -> None:
         r = float(np.sqrt((D[:, i] ** 2).mean()) / np.sqrt((P[:, i] ** 2).mean()))
         print(f"  t={t:<4} ratio={r:.5f}  {'PASS' if r > 0.012 else 'AT FLOOR -- null unreadable'}")
     meta = {
-        **_env_suffix_and_meta()[1],
+        **prov_meta,
         "dataset": args.dataset,
         "img_size": list(args.img_size),
         "t": "non-terminal cached timesteps (terminal has no departing step)",
