@@ -7,6 +7,7 @@ from einops import rearrange
 from registry import register_model
 
 from .feat_flux import Featurizer4Eval, prepare
+from models.lora import lora_wrap_flux
 
 
 @register_model("flux")
@@ -21,8 +22,6 @@ class FluxModel:
         )
 
         if getattr(cfg, "lora_checkpoint", ""):
-            from models.lora import lora_wrap_flux
-
             flux = self._inner.model
 
             # load all tensors onto cpu first regardless of where they were saved from

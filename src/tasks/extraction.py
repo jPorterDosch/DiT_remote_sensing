@@ -9,7 +9,7 @@ from torch.utils.data import DataLoader, Subset
 
 from config_types import ExtractionMode
 from registry import register_task
-from utils import seed_worker
+from utils import env_int, env_value, seed_worker
 
 from .utils import extract_features
 
@@ -42,10 +42,6 @@ def env_provenance(cfg, honors: tuple[str, ...] = ALL_CONTROL_FLAGS):
     _RANDINIT over trained-VAE features. Pass the narrowest honors tuple that is true of your
     path; do not re-implement this function.
     """
-    from config_types import ExtractionMode
-
-    from utils import env_int, env_value
-
     randinit = env_value("FLUX_RANDOM_INIT")
     fixedcond = env_value("FIXED_COND_T")
     degrade = env_value("DEGRADE_TO")

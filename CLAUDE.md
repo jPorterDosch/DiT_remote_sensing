@@ -27,6 +27,17 @@ distilled backtrack — the section that documents the failure is cited inline.
    (shuffled-rows preferred: same marginals) as a paired per-image statistic — the width
    penalty is real, measured, and dataset-dependent.
 
+3a. **Nulls need the same instrument audit as positives.** A null measured under an
+   instrument that compresses the candidate harder than the baseline (fixed PCA on a wide
+   concat vs a narrow single arm) is provisional until re-measured with the base protected
+   and the candidate appended raw — the time-aggregation null stood for a month and
+   reversed to +1.4 pts under the corrected harness (section 13).
+
+3b. **"Adds beyond the base" needs BOTH raw delta > 0 AND the width-matched-null delta >
+   0.** A purely redundant block also beats its shuffled null (junk hurts, a copy does
+   not), so the null-corrected statistic alone only proves "image-linked, not junk" --
+   section 11 measured +0.30 vs null at ~zero raw gain for fully-redundant blocks.
+
 4. **Bootstrap unit = the independent sampling unit, i.e. the image.** (seed, fold)
    resampling re-partitions the same images and is anti-conservative (audit A1, 6o-B).
    Derived quantities inherit clustering: 42 ordered pairs per image = n≈images, not

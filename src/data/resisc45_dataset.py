@@ -5,6 +5,7 @@ from torchvision.transforms import PILToTensor
 from PIL import Image
 
 from data.utils import round_up_to_multiple
+from utils import env_int
 
 
 # NWPU-RESISC45: 45 scene classes, 700 images each (256x256 RGB).
@@ -158,8 +159,6 @@ class RESISC45Dataset(Dataset):
         # effective resolution can be varied while dataset, content, subset, token grid and
         # timesteps all stay fixed. Without it, resolution is perfectly collinear with the
         # in-distribution/OOD axis across our two datasets and neither can be attributed.
-        from utils import env_int  # shared "0 means off" rule + validation -- see src/utils.py
-
         _deg = env_int("DEGRADE_TO")
         if _deg:
             img = img.resize((_deg, _deg), Image.Resampling.BICUBIC)

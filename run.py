@@ -30,6 +30,7 @@ from config_types import (
     validate_inversion_block,
 )
 from utils import seed_all, to_jsonable
+from tasks.extraction import env_provenance
 
 
 @dataclass
@@ -146,11 +147,19 @@ class RunConfig:
 
     # Path to a saved LoRA checkpoint to load before eval/training (empty = base model)
     lora_checkpoint: str = ""
-    # finetune-diffusion only: path to an .npz whose subset_indices are EXCLUDED from the
-    # training split (the probe subset). Without it the adapter trains on the very images
-    # the probes then evaluate, inflating every adapted-vs-frozen delta with memorization
-    # (blocker 4, RESEARCH_NOTES 6n). Keyed on the STORED indices, never re-derived.
-    exclude_probe_indices: str = ""
+    # finetune-diffusion protocol flags (2026-09-13 realignment to the standard RS
+    # evaluation protocol: probe trains on the FULL train split concurrently with the
+    # backbone, evaluation on the OFFICIAL test split -- Scale-MAE/SatMAE style. The old
+    # complement-split machinery existed only because probes were CV'd INSIDE the train
+    # subset; with eval on the held-out test split it is unnecessary).
+    #   freeze_backbone: train ONLY the probe head on frozen features (the "Frozen" arm;
+    #     also the protocol-matched frozen counterpart the 6s review demanded).
+    #   supervised_finetune: probe CE gradients flow into the LoRA (the "Finetune" arm).
+    #     DEFAULT False: adaptation stays LABEL-FREE (probe head is gradient-detached),
+    #     which is what the paper's story requires -- turning this on makes the arm
+    #     supervised and must be reported as such.
+    freeze_backbone: bool = False
+    supervised_finetune: bool = False
 
     # LoRA hyperparameters
     lora_wd: float = 0.0
@@ -196,10 +205,11 @@ class RunConfig:
             # token cache FILENAME and its meta.json instead, so two riders that differ
             # only in per_token_t still cannot be confused for one another.
             "per_token_t",
-            # finetune-only training-set exclusion; hashing it would repoint every existing
-            # run dir (a new field changes the payload). Runs that SET it are distinguished
-            # in make_run_name by an +exclN-h suffix derived from the indices themselves.
-            "exclude_probe_indices",
+            # finetune-only protocol flags; hashing new fields would repoint every existing
+            # run dir (CLAUDE.md rule 9). Runs that set them are distinguished in
+            # make_run_name by +frozen / +sup suffixes instead.
+            "freeze_backbone",
+            "supervised_finetune",
             # Same reasoning: requesting the velocity adds an ADDITIONAL artifact and does
             # not alter the pooled features (the terminal step's forward_velocity_feat
             # returns the same block-k features as the early-exiting forward_feat), so it
@@ -234,18 +244,14 @@ class RunConfig:
         # so no previously-extracted cache changes path.
         # Control-provenance suffix, derived from the SAME parts list the cache tag uses
         # (tasks.extraction.env_provenance) -- one source of truth for both formats.
-        from tasks.extraction import env_provenance
-
         _, _, parts = env_provenance(self, honors=_task_honors(self.task))
         suffix = "".join("+" + p for p in parts)
-        if self.exclude_probe_indices:
-            import hashlib
-
-            import numpy as np
-
-            idx = np.load(self.exclude_probe_indices)["subset_indices"]
-            h = hashlib.sha256(idx.tobytes()).hexdigest()[:8]
-            suffix += f"+excl{len(idx)}-{h}"
+        # Protocol-mode suffixes (fields are config_hash-blacklisted; the name is their
+        # identity -- CLAUDE.md rule 9).
+        if self.freeze_backbone:
+            suffix += "+frozen"
+        if self.supervised_finetune:
+            suffix += "+sup"
         if suffix:
             return f"{dataset_name}_{model_name}_{self.config_hash()}+{seed}{suffix}"
         return f"{dataset_name}_{model_name}_{self.config_hash()}+{seed}"
@@ -366,8 +372,11 @@ class RunConfig:
         if self.lora_checkpoint and not os.path.isfile(self.lora_checkpoint):
             raise ValueError(f"lora_checkpoint does not exist: {self.lora_checkpoint}")
 
-        if self.exclude_probe_indices and not os.path.isfile(self.exclude_probe_indices):
-            raise ValueError(f"exclude_probe_indices does not exist: {self.exclude_probe_indices}")
+        if self.freeze_backbone and self.supervised_finetune:
+            raise ValueError(
+                "freeze_backbone and supervised_finetune are mutually exclusive: one trains "
+                "nothing but the probe head, the other trains the backbone THROUGH the head."
+            )
 
         if self.lora_wd < 0:
             raise ValueError(f"lora_wd must be non-negative, got {self.lora_wd}")
@@ -439,8 +448,6 @@ def main(cfg: RunConfig) -> None:
     # on the inversion path) would get a run directory labelled as a control while holding
     # clean outputs -- provenance lying in the opposite direction from the poisoning the
     # tags were built to prevent.
-    from tasks.extraction import env_provenance
-
     env_provenance(cfg, honors=_task_honors(cfg.task))
 
     wandb.init(
