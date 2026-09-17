@@ -7,7 +7,16 @@
 #      via experiments/export_m_eurosat.py (SatDiFuser-identical loading semantics).
 # The exporter's gates verify 16,200/996/996 and the 10 EuroSAT classes; a partial
 # download fails loudly here, never downstream.
-# Requires: pip install geobench h5py  (in the project venv/conda env).
+# Requires geobench, but INSTALL IT WITH --no-deps:
+#     pip install --no-deps geobench && pip install h5py rasterio
+#   geobench pins huggingface_hub<0.20, pandas<2.0 and seaborn<0.13. Installing it
+#   normally DOWNGRADES those and hard-breaks the extraction stack (verified
+#   2026-09-17): transformers/diffusers import split_torch_state_dict_into_shards
+#   at module level (needs hf_hub>=0.23), and pandas 1.5.3 is binary-incompatible
+#   with numpy 2.1.0. Those pins are over-declared for our use — geobench only
+#   imports h5py/numpy/rasterio/scipy/tqdm on the load_task_specs/GeobenchDataset
+#   path; pandas/hf_hub/seaborn appear only in plot_tools.py and geobench_download.py,
+#   which __init__.py never imports and this script never calls (we curl Zenodo).
 # ============================================================================
 set -euo pipefail
 
