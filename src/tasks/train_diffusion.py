@@ -359,7 +359,6 @@ def _fine_tune_diffusion_microbatch(
     decoder: MIMDecoder,
     capture: _FeatureCapture | None,
     probe_head: torch.nn.Module = None,
-    probe_optimizer: torch.optim.Optimizer = None,
     supervised: bool = False,
     freeze_backbone: bool = False,
 ) -> dict:
@@ -456,24 +455,21 @@ def _fine_tune_diffusion_microbatch(
     else:
         total_loss = flow_loss
 
+    # CE is scaled by 1/grad_accum_steps in EVERY arm and the head is stepped by the
+    # caller at the accumulation boundary in EVERY arm, so the head's update rule is
+    # identical across the three modes (rule 8; 2026-09-16 review, M1).
     if supervised:
-        # Single graph: CE reaches the LoRA through non-detached features. Head grads
-        # accumulate on the same cadence as the backbone's; caller steps both optimizers
-        # at the accumulation boundary.
+        # Single graph: CE reaches the LoRA through non-detached features.
         ((total_loss + probe_ce) / grad_accum_steps).backward()
     elif freeze_backbone:
         # Probe-only arm: no backbone gradients at all (the flow loss is logged as a
-        # diagnostic but never backpropagated). Head steps every microbatch.
-        probe_ce.backward()
-        probe_optimizer.step()
-        probe_optimizer.zero_grad(set_to_none=True)
+        # diagnostic but never backpropagated).
+        (probe_ce / grad_accum_steps).backward()
     else:
         # Label-free adaptation (default): flow gradient into the LoRA; CE touches ONLY
-        # the head (features are detached). Head steps every microbatch.
+        # the head (features are detached).
         (total_loss / grad_accum_steps).backward()
-        probe_ce.backward()
-        probe_optimizer.step()
-        probe_optimizer.zero_grad(set_to_none=True)
+        (probe_ce / grad_accum_steps).backward()
 
     return {
         **_flow_metrics(v_pred, v_target, mask=mask, prefix="train"),
@@ -569,9 +565,9 @@ def _validate_diffusion(
                 if probe_head is not None:
                     feat_pooled = up_ft[0].float().mean(dim=1)
                     preds = probe_head(feat_pooled).argmax(dim=1)
-                    per_t_probe[t_nom].append(
-                        float((preds == batch["label"].to(device)).float().mean().cpu())
-                    )
+                    # Per-image, not per-batch means: a batch size that does not divide
+                    # the val subset would otherwise overweight the last partial batch.
+                    per_t_probe[t_nom].extend((preds == batch["label"].to(device)).float().cpu().tolist())
 
                 v_target, _ = prepare(noise - latents)
                 v_target = v_target.to(device=device, dtype=v_pred.dtype)
@@ -657,6 +653,26 @@ class FinetuneDiffusionTask:
         # split and post-training extraction stage are gone with the CV-inside-train-subset
         # protocol that required them. cfg.model.ensemble_size is unused by this task now
         # (no extract_features probe stage), so the old ens1 gate is gone too.
+        if cfg.label_fraction != 1.0:
+            # The dataset wrappers subsample the TRAIN SPLIT ITSELF under label_fraction,
+            # so a "label-scarce" run would also shrink the label-free flow-adaptation
+            # data, confounding label scarcity with data scarcity (2026-09-16 review,
+            # M2 -- this gate existed before the protocol realignment and was lost).
+            raise ValueError(
+                f"label_fraction={cfg.label_fraction} is not supported by finetune-diffusion: "
+                "the wrappers subsample the train split itself, which would shrink the "
+                "flow-adaptation data along with the probe labels. Label-fraction sweeps "
+                "need CE-label masking, which is not implemented."
+            )
+        if cfg.lora_checkpoint:
+            # The adapter already wrapped LoRA when loading the checkpoint; this task
+            # wraps again and LoRALinear raises a cryptic "base must be nn.Linear".
+            # Resuming adaptation is not supported -- fail with the real reason.
+            raise ValueError(
+                "finetune-diffusion cannot resume from --lora-checkpoint (the model is "
+                "already LoRA-wrapped at load; a second wrap is invalid). Checkpoints are "
+                "for extraction/eval tasks; start adaptation runs from scratch."
+            )
         use_mim = cfg.mim_loss_weight != 0
         if not use_mim and cfg.mask_ratio > 0:
             raise ValueError(
@@ -744,19 +760,24 @@ class FinetuneDiffusionTask:
             )
 
         # Concurrent linear probe head (float32; features are cast in the microbatch).
+        # The head's optimization regime is IDENTICAL across the three arms (rule 8): its
+        # own AdamW at clf_lr with EXPLICIT weight_decay=0.0, CE scaled by
+        # 1/grad_accum_steps every microbatch, stepped at the accumulation boundary, no
+        # warmup, no grad clipping. Folding the head into the main optimizer in the
+        # supervised arm (the previous code) gave it finetune_lr + lora_wd + warmup +
+        # clipping there but clf_lr + AdamW-default wd + per-microbatch steps elsewhere,
+        # so supervised-vs-label-free deltas partly measured head-optimizer differences
+        # rather than gradient routing (2026-09-16 review, M1). In supervised mode the CE
+        # still reaches the LoRA through the shared backward; only the head's own UPDATE
+        # rule is pinned equal.
         num_classes = len(dataset.category_list)
         probe_head = torch.nn.Linear(flux.hidden_size, num_classes).to(device=device, dtype=torch.float32)
-        probe_optimizer = torch.optim.AdamW(probe_head.parameters(), lr=cfg.clf_lr)
+        probe_optimizer = torch.optim.AdamW(probe_head.parameters(), lr=cfg.clf_lr, weight_decay=0.0)
 
         if cfg.freeze_backbone:
             optimizer = None
             scheduler = None
         else:
-            if cfg.supervised_finetune:
-                # CE reaches the LoRA through the head, so the head must step on the same
-                # accumulation cadence as the backbone; hand it to the main optimizer.
-                trainable_params = trainable_params + list(probe_head.parameters())
-                probe_optimizer = None
             optimizer = torch.optim.AdamW(trainable_params, lr=cfg.finetune_lr, weight_decay=cfg.lora_wd)
             scheduler = torch.optim.lr_scheduler.LinearLR(
                 optimizer,
@@ -818,7 +839,6 @@ class FinetuneDiffusionTask:
                 decoder=decoder,
                 capture=capture,
                 probe_head=probe_head,
-                probe_optimizer=probe_optimizer,
                 supervised=cfg.supervised_finetune,
                 freeze_backbone=cfg.freeze_backbone,
             )
@@ -834,6 +854,9 @@ class FinetuneDiffusionTask:
                 optimizer.step()
                 scheduler.step()
                 optimizer.zero_grad(set_to_none=True)
+            # Head steps at the boundary in every arm, unclipped and unscheduled (M1).
+            probe_optimizer.step()
+            probe_optimizer.zero_grad(set_to_none=True)
             global_step += 1
 
             step_train_metrics = _average_batch_metrics(accum_metrics)
@@ -990,6 +1013,10 @@ class FinetuneDiffusionTask:
             "per_timestep_top1": {f"t{k}": v for k, v in per_t_top1.items()},
             "per_timestep_macro_f1": {f"t{k}": v for k, v in per_t_f1.items()},
             "mean_top1_over_timesteps": round(float(np.mean(list(per_t_top1.values()))), 2),
+            # eps for the test eval is consumed batch-major from a fixed seed, so per-
+            # (image, t) noise matches across arms ONLY at equal batch_size; recorded so
+            # a mismatch is visible in the results.
+            "eval_batch_size": cfg.batch_size,
         }
         flat = {}
         _flatten_scalars_into("probe", probe_results, flat)
@@ -1000,5 +1027,8 @@ class FinetuneDiffusionTask:
             "probe_results": probe_results,
             "global_step": global_step,
             "best_val_loss": best_val_loss,
-            "num_trainable_params": sum(p.numel() for p in trainable_params),
+            # Backbone and head counted separately: the head is trainable in every
+            # mode, the backbone only outside freeze mode.
+            "num_trainable_params_backbone": sum(p.numel() for p in trainable_params),
+            "num_trainable_params_head": sum(p.numel() for p in probe_head.parameters()),
         }

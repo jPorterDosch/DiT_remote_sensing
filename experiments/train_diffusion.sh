@@ -117,10 +117,12 @@ fi
 #   --use-gradient-accumulation   bool flag, no value
 #   --wrap-output                 bool flag, no value
 #   --label-fraction 1.0          full-label probe after fine-tuning
-#   --cd                          discard massive-activation channels in the probe --
-#                                 matches EVERY offline probe and eval sweep (finding 2);
-#                                 without it the per-t table sits at a different feature
-#                                 operating point than all frozen numbers
+#   --cd                          BEHAVIORAL NO-OP for this task since the 2026-09-13
+#                                 realignment: the concurrent head pools raw pre-norm
+#                                 features (no channel discard / DiTF / L2 anywhere in
+#                                 the path). Kept ONLY because cd feeds config_hash --
+#                                 dropping it would repoint the run dirs (rule 9). Do
+#                                 not read the per-t table as channel-discarded.
 #   --t $T_GRID                   multi-valued: training samples t per example over this grid
 #                                 (params-array values would be swept, not passed together)
 #

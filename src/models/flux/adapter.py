@@ -27,6 +27,14 @@ class FluxModel:
             # load all tensors onto cpu first regardless of where they were saved from
             ckpt = torch.load(cfg.lora_checkpoint, map_location="cpu", weights_only=False)
             sd = ckpt["lora_state_dict"]
+            if not sd:
+                # Freeze-mode runs save checkpoints with an EMPTY lora_state_dict (only
+                # the probe head trains); without this check the key-set comparison below
+                # fails with a misleading "wrong k/wrap_output at training?" message.
+                raise ValueError(
+                    f"{cfg.lora_checkpoint} has an empty lora_state_dict — this is a "
+                    "freeze_backbone (probe-only) checkpoint; there is no adapter to load."
+                )
 
             # Hyperparameters that leave NO trace in key names or tensor shapes must be
             # verified against the checkpoint's recorded training config: lora_alpha exists

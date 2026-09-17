@@ -91,6 +91,18 @@ class RunConfig:
     # task="extract" only: number of train images to extract (class-stratified with
     # subset_seed). None = the full train split.
     subset_size: int | None = None
+    # task="extract" only: which split to extract features from. "test" exists for
+    # official-split probe evaluation (fit on full train features, score on full test
+    # features); every historical cache is train-split, so "train" stays the default and
+    # the field is config_hash-blacklisted (rule 9) with a "+test" run-name suffix.
+    extract_split: str = "train"
+    # task="extract" only: split the extraction into num_shards contiguous index ranges
+    # and run only shard_index (for SLURM array jobs over the expensive inversion chain).
+    # Blacklisted from config_hash (rule 9); shards are distinguished by a "+sNofM"
+    # run-name suffix. Shard caches record their indices in subset_indices; the merge
+    # step (experiments/m_eurosat_probe.py) verifies disjoint, complete coverage.
+    num_shards: int = 1
+    shard_index: int = 0
     # Configurable, but should remain consistent across experiments.
     subset_seed: int = 42
     # Block index in [0, 56] (19 double + 38 single-stream blocks): reference block for
@@ -210,6 +222,12 @@ class RunConfig:
             # make_run_name by +frozen / +sup suffixes instead.
             "freeze_backbone",
             "supervised_finetune",
+            # Same rule-9 reasoning: hashing this new field would repoint every existing
+            # run dir. Test-split runs are distinguished by the +test run-name suffix.
+            "extract_split",
+            # Ditto: shards are distinguished by the +sNofM run-name suffix.
+            "num_shards",
+            "shard_index",
             # Same reasoning: requesting the velocity adds an ADDITIONAL artifact and does
             # not alter the pooled features (the terminal step's forward_velocity_feat
             # returns the same block-k features as the early-exiting forward_feat), so it
@@ -252,6 +270,10 @@ class RunConfig:
             suffix += "+frozen"
         if self.supervised_finetune:
             suffix += "+sup"
+        if self.extract_split != "train":
+            suffix += f"+{self.extract_split}"
+        if self.num_shards > 1:
+            suffix += f"+s{self.shard_index}of{self.num_shards}"
         if suffix:
             return f"{dataset_name}_{model_name}_{self.config_hash()}+{seed}{suffix}"
         return f"{dataset_name}_{model_name}_{self.config_hash()}+{seed}"
@@ -284,6 +306,24 @@ class RunConfig:
 
         if self.subset_size is not None and self.subset_size <= 0:
             raise ValueError(f"subset_size must be positive or None, got {self.subset_size}")
+
+        if self.extract_split not in ("train", "test", "val"):
+            raise ValueError(f"extract_split must be 'train', 'test' or 'val', got {self.extract_split!r}")
+        if self.num_shards < 1 or not (0 <= self.shard_index < self.num_shards):
+            raise ValueError(
+                f"invalid shard spec: shard_index={self.shard_index}, num_shards={self.num_shards}"
+            )
+        if self.num_shards > 1 and self.task != "extract":
+            raise ValueError(
+                f"num_shards={self.num_shards} is only honored by task='extract', got task={self.task!r}"
+            )
+        if self.extract_split != "train" and self.task != "extract":
+            # A set-but-unhonored flag must raise, not silently mislabel (rule 10): only
+            # tasks/extraction.py reads extract_split; every other task would train/probe
+            # on its usual splits while the run dir claimed "+test".
+            raise ValueError(
+                f"extract_split={self.extract_split!r} is only honored by task='extract', got task={self.task!r}"
+            )
 
         if self.num_inversion_steps < 1:
             raise ValueError(f"num_inversion_steps must be >= 1, got {self.num_inversion_steps}")

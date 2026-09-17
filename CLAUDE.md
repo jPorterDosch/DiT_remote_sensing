@@ -93,3 +93,13 @@ distilled backtrack — the section that documents the failure is cited inline.
 15. **Smoke-test end-to-end before committing GPU** (`--max-samples`, strided so all
     classes appear). The finetune harness had 4 stacked crash bugs that 45 minutes of
     smoke runs caught one stage at a time.
+
+## External claims
+
+16. **A published table is prose, not data — verify the shipped artifact.** GEO-Bench's
+    paper says m-eurosat has 2,000 train samples; the shipped default partition contains
+    16,200, and SatDiFuser's paper repeats the stale 2,000 while its own loader provably
+    consumes 16,200 (no partition arg -> package default). Before quoting any external
+    number's protocol (split sizes, bands, label budget), download the actual artifact
+    (partition file, config, loader source) and count; a val/test count that doesn't
+    match the shipped file (1,000 vs 996) is the standard tell of a copied table.
