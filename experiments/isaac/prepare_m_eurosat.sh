@@ -16,7 +16,7 @@ while [ "$_dir" != "/" ] && [ ! -d "$_dir/.git" ]; do _dir="$(dirname "$_dir")";
 PROJECT_ROOT="$_dir"
 cd "$PROJECT_ROOT"
 
-RAW="${RAW:-data/m_eurosat_meta}"
+RAW="${RAW:-/lustre/isaac24/scratch/jdosch1/DeepLearning/datasets/m_eurosat_meta}"
 mkdir -p "$RAW"
 Z="https://zenodo.org/api/records/8276933/files"
 
@@ -35,9 +35,9 @@ n_hdf5=$(ls "$RAW"/id_*.hdf5 2>/dev/null | wc -l)
 [ "$n_hdf5" -eq 18192 ] || { echo "expected 18,192 sample files, found $n_hdf5 — incomplete unzip?" >&2; exit 1; }
 
 # sanity: partition really is the 16,200/996/996 default (CLAUDE.md rule 16)
-python3 - <<'PY'
-import json
-p = json.load(open("data/m_eurosat_meta/default_partition.json"))
+python3 - "$RAW" <<'PY'
+import json, sys
+p = json.load(open(sys.argv[1] + "/default_partition.json"))
 sizes = {k: len(v) for k, v in p.items()}
 assert sizes == {"train": 16200, "valid": 996, "test": 996}, sizes
 print("partition verified:", sizes)
