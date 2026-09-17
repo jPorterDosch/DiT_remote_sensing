@@ -5,7 +5,7 @@
 #   array index 0..7  -> train split, shards 0..7 of 8 (2,025 imgs each)
 #   array index 8     -> val split,  unsharded (996 imgs)
 #   array index 9     -> test split, unsharded (996 imgs)
-# Submit:  sbatch experiments/isaac/extract_m_eurosat_inversion.sbatch
+# Submit:  sbatch experiments/isaac/m_eurosat/inversion.sbatch
 #
 # TIME: measured 16.5 s/img on an RTX A6000; on ai-tenn H100 expect ~6 s/img =>
 #   train shard ~3.5 h, val/test ~1.8 h. The 14 h request survives zero speedup

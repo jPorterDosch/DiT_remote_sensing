@@ -2,10 +2,10 @@
 # ============================================================================
 # m-eurosat ONE-SHOT extraction (frozen FLUX, ens8, 7-t grid, k=28, g=1.0) — UNSHARDED.
 # One submission per split (the three splits are separate runs, not shards):
-#   sbatch --export=ALL,SPLIT=val   experiments/isaac/extract_m_eurosat_oneshot.sbatch
-#   sbatch --export=ALL,SPLIT=test  experiments/isaac/extract_m_eurosat_oneshot.sbatch
-#   sbatch --export=ALL,SPLIT=train experiments/isaac/extract_m_eurosat_oneshot.sbatch
-# (or use experiments/isaac/submit_m_eurosat.sh, which chains them.)
+#   sbatch --export=ALL,SPLIT=val   experiments/isaac/m_eurosat/oneshot.sbatch
+#   sbatch --export=ALL,SPLIT=test  experiments/isaac/m_eurosat/oneshot.sbatch
+#   sbatch --export=ALL,SPLIT=train experiments/isaac/m_eurosat/oneshot.sbatch
+# (or use experiments/isaac/m_eurosat/submit.sh, which submits everything.)
 #
 # TIME: 7 t x 8 ensemble members = 56 DiT forwards + 8 VAE encodes per image.
 #   Measured 4.99 s/img on an RTX A6000. ai-tenn is H100-80GB (~2.5-3x an A40, which is

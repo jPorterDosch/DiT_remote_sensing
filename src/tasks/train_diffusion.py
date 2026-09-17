@@ -791,8 +791,12 @@ class FinetuneDiffusionTask:
         test_loader = loaders["test"]
 
         # Strided validation subset (see VAL_MAX_IMAGES). Deterministic, class-covering,
-        # identical at every evaluation.
-        _test_ds = test_loader.dataset
+        # identical at every evaluation. Drawn from the dataset's REAL val split when the
+        # wrapper provides one (m_eurosat does; GEO-Bench publishes it) so even diagnostic
+        # validation never reads the test split; falls back to the test split for wrappers
+        # without one (eurosat/resisc45 -- the pre-2026-09-17 behaviour, unchanged).
+        _val_source = loaders.get("val", test_loader)
+        _test_ds = _val_source.dataset
         val_loader = DataLoader(
             torch.utils.data.Subset(_test_ds, _strided_indices(len(_test_ds), VAL_MAX_IMAGES)),
             batch_size=cfg.batch_size,
