@@ -9,7 +9,12 @@
 #   inversion: one 10-task array (8 train shards + val + test); ai-tenn QoS allows 28
 #             concurrent jobs and 56 queued, so all 13 jobs submit and run in one shot.
 #
-# After everything lands:  python3 experiments/m_eurosat_probe.py
+# After everything lands (README 'Evaluation pipeline'):
+#   python3 -m eval.gates official_flux_m_eurosat   # new harness reproduces the banked probe
+#   python3 -m eval.probe --protocol official --dataset m_eurosat --arm flux-oneshot-ens8 --kind flux \
+#       --features 'models/m_eurosat_oneshot_ens8/*/multistep_{split}_feats_oneshot_g1.0.npz'
+#   python3 -m eval.probe --protocol official --dataset m_eurosat --arm flux-inversion --kind flux \
+#       --features 'models/m_eurosat_inversion/*/multistep_{split}_feats_inversion_g1.0_n50.npz'
 # (CPU-only; run on a login node or any campus node. It merges the inversion shards,
 #  verifies coverage/identity, selects on the official val split, and evaluates each
 #  arm once on test.)
@@ -31,4 +36,4 @@ j_test=$(sbatch --parsable --time=04:00:00 --export=ALL,SPLIT=test experiments/i
 
 echo "submitted: oneshot val=$j_val test=$j_test train=$j_train  inversion array=$j_inv"
 echo "watch:     squeue -u \$USER"
-echo "then:      python3 experiments/m_eurosat_probe.py"
+echo "then:      python3 -m eval.probe --protocol official --dataset m_eurosat ...  (see header of this script)"

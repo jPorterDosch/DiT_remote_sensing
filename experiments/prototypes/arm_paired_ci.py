@@ -1,6 +1,6 @@
 """Paired inversion-vs-oneshot comparison with bootstrap CIs.
 
-experiments/linear_probes.py reports point estimates per arm, which is enough to see a
+experiments/linear_probes.py (→ experiments/prototypes/) reports point estimates per arm, which is enough to see a
 direction but not to claim one. The arms are extracted from the SAME images with the same
 subset seed, so every comparison here is PAIRED per (seed, fold): both arms are trained and
 evaluated on identical splits and only the features differ. That removes fold-to-fold

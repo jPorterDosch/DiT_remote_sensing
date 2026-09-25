@@ -31,6 +31,7 @@ from config_types import (
 )
 from utils import seed_all, to_jsonable
 from tasks.extraction import env_provenance
+from eval.wb import WANDB_ENTITY, WANDB_PROJECT
 
 
 @dataclass
@@ -100,7 +101,8 @@ class RunConfig:
     # and run only shard_index (for SLURM array jobs over the expensive inversion chain).
     # Blacklisted from config_hash (rule 9); shards are distinguished by a "+sNofM"
     # run-name suffix. Shard caches record their indices in subset_indices; the merge
-    # step (experiments/m_eurosat_probe.py) verifies disjoint, complete coverage.
+    # step (eval/features.load_flux_split, via eval.probe --protocol official) verifies
+    # disjoint, complete coverage.
     num_shards: int = 1
     shard_index: int = 0
     # Configurable, but should remain consistent across experiments.
@@ -193,9 +195,9 @@ class RunConfig:
     # Linear LR warmup to mitigate spikes early on
     warmup_steps: int = 100
 
-    # W&B logging — fill in after account/project creation
-    wandb_entity: str = "sparse_representation_learning"
-    wandb_project: str = "DiT_remote_sensing"
+    # W&B logging -- one project for the whole pipeline; defaults live in eval/wb.py
+    wandb_entity: str = WANDB_ENTITY
+    wandb_project: str = WANDB_PROJECT
 
     def config_hash(self) -> str:
         payload = to_jsonable(asdict(self))
@@ -494,6 +496,10 @@ def main(cfg: RunConfig) -> None:
         entity=cfg.wandb_entity,
         project=cfg.wandb_project,
         name=run_name,
+        # eval/ runs log to the same project grouped by stage (eval/wb.py); group
+        # run.py runs by task to match.
+        group=cfg.task,
+        job_type=cfg.task,
         config=asdict(cfg),
     )
 

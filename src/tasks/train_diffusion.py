@@ -11,7 +11,7 @@ import wandb
 
 from models.flux.adapter import FluxModel
 from models.flux.feat_flux import Featurizer4Eval, prepare
-from models.lora import lora_wrap_flux
+from models.lora import LORA_SCOPE, lora_block_indices, lora_wrap_flux
 from datasets.utils import _strided_indices
 from registry import register_task
 from utils import to_jsonable
@@ -96,6 +96,7 @@ def _save_lora_checkpoint(
         "train_metrics": train_metrics,
         "val_metrics": val_metrics,
         "cfg": to_jsonable(cfg),
+        "lora_scope": LORA_SCOPE,
     }
 
     torch.save(ckpt, checkpoint_path)
@@ -735,7 +736,7 @@ class FinetuneDiffusionTask:
         if not cfg.freeze_backbone:
             lora_wrap_flux(
                 flux,
-                cfg.k,
+                lora_block_indices(flux),
                 cfg.lora_rank,
                 cfg.lora_alpha,
                 cfg.lora_dropout,

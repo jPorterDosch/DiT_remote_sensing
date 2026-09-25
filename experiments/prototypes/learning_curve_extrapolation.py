@@ -67,7 +67,7 @@ for ds, (path, tidx, full_n) in CFG.items():
         pred_10k = f(10000, *popt)
         asym = a_
     except Exception:
-        pred_full = pred_10k = asym = float("nan")
+        pred_full = pred_10k = asym = c_ = float("nan")
     print(f"\n{ds} (ens8, t={t}, C={C}, eval n=1000 fixed):")
     for n in SIZES:
         print(f"  n={n:<6} acc={accs[n][0]:.4f} ±{accs[n][1]:.4f}")

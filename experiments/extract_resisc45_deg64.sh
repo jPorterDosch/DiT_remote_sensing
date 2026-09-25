@@ -32,7 +32,7 @@ T="100 180 260 340 420 500 580"
 R45=data/resisc45/NWPU-RESISC45
 
 echo "=== raw x_t (VAE only), degraded  $(date -Is) ==="
-python -u experiments/raw_xt_baseline.py --dataset resisc45 --path "$R45" \
+python -u experiments/prototypes/raw_xt_baseline.py --dataset resisc45 --path "$R45" \
     --img-size 256 256 --subset-size 5000 --out-dir models/raw_xt_n5000_deg64 \
     > logs/deg64_rawxt.log 2>&1
 echo "  rc=$?"

@@ -1,6 +1,6 @@
 """Export GEO-Bench m-eurosat to an RGB image tree for this repo's extraction pipeline.
 
-    python experiments/export_m_eurosat.py --dataset-dir <dir with task_specs.pkl,
+    python experiments/prototypes/export_m_eurosat.py --dataset-dir <dir with task_specs.pkl,
         default_partition.json, label_map.json and the sample .hdf5 files> \
         --out data/m_eurosat_rgb
 
@@ -31,7 +31,7 @@ from collections import Counter
 import numpy as np
 from PIL import Image
 
-_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(_root, "src"))
 
 EXPECT = {"train": 16200, "valid": 996, "test": 996}

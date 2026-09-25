@@ -13,7 +13,7 @@
 #   ai-tenn QoS allows 28 concurrent jobs, so all 10 array tasks can run at once.
 #
 # Shard caches carry their exact image indices in subset_indices and a +sNofM run-name
-# suffix; experiments/m_eurosat_probe.py verifies the shards are disjoint and complete
+# suffix; eval.probe --protocol official verifies the shards are disjoint and complete
 # before any probe sees them. The chain draws no eps; the per-split --seed decouples
 # the VAE-posterior streams across splits (RESEARCH_NOTES 6t, audit F1).
 # ============================================================================

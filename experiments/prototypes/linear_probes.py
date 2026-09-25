@@ -23,9 +23,9 @@ harness), so all tiers are directly comparable. Features are per-channel standar
 inside each CV fold (train-fold statistics only, via a Pipeline — no leakage).
 
 Usage:
-    python experiments/linear_probes.py                       # globs models/paired_500/*/...
-    python experiments/linear_probes.py <cacheA.npz> <cacheB.npz> ...
-    python experiments/linear_probes.py --out-csv results/linear_probes.csv
+    python experiments/prototypes/linear_probes.py                       # globs models/paired_500/*/...
+    python experiments/prototypes/linear_probes.py <cacheA.npz> <cacheB.npz> ...
+    python experiments/prototypes/linear_probes.py --out-csv results/linear_probes.csv
 """
 
 from __future__ import annotations
@@ -94,7 +94,7 @@ def assert_paired(caches: list[dict]) -> None:
             if key in ref and key in c and not np.array_equal(ref[key], c[key]):
                 raise SystemExit(
                     f"FATAL: '{key}' differs between {ref['__tag__']} and {c['__tag__']} — "
-                    "caches are not paired; run experiments/verify_paired_caches.py first."
+                    "caches are not paired; run experiments/verify_paired_caches.py (→ experiments/prototypes/) first."
                 )
 
 

@@ -1,7 +1,7 @@
 #!/bin/bash
 # ============================================================================
 # Job 3/3 — one-shot extraction, guidance 3.5 (the one-shot default arm)
-#   SKIP THIS JOB iff experiments/verify_paired_caches.py --legacy <old.npz>
+#   SKIP THIS JOB iff experiments/verify_paired_caches.py (→ experiments/prototypes/) --legacy <old.npz>
 #   confirms your existing g=3.5 one-shot cache covers the identical 500 images
 #   with matching settings (t, k, eps_seed=42, ensemble_size=1) — see
 #   COMMANDS.md. Included because that could not be confirmed from this

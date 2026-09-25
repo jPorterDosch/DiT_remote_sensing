@@ -4,7 +4,7 @@
 #   1. Downloads the official GEO-Bench m-eurosat release from Zenodo (~1.2 GB).
 #   2. Assembles the geobench dataset dir (task_specs.pkl + partitions + samples).
 #   3. Exports the RGB image tree data/m_eurosat_rgb/{train,val,test}/<Class>/*.png
-#      via experiments/export_m_eurosat.py (SatDiFuser-identical loading semantics).
+#      via eval.export_geobench --task m-eurosat (SatDiFuser-identical loading semantics).
 # The exporter's gates verify 16,200/996/996 and the 10 EuroSAT classes; a partial
 # download fails loudly here, never downstream.
 # Requires geobench, but INSTALL IT WITH --no-deps:
@@ -52,5 +52,5 @@ assert sizes == {"train": 16200, "valid": 996, "test": 996}, sizes
 print("partition verified:", sizes)
 PY
 
-python3 experiments/export_m_eurosat.py --dataset-dir "$RAW" --out data/m_eurosat_rgb
+python3 -m eval.export_geobench --task m-eurosat --dataset-dir "$RAW" --out data/m_eurosat_rgb
 echo "prep complete: data/m_eurosat_rgb"

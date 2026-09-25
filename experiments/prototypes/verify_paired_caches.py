@@ -16,9 +16,9 @@ guidance_scale nor extraction_mode, so guidance can only be presumed 3.5 — the
 script says so explicitly rather than pretending to verify it.
 
 Usage:
-    python experiments/verify_paired_caches.py
-    python experiments/verify_paired_caches.py models/paired_500/*/multistep_train_feats_*.npz
-    python experiments/verify_paired_caches.py --legacy /path/to/old_multistep_train_feats.npz
+    python experiments/prototypes/verify_paired_caches.py
+    python experiments/prototypes/verify_paired_caches.py models/paired_500/*/multistep_train_feats_*.npz
+    python experiments/prototypes/verify_paired_caches.py --legacy /path/to/old_multistep_train_feats.npz
 """
 
 from __future__ import annotations

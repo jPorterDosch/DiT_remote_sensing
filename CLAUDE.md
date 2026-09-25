@@ -107,7 +107,7 @@ distilled backtrack — the section that documents the failure is cited inline.
 17. **A handoff is complete only if the other machine can run it: check referenced files
     are tracked.** Two ISAAC campaign launches died because committed code referenced
     files that existed only on the workstation (src/datasets/m_eurosat.py imported by a
-    committed __init__.py; experiments/m_eurosat_probe.py referenced in 3 files). Before
+    committed __init__.py; experiments/m_eurosat_probe.py (→ experiments/prototypes/) referenced in 3 files). Before
     any cross-machine handoff: `git ls-files --error-unmatch <every new file the diff
     references>`, and grep the diff for paths not in `git ls-files`. RESEARCH_NOTES.md
     is the ONE intentional exception (workstation-only by design).

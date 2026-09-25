@@ -10,7 +10,7 @@ Two uses:
   1. Dataset-level: does RESISC45 invert worse than EuroSAT? (A direct check on the OOD story.)
   2. Image-level: does an image's roundtrip error predict its inversion-vs-oneshot advantage?
      (Prediction 2 of section 7. The per-image correctness comes from
-     experiments/paired_image_bootstrap.py's caches -- correlate offline.)
+     experiments/paired_image_bootstrap.py (→ experiments/prototypes/)'s caches -- correlate offline.)
 
 Also runs the MATCHED-NFE integrator ablation (audit finding O3): REPORT.md compared Euler and
 RF-Solver at the same step count, but the order-2 step evaluates the velocity twice per step,
@@ -32,7 +32,7 @@ import sys
 import numpy as np
 import torch
 
-_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, _root)
 sys.path.insert(0, os.path.join(_root, "src"))
 sys.path.insert(0, os.path.join(_root, "src", "models"))

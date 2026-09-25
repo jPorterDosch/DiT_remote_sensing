@@ -34,8 +34,8 @@ the dataset(s), and n. If any is missing, ask.
    project's standing operating point unless the user says otherwise.
 
 ## Reference implementations (copy structure, not bugs)
-`experiments/curv5000_probe.py` (canonical, incl. gate + caching),
-`experiments/time_aggregation.py` (time axis), `experiments/block_aggregation.py` (depth).
+`experiments/prototypes/curv5000_probe.py` (canonical, incl. gate + caching),
+`experiments/prototypes/time_aggregation.py` (time axis), `experiments/prototypes/block_aggregation.py` (depth).
 
 ## After generating
 Run `ruff check --fix` + `ruff format` on the new file, `python -m py_compile`, and a

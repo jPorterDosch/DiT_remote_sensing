@@ -8,6 +8,7 @@ import wandb
 from torch.utils.data import DataLoader, Subset
 
 from config_types import ExtractionMode
+from eval.wb import log_features
 from registry import register_task
 from utils import env_int, env_value, seed_worker
 
@@ -291,4 +292,7 @@ class ExtractionTask:
             json.dump(meta, f, indent=4)
 
         wandb.log({"extraction/num_images": feats.shape[0], "extraction/feat_dim": feats.shape[-1]})
+        # Reference artifact (path + checksum, no upload): eval.probe declares the same
+        # reference as its input, giving the extract -> probe lineage edge.
+        log_features(out_path)
         return {"feats_path": out_path, "meta_path": meta_path, "shape": list(feats.shape)}

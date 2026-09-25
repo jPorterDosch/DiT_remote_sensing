@@ -47,11 +47,11 @@ permutation sensitivity), which is what distinguishes "no ordering signal in the
 from "the positional encoding died".
 
 Usage:
-    python experiments/traj_readout.py --cache-path <npz> --self-test
-    python experiments/traj_readout.py --cache-path <npz> --arm traj --dry-run
-    python experiments/traj_readout.py --cache-path <npz> --arm traj \\
+    python experiments/prototypes/traj_readout.py --cache-path <npz> --self-test
+    python experiments/prototypes/traj_readout.py --cache-path <npz> --arm traj --dry-run
+    python experiments/prototypes/traj_readout.py --cache-path <npz> --arm traj \\
         --norm normalized --seed 0 --out-csv results/b2_results_v2.csv
-    python experiments/traj_readout.py --cache-path <npz> --control --seed 42
+    python experiments/prototypes/traj_readout.py --cache-path <npz> --control --seed 42
 """
 
 from __future__ import annotations

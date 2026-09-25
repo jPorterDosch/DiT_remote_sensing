@@ -27,7 +27,7 @@ A positive delta on the first is the only result that supports "the model's judg
 carries information the trajectory's states do not".
 
 Probe/fold/seed conventions and the in-fold PCA parity scheme are inherited from
-experiments/token_geometry_probe.py.
+experiments/token_geometry_probe.py (→ experiments/prototypes/).
 
 FINDINGS, updated (RESEARCH_NOTES 3 + 2026-08-19 audit S2). The null is real AND
 instrument-validated: a synthetic block at the same D is detected down to +0.008 (an order

@@ -37,7 +37,7 @@ FEATURE SETS (all probed identically, all projected to a common D)
 Pre-committed decision rule: token_geom is real only if it beats ALL THREE at matched D,
 outside noise, on paired per-fold deltas with bootstrap CIs.
 
-Probe/fold/seed conventions are inherited from experiments/linear_probes.py (StandardScaler
+Probe/fold/seed conventions are inherited from experiments/linear_probes.py (→ experiments/prototypes/) (StandardScaler
 -> multinomial L2 logistic regression, stratified 5-fold). The L2 penalty is swept ONCE on
 the mean across feature sets and then frozen, so the comparison measures features, not
 per-feature-set tuning.
@@ -99,7 +99,7 @@ FEATURE_SETS = CANDIDATES + BASELINES
 
 
 # ---------------------------------------------------------------------------------------
-# shared probe conventions (mirrors experiments/linear_probes.py)
+# shared probe conventions (mirrors experiments/linear_probes.py (→ experiments/prototypes/))
 # ---------------------------------------------------------------------------------------
 
 

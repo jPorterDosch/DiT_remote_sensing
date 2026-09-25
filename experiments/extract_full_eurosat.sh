@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Full-split EuroSAT extraction (frozen FLUX, one-shot ens8, t=100+180, block 28, g=1.0)
-# followed by the full-split linear probe (experiments/full_split_probe.py).
+# followed by the full-split linear probe (experiments/full_split_probe.py (→ experiments/prototypes/)).
 #   train: 21,600 images  (~9 h at the measured ~1.5 s/img for 2 timesteps at ens8)
 #   test:   5,400 images  (~2.2 h)
 # t=100 is the requested operating point; t=180 rides along because it is the a-priori
@@ -46,4 +46,4 @@ run_split train --eps-seed 42                                || exit 1
 run_split test  --extract-split test --eps-seed 43 --seed 43 || exit 1
 
 echo "=== full-split probe $(date -Is) ==="
-python -u experiments/full_split_probe.py 2>&1 | tee logs/full_split_probe_eurosat.log
+python -u experiments/prototypes/full_split_probe.py 2>&1 | tee logs/full_split_probe_eurosat.log

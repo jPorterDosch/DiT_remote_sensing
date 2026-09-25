@@ -7,7 +7,7 @@ from einops import rearrange
 from registry import register_model
 
 from .feat_flux import Featurizer4Eval, prepare
-from models.lora import lora_wrap_flux
+from models.lora import LORA_SCOPE, lora_block_indices, lora_wrap_flux
 
 
 @register_model("flux")
@@ -42,6 +42,12 @@ class FluxModel:
             # applies the adapter at the wrong strength (2026-09-11 review, finding 5).
             # k/wrap_output/rank are also compared here for a clearer message than the
             # key-set/shape errors below would give.
+            if ckpt.get("lora_scope") != LORA_SCOPE:
+                raise ValueError(
+                    f"{cfg.lora_checkpoint} has lora_scope={ckpt.get('lora_scope')!r}, expected "
+                    f"{LORA_SCOPE!r}. Checkpoints trained before 2026-09-24 adapted only block k, "
+                    "whose adapter cannot reach the probed features (block k's INPUT); retrain."
+                )
             tcfg = ckpt.get("cfg", {}) or {}
             for field in ("lora_alpha", "lora_rank", "k", "wrap_output", "lora_dropout"):
                 if field in tcfg and getattr(cfg, field) != tcfg[field]:
@@ -63,7 +69,7 @@ class FluxModel:
             with torch.random.fork_rng(devices=[_dev] if _dev.type == "cuda" else []):
                 lora_wrap_flux(
                     flux,
-                    cfg.k,
+                    lora_block_indices(flux),
                     cfg.lora_rank,
                     cfg.lora_alpha,
                     cfg.lora_dropout,
