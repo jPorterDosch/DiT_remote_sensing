@@ -45,7 +45,10 @@ export WANDB_MODE="${WANDB_MODE:-offline}"
 
 IDX="${SLURM_ARRAY_TASK_ID:?}"
 if [ "$IDX" -le 7 ]; then
-    SPLIT=train; SEED=42; SHARDS=(--num-shards 8 --shard-index "$IDX")
+    # Distinct seed PER SHARD (100+IDX): with one shared seed, image j of every shard drew
+    # the same VAE-posterior noise -- the audit-F1 position-paired coupling, inside train.
+    # The seed is part of the run name, so banked shared-seed shards are left untouched.
+    SPLIT=train; SEED=$((100 + IDX)); SHARDS=(--num-shards 8 --shard-index "$IDX")
 elif [ "$IDX" -eq 8 ]; then
     SPLIT=val;   SEED=44; SHARDS=()
 else

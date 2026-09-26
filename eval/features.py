@@ -212,6 +212,13 @@ def load_flux_split(pattern: str, pins: dict, split: str, n_expect: int, smoke: 
             raise SystemExit(f"{split}: merged shard indices are not disjoint / complete (n={len(idx)})")
         if not smoke and not np.array_equal(np.sort(idx), np.arange(n_expect)):
             raise SystemExit(f"{split}: merged shard indices are not a cover of arange({n_expect})")
+        shard_seeds = [(p[1].get("seed"), p[1].get("eps_seed")) for p in parts]
+        if len(set(shard_seeds)) < len(shard_seeds):
+            # Not a refusal: banked m-eurosat inversion shards (pre-2026-09-26) share seed 42.
+            print(
+                f"WARNING {split}: shards share (seed, eps_seed) {shard_seeds} -- position-paired "
+                "noise across shards (audit F1, train-only); new extractions use per-shard seeds"
+            )
         feats = np.concatenate([p[0]["feats"] for p in parts])
         labels = np.concatenate([p[0]["labels"] for p in parts])
         paths = np.concatenate([p[0]["paths"] for p in parts])

@@ -326,6 +326,11 @@ class RunConfig:
             raise ValueError(
                 f"extract_split={self.extract_split!r} is only honored by task='extract', got task={self.task!r}"
             )
+        if (self.freeze_backbone or self.supervised_finetune) and self.task != "finetune-diffusion":
+            # Same rule-10 guard: only train_diffusion reads these, but make_run_name stamps
+            # +frozen / +sup for every task, so e.g. an extraction would be mislabelled.
+            flag = "freeze_backbone" if self.freeze_backbone else "supervised_finetune"
+            raise ValueError(f"{flag} is only honored by task='finetune-diffusion', got task={self.task!r}")
 
         if self.num_inversion_steps < 1:
             raise ValueError(f"num_inversion_steps must be >= 1, got {self.num_inversion_steps}")
