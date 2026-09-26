@@ -369,3 +369,51 @@ def test_mlp(out_dir):
             assert np.array_equal(ev, rev), f"{name} s{s}: eval split differs"
             dacc, agree = abs(c.mean() - rc.mean()), float((c == rc).mean())
             assert dacc < 0.01 and agree >= 0.97, f"{name}/s{s} dacc {dacc:.4f} agree {agree:.3f}"
+
+
+def test_sweep_k28_reproduces_official(out_dir):
+    """(ISAAC) eval.sweep at k=28 alone selects the same cell and gives the same test vector
+    as the banked m_eurosat_probe oneshot_ens8 arm (official_all_cells == run_official)."""
+    ref_path = "results/m_eurosat_probe.npz"
+    need(ref_path, "models/m_eurosat_oneshot_ens8")
+    from eval import sweep
+
+    blk = sweep.main(
+        [
+            "block",
+            "--dataset",
+            "m_eurosat",
+            "--k",
+            "28",
+            "--arm",
+            "flux-oneshot-ens8",
+            "--features",
+            "models/m_eurosat_oneshot_ens8/*/multistep_{split}_feats_oneshot_g1.0.npz",
+            "--expect",
+            "extraction_mode=ONESHOT",
+            "ensemble_size=8",
+            "--out-dir",
+            out_dir,
+        ]
+    )
+    res = np.load(
+        sweep.main(
+            [
+                "select",
+                "--dataset",
+                "m_eurosat",
+                "--arm",
+                "flux-oneshot-ens8",
+                "--blocks",
+                blk,
+                "--out-dir",
+                out_dir,
+            ]
+        ),
+        allow_pickle=True,
+    )
+    ref = np.load(ref_path, allow_pickle=True)
+    sel = json.loads(str(res["info"]))["selected"]
+    want = str(ref["oneshot_ens8_selected"]).split(",")  # "cand,C=..,val=..,test=..,..."
+    assert sel["candidate"] == want[0] and f"C={sel['C']}" == want[1], (sel, want)
+    assert np.array_equal(res["correct__test"], ref["oneshot_ens8_correct_test"]), "test vector differs"

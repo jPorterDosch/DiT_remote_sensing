@@ -125,7 +125,7 @@ def main(argv=None) -> list[str]:
         paths, y = F.load_identity(F.CV_IDENTITY[args.dataset])
         jobs = {f"n{len(paths)}": (paths, y)}
     elif args.dataset in F.OFFICIAL:
-        jobs = {s: F.list_official_split(args.dataset, s) for s in F.OFFICIAL[args.dataset]["sizes"]}
+        jobs = {s: F.list_official_split(args.dataset, s) for s in F.official_spec(args.dataset)["sizes"]}
     else:
         raise SystemExit(f"{args.dataset}: neither a CV_IDENTITY nor an OFFICIAL dataset")
     if args.max_images:

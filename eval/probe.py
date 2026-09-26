@@ -59,6 +59,12 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--budgets", type=int, nargs="+", default=list(P.BUDGETS))
     p.add_argument("--mlp-epochs", type=int, default=P.MLP_EPOCHS, help="smoke only; changes the run hash")
     p.add_argument("--max-images", type=int, default=None, help="SMOKE: strided cap; results not quotable")
+    p.add_argument(
+        "--smoke-sizes",
+        default=None,
+        metavar="TRAIN,VAL,TEST",
+        help="SMOKE ONLY (official): expected split sizes of a --subset-size smoke extraction; not quotable",
+    )
     p.add_argument("--n-jobs", type=int, default=7)
     p.add_argument("--out-dir", default="results/eval")
     return p
@@ -140,11 +146,10 @@ def run_mlp(args, y, mode, X):
 
 # ---------------------------------------------------------------- official protocol
 def official_flux(args):
-    spec = F.OFFICIAL[args.dataset]
-    loaded = {
-        s: F.load_flux_split(args.features, args.pins, s, n, smoke=bool(args.max_images))
-        for s, n in spec["sizes"].items()
-    }
+    spec = F.official_spec(args.dataset)
+    sizes = getattr(args, "sizes", None) or spec["sizes"]
+    smoke = sizes != spec["sizes"]
+    loaded = {s: F.load_flux_split(args.features, args.pins, s, n, smoke=smoke) for s, n in sizes.items()}
     (Xtr, ytr, ts, m_tr, _, h_tr), (Xva, yva, ts_v, m_va, _, h_va), (Xte, yte, ts_t, m_te, p_te, h_te) = (
         loaded["train"],
         loaded["val"],
@@ -181,7 +186,7 @@ def official_flux(args):
 
 def official_dino(args):
     data = {}
-    for s in F.OFFICIAL[args.dataset]["sizes"]:
+    for s in F.official_spec(args.dataset)["sizes"]:
         path = args.features.format(split=s)
         d = F.load(path)
         files, y = F.list_official_split(args.dataset, s)
@@ -231,6 +236,13 @@ def run_official(args):
     return {"test": (correct, np.arange(len(yte)))}, info, test_paths, yte
 
 
+def parse_smoke_sizes(spec: str | None) -> dict | None:
+    if not spec:
+        return None
+    tr, va, te = (int(x) for x in spec.split(","))
+    return {"train": tr, "val": va, "test": te}
+
+
 # ------------------------------------------------------------------------------ main
 PROTOCOL_CONSTANTS = {
     "cv": {"C": P.C, "seeds": P.SEEDS, "folds": 5},
@@ -251,6 +263,9 @@ def main(argv=None) -> str:
     if args.protocol != "official" and args.view is None:
         raise SystemExit("--view is required for cv/budget/mlp (see eval/features.py)")
     args.pins = F.flux_pins(args.dataset, F.parse_expect(args.expect)) if args.kind == "flux" else None
+    args.sizes = parse_smoke_sizes(args.smoke_sizes)
+    if args.sizes and args.kind != "flux":
+        raise SystemExit("--smoke-sizes applies to FLUX official caches only")
     if args.kind != "flux" and args.expect:
         raise SystemExit("--expect pins FLUX caches only")
     # Content identity of every file actually read (rule 11): a re-extraction or re-shard
@@ -261,7 +276,8 @@ def main(argv=None) -> str:
                 f"{args.dataset}: no OFFICIAL entry (count the shipped partition first, rule 16)"
             )
         files = {
-            s: sorted(glob.glob(args.features.format(split=s))) for s in F.OFFICIAL[args.dataset]["sizes"]
+            s: sorted(glob.glob(args.features.format(split=s)))
+            for s in F.official_spec(args.dataset)["sizes"]
         }
         if not all(files.values()):
             raise SystemExit(f"no feature files for some split: { {s: len(v) for s, v in files.items()} }")
@@ -286,8 +302,9 @@ def main(argv=None) -> str:
         "budgets": args.budgets if args.protocol == "budget" else None,
         "mlp_epochs": args.mlp_epochs if args.protocol == "mlp" else None,
         "max_images": args.max_images,
+        "smoke_sizes": args.sizes,
     }
-    exp = f"probe-{args.protocol}" + ("-smoke" if args.max_images else "")
+    exp = f"probe-{args.protocol}" + ("-smoke" if (args.max_images or args.sizes) else "")
     _, name = wb.init(exp, args.dataset, args.arm, config, job_type="probe")
     print(f"== {name}")
 
@@ -314,7 +331,7 @@ def main(argv=None) -> str:
         run_name=np.array(name),
         config=np.array(json.dumps(config, default=str)),
         info=np.array(json.dumps(info, default=str)),
-        smoke=np.array(bool(args.max_images)),
+        smoke=np.array(bool(args.max_images or args.sizes)),
     )
     print(f"per-image vectors cached to {out}")
     if wandb.run is not None:

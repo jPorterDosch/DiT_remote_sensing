@@ -262,3 +262,31 @@ def run_official(cands, ytr, yva, yte):
     correct = (pred == yte).astype(np.int8)
     sel = {"candidate": name, "C": Cv, "val_acc": val_acc, "sel_warn": sel_warn, "test_warn": n_warn}
     return correct, pred, sel, table
+
+
+def official_all_cells(cands, ytr, yva, yte):
+    """Every (candidate x C) cell of the official protocol, for sweeps: val accuracy AND the
+    test predictions, from ONE fit per cell. Same math as run_official (scaler fit on train
+    per candidate, LR C, max_iter 3000); run_official refits the selected cell on the same
+    train rows, which is deterministic, so its test vector equals this cell's (checked by
+    the sweep gate on ISAAC). Test predictions are returned for SEALED storage only --
+    eval/sweep.py selects on val and opens exactly one of them."""
+    rows, test_preds = [], {}
+    for name, (Atr, Ava, Ate) in cands.items():
+        sc = StandardScaler().fit(Atr)
+        A, V, T = sc.transform(Atr), sc.transform(Ava), sc.transform(Ate)
+        for Cv in C_GRID:
+            with warnings.catch_warnings(record=True) as wl:
+                warnings.simplefilter("always", ConvergenceWarning)
+                clf = LogisticRegression(C=Cv, max_iter=OFFICIAL_MAX_ITER).fit(A, ytr)
+                n_warn = sum(issubclass(w.category, ConvergenceWarning) for w in wl)
+            rows.append(
+                {
+                    "candidate": name,
+                    "C": Cv,
+                    "val_acc": float((clf.predict(V) == yva).mean()),
+                    "conv_warnings": n_warn,
+                }
+            )
+            test_preds[(name, Cv)] = clf.predict(T)
+    return rows, test_preds

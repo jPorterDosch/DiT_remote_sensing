@@ -34,19 +34,39 @@ CV_IDENTITY = {
     "resisc45": "models/n5000_resisc45_inversion/resisc45_flux_f7718ddb+42/multistep_train_feats_inversion_g1.0_n50.npz",
 }
 
-# official-protocol datasets: split sizes COUNTED from the shipped partition (rule 16),
-# never from a paper. A dataset is usable here only once its entry exists.
+
+def _eurosat_classes() -> list[str]:
+    from data.eurosat_dataset import EUROSAT_CLASSES
+
+    return list(EUROSAT_CLASSES)
+
+
+# Official-protocol datasets -- the ONLY place a GEO-Bench task is registered for
+# eval.probe / eval.extract_dino / eval.sweep. Adding a task = one entry here (plus its
+# TaskSpec in eval/export_geobench.py and a run.py dataset wrapper for FLUX extraction).
+#   sizes:   per-split counts COUNTED from the shipped partition (rule 16), never a paper
+#   root:    exported RGB tree, <root>/<split>/<Class>/*.png
+#   classes: zero-arg callable -> class names in LABEL order (the exporter's order)
 OFFICIAL = {
-    "m_eurosat": {"sizes": {"train": 16200, "val": 996, "test": 996}, "root": "data/m_eurosat_rgb"},
+    "m_eurosat": {
+        "sizes": {"train": 16200, "val": 996, "test": 996},
+        "root": "data/m_eurosat_rgb",
+        "classes": _eurosat_classes,
+    },
 }
 
 
-def official_classes(dataset: str) -> list[str]:
-    if dataset == "m_eurosat":
-        from data.eurosat_dataset import EUROSAT_CLASSES
+def official_spec(dataset: str) -> dict:
+    if dataset not in OFFICIAL:
+        raise SystemExit(
+            f"{dataset}: not registered in eval/features.OFFICIAL (count the shipped partition "
+            f"first, rule 16). Registered: {sorted(OFFICIAL)}"
+        )
+    return OFFICIAL[dataset]
 
-        return list(EUROSAT_CLASSES)
-    raise SystemExit(f"{dataset}: no class list registered (add it with its OFFICIAL entry)")
+
+def official_classes(dataset: str) -> list[str]:
+    return list(official_spec(dataset)["classes"]())
 
 
 def ditf(f, m):
@@ -206,7 +226,7 @@ def load_flux_split(pattern: str, pins: dict, split: str, n_expect: int, smoke: 
 def list_official_split(dataset: str, split: str, root: str | None = None):
     """Image files + labels of one official split, in class-list order then sorted names.
     Source: dinov2_m_eurosat.list_split (size check against the OFFICIAL entry)."""
-    spec = OFFICIAL[dataset]
+    spec = official_spec(dataset)
     root = root or spec["root"]
     files, labels = [], []
     for ci, cls in enumerate(official_classes(dataset)):
