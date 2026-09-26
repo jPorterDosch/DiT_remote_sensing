@@ -14,7 +14,7 @@ import sys
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _absorption_harness import ci, load_base, run_block  # noqa: E402
+from _absorption_harness import load_base, run_block  # noqa: E402
 
 CANDIDATES = {
     "B: guidance directions (46 prompts, t260)": "results/guidance_direction_resisc45.npz",

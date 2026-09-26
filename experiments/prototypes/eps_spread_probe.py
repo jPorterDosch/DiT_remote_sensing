@@ -24,7 +24,7 @@ import torch
 import torch.nn.functional as F
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _absorption_harness import RESISC45_BASE, ci, load_base, run_block  # noqa: E402
+from _absorption_harness import RESISC45_BASE, load_base, run_block  # noqa: E402
 
 
 def pool(x, g=2):  # verbatim from curv_absorption_recheck.py, for the validation arm
