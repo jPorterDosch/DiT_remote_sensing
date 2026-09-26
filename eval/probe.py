@@ -167,10 +167,20 @@ def official_flux(args):
     ):
         if len({json.dumps(m.get(key)) for m in (m_tr, m_va, m_te)}) != 1:
             raise SystemExit(f"meta mismatch across splits on {key}")
-    if m_tr.get("extraction_mode") == "ONESHOT":
-        seeds = {m_tr.get("eps_seed"), m_va.get("eps_seed"), m_te.get("eps_seed")}
-        if len(seeds) != 3:
-            raise SystemExit(f"eps seeds not pairwise distinct across splits: {seeds} (6t audit F1)")
+    # Cross-split noise decoupling (6t audit F1), over EVERY shard of every split -- not just
+    # shard 0's meta: a train shard seeded 42+IDX collides with test=43 at shard 1. ONESHOT
+    # draws eps from eps_seed; INVERSION draws no eps, its VAE-posterior stream comes from
+    # seed. Within-split sharing (banked inversion shards) stays a load-time WARNING.
+    which = 1 if m_tr.get("extraction_mode") == "ONESHOT" else 0
+    per_split = {s: {sd[which] for sd in loaded[s][3]["shard_seeds"]} for s in ("train", "val", "test")}
+    for a, b in (("train", "val"), ("train", "test"), ("val", "test")):
+        shared = per_split[a] & per_split[b]
+        if shared:
+            key = "eps_seed" if which else "seed"
+            raise SystemExit(
+                f"{key} shared between {a} and {b} splits: {sorted(shared, key=str)} "
+                f"(per split: {per_split}; 6t audit F1 -- position-paired noise across splits)"
+            )
 
     def make(X, ti):
         return X.reshape(X.shape[0], -1) if ti is None else X[:, ti, :]

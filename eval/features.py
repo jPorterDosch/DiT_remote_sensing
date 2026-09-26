@@ -8,7 +8,8 @@ VIEW of it. Views reproduce exactly what the validated prototypes fed their prob
         t:<i>       DiTF-normalized single timestep i  (6ac arm A2)
         concat      DiTF-normalized all-t concat  (Q2 flux_7t)
   dino  cls | mp | clsmp
-  vae   full | pool4 | pool2 | pool1  (Q1 poolings of the 16x32x32 clean latent)
+  vae   full | pool8 | pool4 | pool2 | pool1  (Q1 poolings of the 16x32x32 clean latent;
+        poolN = N x N grid x 16 ch: 1024 / 256 / 64 / 16-d. Q1's "pool 4x4 (256d)" arm is pool8)
 
 OFFICIAL-protocol FLUX candidates are RAW (not DiTF) single-t slices + the raw concat, as
 m_eurosat_probe used; that is a protocol property, not a view (see probe.official_flux).
@@ -125,7 +126,11 @@ def view(kind: str, d, spec: str):
         N, C_, H, W = lat.shape
         pools = {
             "full": lambda: lat.reshape(N, -1),
-            "pool4": lambda: lat.reshape(N, C_, 8, 4, 8, 4).mean(axis=(3, 5)).reshape(N, -1),
+            # Names are the GRID size (poolN = N x N cells x 16 ch). The Q1 prototype labelled
+            # its 8x8-grid arm "pool 4x4 (256d)" (4 = window, and 1024-d in fact); that arm
+            # is `pool8` here so the gate stays bit-identical, and `pool4` is a true 4x4 grid.
+            "pool8": lambda: lat.reshape(N, C_, 8, 4, 8, 4).mean(axis=(3, 5)).reshape(N, -1),
+            "pool4": lambda: lat.reshape(N, C_, 4, 8, 4, 8).mean(axis=(3, 5)).reshape(N, -1),
             "pool2": lambda: lat.reshape(N, C_, 2, 16, 2, 16).mean(axis=(3, 5)).reshape(N, -1),
             "pool1": lambda: lat.mean(axis=(2, 3)),
         }
@@ -201,10 +206,24 @@ def load_flux_split(pattern: str, pins: dict, split: str, n_expect: int, smoke: 
     if len(parts) == 1 and parts[0][1].get("num_shards", 1) in (1, None):
         d, meta = parts[0]
         feats, labels, idx, paths = d["feats"], d["labels"], d["subset_indices"], d["paths"]
+        meta = {**meta, "shard_seeds": [(meta.get("seed"), meta.get("eps_seed"))]}
     else:
+        unsharded = [h for h, (_, m) in zip(hits, parts) if m.get("num_shards", 1) in (1, None)]
+        if unsharded:
+            raise SystemExit(
+                f"{split}: pattern matches {len(hits)} caches but these are unsharded: {unsharded} "
+                "-- the glob spans more than one extraction; narrow --features to one run dir"
+            )
         parts.sort(key=lambda p: p[1]["shard_index"])
         n_shards = parts[0][1]["num_shards"]
         got = [p[1]["shard_index"] for p in parts]
+        if len(set(got)) != len(got):
+            dup = sorted({g for g in got if got.count(g) > 1})
+            raise SystemExit(
+                f"{split}: duplicate shard indices {dup} across {len(hits)} caches -- the glob "
+                "spans more than one extraction generation (e.g. banked shared-seed shards beside "
+                "per-shard-seed ones); move one generation aside or narrow --features"
+            )
         if got != list(range(n_shards)):
             raise SystemExit(f"{split}: have shards {got}, expected 0..{n_shards - 1}")
         idx = np.concatenate([p[0]["subset_indices"] for p in parts])
@@ -222,7 +241,9 @@ def load_flux_split(pattern: str, pins: dict, split: str, n_expect: int, smoke: 
         feats = np.concatenate([p[0]["feats"] for p in parts])
         labels = np.concatenate([p[0]["labels"] for p in parts])
         paths = np.concatenate([p[0]["paths"] for p in parts])
-        meta = parts[0][1]
+        # Every shard's (seed, eps_seed), not just shard 0's: the cross-split seed guard in
+        # probe.official_flux must see shard >= 1 too (a 42+IDX shard collides with test=43).
+        meta = {**parts[0][1], "shard_seeds": shard_seeds}
     if feats.shape[0] != n_expect:
         raise SystemExit(f"{split}: N={feats.shape[0]}, expected {n_expect}")
     order = np.argsort(idx)

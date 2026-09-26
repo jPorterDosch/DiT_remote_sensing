@@ -35,7 +35,7 @@ Every stage logs to one W&B project (`eval/wb.py`), as `{exp}_{dataset}_{arm}_{h
 
 **Protocols** (`eval/protocols.py`): `cv` = 3 seeds × 5-fold, LR C=0.1 on the dataset's paired identity set (RESISC45: the 5,000-image section-13 subset); `budget` = 10/25/50/100 labels per class; `mlp` = matched MLP head on 1,000-image holdouts; `official` = select (candidate × C) on the official val split, then one test evaluation. Nothing reported is selected on the data that scores it.
 
-**Views** (`eval/features.py`): FLUX `sec13:<t-idx>` (DiTF, PCA-protected best-t + other timesteps raw), `t:<idx>`, `concat`; DINO `cls`, `mp`, `clsmp`; VAE `full`, `pool4`, `pool2`, `pool1`.
+**Views** (`eval/features.py`): FLUX `sec13:<t-idx>` (DiTF, PCA-protected best-t + other timesteps raw), `t:<idx>`, `concat`; DINO `cls`, `mp`, `clsmp`; VAE `full`, `pool8`, `pool4`, `pool2`, `pool1` (`poolN` = N×N grid × 16 channels; the Q1 arm labelled "pool 4x4 (256d)" is `pool8`, 1024-d).
 
 Example, the headline RESISC45 comparison:
 ```

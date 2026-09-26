@@ -30,8 +30,7 @@ python run.py $G --save-dir models/smoke_grad_default
 python run.py $G --save-dir models/smoke_grad_sup --supervised-finetune
 python tests/check_lora_grad_reach.py models/smoke_grad_default models/smoke_grad_sup --k 28
 ```
-(Pins must be EXPLICIT — run.py defaults are the cache-identity values, not the pins.
-`--exclude-*`-style flags must never be combined with `--max-samples`.)
+(Pins must be EXPLICIT — run.py defaults are the cache-identity values, not the pins.)
 
 ## Verify in each log (a run that exits 0 is NOT verified)
 - Pin banner: `guidance=1.0 mim_loss_weight=0.0 mask_ratio=0.0`, correct mode name.

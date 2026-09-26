@@ -172,7 +172,7 @@ def test_cv_vae(out_dir):
     ref = np.load(ref_path, allow_pickle=True)
     views = {
         "full 32x32 (16384d)": "full",
-        "pool 4x4 (256d)": "pool4",
+        "pool 4x4 (256d)": "pool8",  # prototype label is wrong: 4x4 WINDOWS = 8x8 grid, 1024-d
         "pool 2x2 (64d)": "pool2",
         "pool 1x1 (16d)": "pool1",
     }

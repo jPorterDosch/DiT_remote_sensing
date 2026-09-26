@@ -59,8 +59,8 @@ echo "arm=$ARM flags=${ARM_FLAGS[*]:-none}"
     echo "data/m_eurosat_rgb missing — run experiments/isaac/m_eurosat/prepare.sh first" >&2; exit 1;
 }
 
-# Same grid/pins as isaac/eurosat_lora/finetune.sbatch — the ONLY differences are the
-# dataset identity and the save dir.
+# Grid/pins are stated here in full (the internal EuroSAT LoRA arm under isaac/eurosat_lora
+# is workstation-only and untracked; it is not a dependency of this campaign).
 T_GRID="100 180 260 340 420 500 580"
 
 python3 "$PROJECT_ROOT/run.py" \

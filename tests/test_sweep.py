@@ -165,36 +165,61 @@ def test_verify_block_catches_truncated_file(tmp_path):
         sweep.verify_block(bad)
 
 
-def _write_shard(d, idx, seed, n_per=3, n_shards=2):
+def _write_shard(
+    d, idx, seed, n_per=3, n_shards=2, split="train", mode="INVERSION", eps_seed=None, run=None, base=0
+):
+    """One fake run.py cache: shard idx of n_shards (1 = unsharded) of one split."""
     import os
 
-    run = os.path.join(d, f"run{idx}")
+    run = os.path.join(d, run or f"run_{split}{idx}")
     os.makedirs(run, exist_ok=True)
-    path = os.path.join(run, "multistep_train_feats_inversion_g1.0_n50.npz")
-    sub = np.arange(idx * n_per, (idx + 1) * n_per)
+    fname = "multistep_{split}_feats_inversion_g1.0_n50.npz" if mode == "INVERSION" else FNAME_ONESHOT
+    path = os.path.join(run, fname.format(split=split))
+    sub = np.arange(base + idx * n_per, base + (idx + 1) * n_per)
     np.savez(
         path,
         feats=np.zeros((n_per, 2, 4), np.float32),
         labels=sub % 2,
-        subset_indices=sub,
-        paths=np.array([f"train/c/{i}.png" for i in sub]),
+        subset_indices=sub - base,
+        paths=np.array([f"{split}/c/{i}.png" for i in sub]),
         timesteps=np.array([100, 180]),
     )
     meta = {
-        "split": "train",
+        "split": split,
         "guidance_scale": 1.0,
         "k": 28,
         "weights": "flux-dev",
         "dataset": "fake",
-        "extraction_mode": "INVERSION",
-        "num_inversion_steps": 50,
+        "extraction_mode": mode,
+        "num_inversion_steps": 50 if mode == "INVERSION" else None,
+        "ensemble_size": None if mode == "INVERSION" else 2,
         "num_shards": n_shards,
         "shard_index": idx,
         "seed": seed,
-        "eps_seed": None,
+        "eps_seed": eps_seed,
     }
     with open(path.replace(".npz", "_meta.json"), "w") as f:
         json.dump(meta, f)
+    return path
+
+
+FNAME_ONESHOT = "multistep_{split}_feats_oneshot_g1.0.npz"
+PINS_INV = {
+    "guidance_scale": 1.0,
+    "k": 28,
+    "weights": "flux-dev",
+    "dataset": "fake",
+    "extraction_mode": "INVERSION",
+    "num_inversion_steps": 50,
+}
+PINS_ONESHOT = {
+    "guidance_scale": 1.0,
+    "k": 28,
+    "weights": "flux-dev",
+    "dataset": "fake",
+    "extraction_mode": "ONESHOT",
+    "ensemble_size": 2,
+}
 
 
 @pytest.mark.parametrize("seeds, warns", [((42, 42), True), ((100, 101), False)])
@@ -205,15 +230,91 @@ def test_shard_seed_warning(tmp_path, capsys, seeds, warns):
 
     for i, s in enumerate(seeds):
         _write_shard(str(tmp_path), i, s)
-    pins = {
-        "guidance_scale": 1.0,
-        "k": 28,
-        "weights": "flux-dev",
-        "dataset": "fake",
-        "extraction_mode": "INVERSION",
-        "num_inversion_steps": 50,
-    }
     pattern = str(tmp_path / "*" / "multistep_{split}_feats_inversion_g1.0_n50.npz")
-    feats, *_ = F.load_flux_split(pattern, pins, "train", 6)
+    feats, *_ = F.load_flux_split(pattern, PINS_INV, "train", 6)
     assert feats.shape == (6, 2, 4)
     assert ("WARNING train: shards share" in capsys.readouterr().out) == warns
+
+
+def test_mixed_shard_generations_refused(tmp_path):
+    """Banked shared-seed shards beside a per-shard-seed re-extraction (inversion.sbatch's
+    documented situation) must be refused, not merged or die on the range check."""
+    from eval import features as F
+
+    for i, s in enumerate((42, 42)):
+        _write_shard(str(tmp_path), i, s, run=f"old{i}")
+    for i, s in enumerate((100, 101)):
+        _write_shard(str(tmp_path), i, s, run=f"new{i}")
+    pattern = str(tmp_path / "*" / "multistep_{split}_feats_inversion_g1.0_n50.npz")
+    with pytest.raises(SystemExit, match="more than one extraction generation"):
+        F.load_flux_split(pattern, PINS_INV, "train", 6)
+
+
+def test_unsharded_multi_hit_refused(tmp_path):
+    """Two unsharded caches under one glob used to die with a raw KeyError('shard_index')."""
+    from eval import features as F
+
+    _write_shard(str(tmp_path), 0, 42, n_shards=1, run="a")
+    _write_shard(str(tmp_path), 0, 43, n_shards=1, run="b")
+    pattern = str(tmp_path / "*" / "multistep_{split}_feats_inversion_g1.0_n50.npz")
+    with pytest.raises(SystemExit, match="unsharded"):
+        F.load_flux_split(pattern, PINS_INV, "train", 3)
+
+
+def _fake_official(monkeypatch, n_train):
+    from eval import features as F
+
+    monkeypatch.setitem(
+        F.OFFICIAL,
+        "fake",
+        {
+            "sizes": {"train": n_train, "val": 3, "test": 3},
+            "root": "data/fake",
+            "classes": lambda: ["a", "b"],
+        },
+    )
+
+
+def _official_flux(tmp_path, pins):
+    from types import SimpleNamespace
+
+    from eval import probe as PR
+
+    fname = (
+        FNAME_ONESHOT
+        if pins["extraction_mode"] == "ONESHOT"
+        else "multistep_{split}_feats_inversion_g1.0_n50.npz"
+    )
+    ns = SimpleNamespace(
+        dataset="fake", features=str(tmp_path / "*" / fname), pins=pins, view="all", sizes=None
+    )
+    return PR.official_flux(ns)
+
+
+@pytest.mark.parametrize("test_eps, fires", [(43, True), (45, False)])
+def test_cross_split_eps_guard_sees_every_shard(tmp_path, monkeypatch, test_eps, fires):
+    """ONESHOT train shards seeded 42, 43 + test eps 43: the collision is in shard 1, which
+    a guard reading only shard 0's meta cannot see (rule 6). Distinct seeds must pass."""
+    _fake_official(monkeypatch, 6)
+    for i, s in enumerate((42, 43)):
+        _write_shard(str(tmp_path), i, s, mode="ONESHOT", eps_seed=s)
+    _write_shard(str(tmp_path), 0, 44, n_shards=1, split="val", mode="ONESHOT", eps_seed=44)
+    _write_shard(str(tmp_path), 0, test_eps, n_shards=1, split="test", mode="ONESHOT", eps_seed=test_eps)
+    if fires:
+        with pytest.raises(SystemExit, match="eps_seed shared between train and test"):
+            _official_flux(tmp_path, PINS_ONESHOT)
+    else:
+        cands, ytr, yva, yte, *_ = _official_flux(tmp_path, PINS_ONESHOT)
+        assert len(ytr) == 6 and len(yva) == 3 and len(yte) == 3 and "concat2t" in cands
+
+
+def test_cross_split_seed_guard_inversion(tmp_path, monkeypatch):
+    """INVERSION draws no eps; its VAE-posterior stream comes from --seed, so the same
+    cross-split check runs on seed (inversion.sbatch header, 6t F1)."""
+    _fake_official(monkeypatch, 6)
+    for i in range(2):
+        _write_shard(str(tmp_path), i, 42)
+    _write_shard(str(tmp_path), 0, 44, n_shards=1, split="val")
+    _write_shard(str(tmp_path), 0, 42, n_shards=1, split="test")
+    with pytest.raises(SystemExit, match="seed shared between train and test"):
+        _official_flux(tmp_path, PINS_INV)

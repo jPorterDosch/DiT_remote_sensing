@@ -675,6 +675,11 @@ class FinetuneDiffusionTask:
                 "for extraction/eval tasks; start adaptation runs from scratch."
             )
         use_mim = cfg.mim_loss_weight != 0
+        if use_mim and cfg.freeze_backbone:
+            # Unreachable while PINNED_MIM_LOSS_WEIGHT == 0, kept so unpinning cannot revive
+            # it: the frozen arm builds no optimizer, so the MIM decoder / mask_token would
+            # sit at random init while train/mim_loss is logged as if it were optimized.
+            raise ValueError("freeze_backbone with mim_loss_weight != 0: the MIM decoder would never train")
         if not use_mim and cfg.mask_ratio > 0:
             raise ValueError(
                 f"mask_ratio={cfg.mask_ratio} with mim_loss_weight=0 is incoherent: input "
@@ -1006,7 +1011,11 @@ class FinetuneDiffusionTask:
         for t_nom in timestep_grid:
             y_hat = np.concatenate(all_preds[t_nom])
             per_t_top1[t_nom] = round(float((y_hat == y_true).mean() * 100.0), 2)
-            per_t_f1[t_nom] = round(float(f1_score(y_true, y_hat, average="macro") * 100.0), 2)
+            # labels= so an absent class counts as 0 instead of shrinking the macro average
+            # (same statistic as eval.probe / eval.sweep, which pass labels=arange(n_cls)).
+            per_t_f1[t_nom] = round(
+                float(f1_score(y_true, y_hat, average="macro", labels=np.arange(num_classes)) * 100.0), 2
+            )
             print(
                 f"[probe] test split t={t_nom}: top1={per_t_top1[t_nom]:.2f} macro_f1={per_t_f1[t_nom]:.2f}",
                 flush=True,

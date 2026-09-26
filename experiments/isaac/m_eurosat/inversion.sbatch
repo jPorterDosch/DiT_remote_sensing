@@ -47,7 +47,11 @@ IDX="${SLURM_ARRAY_TASK_ID:?}"
 if [ "$IDX" -le 7 ]; then
     # Distinct seed PER SHARD (100+IDX): with one shared seed, image j of every shard drew
     # the same VAE-posterior noise -- the audit-F1 position-paired coupling, inside train.
-    # The seed is part of the run name, so banked shared-seed shards are left untouched.
+    # The seed is part of the run name, so banked shared-seed shards are left untouched --
+    # but the probe glob must then not span both generations (the shard merge refuses
+    # duplicate shard indices): move the old shard dirs aside before probing. A task killed
+    # mid-extraction leaves its run dir without *_meta.json; run.py refuses an existing dir,
+    # so rm that dir before re-queuing the task (not automated: 10 tasks share this save dir).
     SPLIT=train; SEED=$((100 + IDX)); SHARDS=(--num-shards 8 --shard-index "$IDX")
 elif [ "$IDX" -eq 8 ]; then
     SPLIT=val;   SEED=44; SHARDS=()
