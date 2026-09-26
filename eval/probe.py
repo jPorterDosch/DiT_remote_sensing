@@ -18,6 +18,7 @@ each a per-image correctness vector `correct__<cell>` over indices `ev__<cell>` 
 from __future__ import annotations
 
 import argparse
+import glob
 import json
 import os
 import sys
@@ -44,6 +45,14 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--view", default=None, help="see eval/features.py; official: comma-separated candidates")
     p.add_argument(
         "--identity", default=None, help="CV identity cache (default: features.CV_IDENTITY[dataset])"
+    )
+    p.add_argument(
+        "--expect",
+        nargs="*",
+        default=None,
+        metavar="KEY=VALUE",
+        help="FLUX cache meta pins (required for --kind flux): extraction_mode=ONESHOT ensemble_size=8, "
+        "or extraction_mode=INVERSION num_inversion_steps=50",
     )
     p.add_argument("--pca", type=int, default=None, help="cv only: in-fold PCA width (diagnostic arms)")
     p.add_argument("--nested-c", type=float, nargs="+", default=None, help="cv only: in-fold nested C grid")
@@ -105,7 +114,10 @@ def run_budget(args, y, mode, X):
         cells[f"b{b}_s{s}"] = (c, ev)
         warn += nw
         rows.append({"labels_per_class": b, "seed": s, "acc": float(c.mean()), "conv_warnings": nw})
-        print(f"  budget {b:>3}/class seed {s}: acc {c.mean():.4f}" + ("" if nw == 0 else f" [NOT-CONVERGED x{nw}]"))
+        print(
+            f"  budget {b:>3}/class seed {s}: acc {c.mean():.4f}"
+            + ("" if nw == 0 else f" [NOT-CONVERGED x{nw}]")
+        )
     wb.log_table("budget", rows)
     return cells, {"conv_warnings": warn}
 
@@ -130,7 +142,7 @@ def run_mlp(args, y, mode, X):
 def official_flux(args):
     spec = F.OFFICIAL[args.dataset]
     loaded = {
-        s: F.load_flux_split(args.features, args.dataset, s, n, smoke=bool(args.max_images))
+        s: F.load_flux_split(args.features, args.pins, s, n, smoke=bool(args.max_images))
         for s, n in spec["sizes"].items()
     }
     (Xtr, ytr, ts, m_tr, _, h_tr), (Xva, yva, ts_v, m_va, _, h_va), (Xte, yte, ts_t, m_te, p_te, h_te) = (
@@ -238,18 +250,37 @@ def main(argv=None) -> str:
     args = _parser().parse_args(argv)
     if args.protocol != "official" and args.view is None:
         raise SystemExit("--view is required for cv/budget/mlp (see eval/features.py)")
-    feat_ids = (
-        [F.OFFICIAL.get(args.dataset, {}).get("root"), args.features]
-        if args.protocol == "official"
-        else wb.file_identity(args.features)
-    )
+    args.pins = F.flux_pins(args.dataset, F.parse_expect(args.expect)) if args.kind == "flux" else None
+    if args.kind != "flux" and args.expect:
+        raise SystemExit("--expect pins FLUX caches only")
+    # Content identity of every file actually read (rule 11): a re-extraction or re-shard
+    # gets a new hash and so a new run name -- it never overwrites the old results file.
+    if args.protocol == "official":
+        if args.dataset not in F.OFFICIAL:
+            raise SystemExit(
+                f"{args.dataset}: no OFFICIAL entry (count the shipped partition first, rule 16)"
+            )
+        files = {
+            s: sorted(glob.glob(args.features.format(split=s))) for s in F.OFFICIAL[args.dataset]["sizes"]
+        }
+        if not all(files.values()):
+            raise SystemExit(f"no feature files for some split: { {s: len(v) for s, v in files.items()} }")
+        feat_ids = {s: [wb.file_identity(f) for f in v] for s, v in files.items()}
+        ident = None
+    else:
+        if args.kind == "flux":  # refuse a mislabelled cache BEFORE a W&B run exists
+            F.check_pins(F.cache_meta(args.features), args.pins, args.features)
+        feat_ids = wb.file_identity(args.features)
+        ident = args.identity or F.CV_IDENTITY.get(args.dataset)
+        ident = wb.file_identity(ident) if ident and os.path.exists(ident) else ident
     config = {
         "protocol": args.protocol,
         "protocol_constants": PROTOCOL_CONSTANTS[args.protocol],
         "kind": args.kind,
         "view": args.view,
         "features": feat_ids,
-        "identity": args.identity or F.CV_IDENTITY.get(args.dataset),
+        "identity": ident,
+        "pins": args.pins,
         "pca": args.pca,
         "nested_c": args.nested_c,
         "budgets": args.budgets if args.protocol == "budget" else None,

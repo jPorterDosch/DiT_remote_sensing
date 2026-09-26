@@ -1,10 +1,10 @@
 ### Overview
-This project measures what frozen and LoRA-adapted FLUX.1-dev (a rectified-flow diffusion transformer) features contain for remote-sensing scene classification, against frozen DINO-family baselines under one paired protocol.
+This project measures what frozen and LoRA-adapted FLUX.1-dev (a transformer trained with rectified flow, i.e. flow matching, not a diffusion/score objective) features contain for remote-sensing scene classification, against frozen DINO-family baselines under one paired protocol.
 
 The original code which we fork off of is from the paper "Unleashing Diffusion Transformers for Visual Correspondence by Modulating Massive Activations
 ", published in NeurIPS 2025. Their Git repository is located at the following link: https://github.com/ganchaofan0000/DiTF/tree/main.
 
-We take their findings on the specific properties required to extract features from diffusion models (block-28 features, DiTF normalization), and evaluate them, frozen and after label-free LoRA adaptation, on remote-sensing benchmarks.
+DiTF studies feature extraction from diffusion-transformer (DiT) architectures. FLUX shares that transformer family but is a flow-matching model; we reuse DiTF's feature normalization (massive-activation channel discard + adaLN modulation) on FLUX's block features (block 28: inherited, then validated by this project's block sweep as within the k=19-33 plateau, RESEARCH_NOTES 6f), and evaluate them, frozen and after label-free LoRA adaptation, on remote-sensing benchmarks.
 
 ### Project Setup
 #### Download conda (if not already installed)
@@ -39,14 +39,16 @@ Every stage logs to one W&B project (`eval/wb.py`), as `{exp}_{dataset}_{arm}_{h
 Example, the headline RESISC45 comparison:
 ```
 python -m eval.probe --protocol cv --dataset resisc45 --arm flux-inv-sec13 --kind flux --view sec13:1 \
-    --features models/n5000_resisc45_inversion/resisc45_flux_f7718ddb+42/multistep_train_feats_inversion_g1.0_n50.npz
+    --features models/n5000_resisc45_inversion/resisc45_flux_f7718ddb+42/multistep_train_feats_inversion_g1.0_n50.npz \
+    --expect extraction_mode=INVERSION num_inversion_steps=50
 python -m eval.probe --protocol cv --dataset resisc45 --arm dinov2-clsmp --kind dino --view clsmp \
     --features results/eval_feats/dinov2_vitl14_resisc45_n5000.npz
-python -m eval.compare results/eval/probe-cv_resisc45_flux-inv-sec13_*.npz results/eval/probe-cv_resisc45_dinov2-clsmp_*.npz
+python -m eval.compare <A.npz> <B.npz>   # the two "per-image vectors cached to ..." paths printed above
 ```
+FLUX arms must pin the cache they expect (`--expect extraction_mode=ONESHOT ensemble_size=8`, or `extraction_mode=INVERSION num_inversion_steps=50`); a cache whose `_meta.json` disagrees is refused. Run names hash the protocol constants plus the SHA-1 of every input file, so a re-extracted cache gets a new result file instead of overwriting the old one.
 
-**Gates.** `python -m eval.gates` (add `--gpu` for the extraction/MLP gates) re-runs every entry point against the banked per-image vectors of the prototype it replaced and prints PASS/FAIL/SKIP. Run it after any change under `eval/`. Before any finetune launch, run the `smoke-finetune` skill, which includes the LoRA gradient-reach gate (`tests/check_lora_grad_reach.py`).
+**Gates.** `pytest tests/test_eval_gates.py -v -rs` (add `--gpu` for the extraction/MLP gates) re-runs every entry point against the banked per-image vectors of the prototype it replaced and reports PASS/FAIL/SKIP (a SKIP names the inputs missing on this machine). Run it after any change under `eval/`. Before any finetune launch, run the `smoke-finetune` skill, which includes the LoRA gradient-reach gate (`tests/check_lora_grad_reach.py`).
 
-**ISAAC / offline.** Compute nodes run with `WANDB_MODE=offline`. Offline runs cannot declare artifact inputs, so they record them; after `wandb sync`, run `python -m eval.wb link` on the login node to attach the extract → probe → compare lineage.
+**ISAAC / offline.** Every ISAAC job sources `experiments/isaac/scratch_env.sh`: caches (HF, torch hub, wandb, TMPDIR) go to `/lustre/isaac24/scratch/jdosch1/DiT_remote_sensing`, and the repo's `models/`, `data/`, `logs/`, `ditf_models/` become symlinks there (a populated home copy is refused with the one-time migration command; `results/` stays in home). Compute nodes run with `WANDB_MODE=offline`, so offline runs land in `$STORE/wandb/` for `wandb sync`. Offline runs cannot declare artifact inputs, so they record them; after `wandb sync`, run `python -m eval.wb link` on the login node to attach the extract → probe → compare lineage.
 
 `experiments/prototypes/` holds the exploratory scripts the pipeline was distilled from (RESEARCH_NOTES cites them). They are kept for provenance, do not log to W&B, and are not maintained.

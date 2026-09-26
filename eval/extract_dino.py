@@ -18,6 +18,7 @@ dinov2_resisc45/dinov2_m_eurosat); the sat preset REFUSES ImageNet normalization
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import sys
 
@@ -115,7 +116,7 @@ def main(argv=None) -> list[str]:
     if spec.get("needs_explicit_norm") and (args.mean is None or args.std is None):
         raise SystemExit(
             f"{args.preset}: pass --mean/--std copied from the SHIPPED dinov3 repo README "
-            "(~/.cache/torch/hub/facebookresearch_dinov3_main/README* after first hub load). "
+            f"({torch.hub.get_dir()}/facebookresearch_dinov3_main/README* after first hub load). "
             "Sat-493M does not use ImageNet statistics (rule 16: verify the artifact)."
         )
     mean, std = (args.mean or IMAGENET[0]), (args.std or IMAGENET[1])
@@ -143,6 +144,11 @@ def main(argv=None) -> list[str]:
         "img": 224,
         "pool": "cls+meanpatch",
         "max_images": args.max_images,
+        # which images, in which order (rule 11): the run name changes with the image set
+        "images": {
+            k: hashlib.sha1("\n".join(ps).encode()).hexdigest()[:16] + f"/{len(ps)}"
+            for k, (ps, _) in jobs.items()
+        },
     }
     _, name = wb.init(
         "extract-dino" + ("-smoke" if args.max_images else ""),

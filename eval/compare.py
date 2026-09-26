@@ -3,7 +3,7 @@ bootstrap (rule 4), cell by cell.
 
     python -m eval.compare results/eval/<A>.npz results/eval/<B>.npz
 
-Pairing guards (rule 6, fire-tested in eval/gates.py): same dataset and protocol, the same
+Pairing guards (rule 6, fire-tested in tests/test_eval_gates.py): same dataset and protocol, the same
 cells, identical evaluated images per cell. For cv/budget/mlp the ordered path lists must
 match exactly (folds/splits depend on order). For official the test sets must be the SAME
 set of images; they are aligned by split/class/file (the tail of the path), because FLUX

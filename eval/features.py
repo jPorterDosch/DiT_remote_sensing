@@ -119,29 +119,64 @@ def cache_meta(path: str) -> dict:
     return json.load(open(mp)) if os.path.exists(mp) else {}
 
 
-# ------------------------------------------------------------ official-split loading
+# ------------------------------------------------------------------- FLUX cache pins
 PINS_COMMON = {"guidance_scale": 1.0, "k": 28, "weights": "flux-dev"}
+# Mode-specific pins every FLUX arm must state (rule 11: an ens1 or wrong-mode cache must
+# not pass under an ens8 arm label). Source: m_eurosat_probe.ARMS pins.
+REQUIRED_EXPECT = {"ONESHOT": ("ensemble_size",), "INVERSION": ("num_inversion_steps",)}
+
+
+def parse_expect(items: list[str] | None) -> dict:
+    """--expect KEY=VALUE ... -> dict; values parsed as JSON when possible (8 -> int)."""
+    out = {}
+    for it in items or []:
+        k, sep, v = it.partition("=")
+        if not sep:
+            raise SystemExit(f"--expect {it!r}: use KEY=VALUE")
+        try:
+            out[k] = json.loads(v)
+        except json.JSONDecodeError:
+            out[k] = v
+    return out
+
+
+def flux_pins(dataset: str, expect: dict) -> dict:
+    mode = expect.get("extraction_mode")
+    if mode not in REQUIRED_EXPECT:
+        raise SystemExit("FLUX arms need --expect extraction_mode=ONESHOT|INVERSION (+ its mode pins)")
+    missing = [k for k in REQUIRED_EXPECT[mode] if k not in expect]
+    if missing:
+        raise SystemExit(f"{mode} arms must also pin: " + " ".join(f"--expect {k}=..." for k in missing))
+    return {**PINS_COMMON, "dataset": dataset, **expect}
+
+
+def check_pins(meta: dict, pins: dict, src: str) -> None:
+    if not meta:
+        raise SystemExit(f"{src}: no _meta.json beside the cache -- cannot verify its identity, refusing")
+    for k, want in pins.items():
+        if meta.get(k) != want:
+            raise SystemExit(f"{src}: meta {k}={meta.get(k)!r}, expected {want!r}")
+
+
+# ------------------------------------------------------------ official-split loading
 
 
 def _load_flux_one(path: str, pins: dict, split: str):
     """Source: m_eurosat_probe._load_one."""
     d = np.load(path)
-    meta = json.load(open(path.replace(".npz", "_meta.json")))
+    meta = cache_meta(path)
     if meta.get("split", "train") != split:
         raise SystemExit(f"{path}: meta split={meta.get('split')!r} != {split!r}")
-    for k, want in pins.items():
-        if meta.get(k) != want:
-            raise SystemExit(f"{path}: meta {k}={meta.get(k)!r}, expected {want!r}")
+    check_pins(meta, pins, path)
     return d, meta
 
 
-def load_flux_split(pattern: str, dataset: str, split: str, n_expect: int, smoke: bool = False):
+def load_flux_split(pattern: str, pins: dict, split: str, n_expect: int, smoke: bool = False):
     """One split of a FLUX run.py cache, merging shards. Source: m_eurosat_probe.load_split
-    (pins generalized to PINS_COMMON + the dataset name). Returns feats in DATASET order."""
+    (per-arm pins passed in via flux_pins). Returns feats in DATASET order."""
     hits = sorted(glob.glob(pattern.format(split=split)))
     if not hits:
         raise SystemExit(f"no caches for {pattern.format(split=split)}")
-    pins = {**PINS_COMMON, "dataset": dataset}
     parts = [_load_flux_one(h, pins, split) for h in hits]
     if len(parts) == 1 and parts[0][1].get("num_shards", 1) in (1, None):
         d, meta = parts[0]

@@ -8,7 +8,7 @@ A task is exportable only once it has a TaskSpec below, and every TaskSpec value
 read from the SHIPPED artifact (default_partition.json counts, band names, dtype range,
 class names) -- never from a paper table (CLAUDE.md rule 16). m-eurosat's spec is
 export_m_eurosat.py's (SatDiFuser's loading semantics), gated byte-identical against the
-existing data/m_eurosat_rgb export in eval/gates.py. The R3 tasks (m-forestnet, m-so2sat,
+existing data/m_eurosat_rgb export in tests/test_eval_gates.py. The R3 tasks (m-forestnet, m-so2sat,
 m-brick-kiln; RESEARCH_NOTES 9.4 Q7) are listed but refuse to run until verified.
 """
 

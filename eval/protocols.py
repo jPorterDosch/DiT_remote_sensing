@@ -1,11 +1,11 @@
 """The four probe protocols. Fitting code is copied VERBATIM from the validated prototype
-scripts (source named per function) so eval/gates.py can demand bit-identical per-image
+scripts (source named per function) so tests/test_eval_gates.py can demand bit-identical per-image
 vectors; change behaviour only in a new, re-gated function, never in place.
 
   cv        section-13 instrument: 3 seeds x StratifiedKFold(5), in-fold scaler, LR C=0.1
             [+ optional in-fold PCA / nested C]. Per-image correctness averaged over seeds.
   budget    k labels/class x 3 seeds, train drawn stratified, eval = the remaining rows.
-  mlp       6x MLP head (hidden 12288), 6x holdout splits (n_eval=1000), inner-lr selection.
+  mlp       6x MLP head (hidden 12288), the 6x study's holdout split per seed (3 splits, n_eval=1000), inner-lr selection.
   official  select (candidate x C) on the official val split, ONE test evaluation.
 """
 
@@ -87,7 +87,7 @@ def fold_sec13(base, extra, y, tr, va):
 
 
 def cv_folds(y, seed):
-    """Folds depend only on (n, y, seed) -- the pairing premise, fire-tested in gates.py."""
+    """Folds depend only on (n, y, seed) -- the pairing premise, fire-tested in tests/test_eval_gates.py."""
     return list(StratifiedKFold(5, shuffle=True, random_state=seed).split(np.zeros((len(y), 1)), y))
 
 

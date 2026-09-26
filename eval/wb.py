@@ -35,9 +35,20 @@ def rel(path: str) -> str:
     return os.path.relpath(ap, REPO_ROOT) if ap.startswith(REPO_ROOT + os.sep) else ap
 
 
+_SHA_CACHE: dict = {}
+
+
 def file_identity(path: str) -> dict:
+    """Content identity: a re-extraction changes it, a copy (scp, cp without -p) does not."""
     st = os.stat(path)
-    return {"path": rel(path), "bytes": st.st_size, "mtime_ns": st.st_mtime_ns}
+    key = (os.path.abspath(path), st.st_size, st.st_mtime_ns)
+    if key not in _SHA_CACHE:
+        h = hashlib.sha1()
+        with open(path, "rb") as f:
+            for block in iter(lambda: f.read(1 << 24), b""):
+                h.update(block)
+        _SHA_CACHE[key] = h.hexdigest()
+    return {"path": rel(path), "bytes": st.st_size, "sha1": _SHA_CACHE[key]}
 
 
 def config_hash(config: dict) -> str:
@@ -128,24 +139,32 @@ def link(project: str = f"{WANDB_ENTITY}/{WANDB_PROJECT}") -> None:
     """Attach the input edges that offline runs recorded (run after `wandb sync`).
 
     Resolves each pending input to the synced artifact version with the SAME digest --
-    never `:latest`, which could be a re-extraction with different contents.
+    never `:latest`, which could be a re-extraction with different contents. Inputs with
+    no producer artifact (caches extracted before extraction.py logged them) are skipped
+    and recorded in the run's `inputs_unlinked`; they never block the other runs.
     """
     api = wandb.Api()
     for run in api.runs(project, filters={"summary_metrics.pending_inputs": {"$exists": True}}):
         pending = run.summary.get("pending_inputs") or []
         if not pending or run.summary.get("inputs_linked"):
             continue
+        unlinked = []
         for inp in pending:
-            coll = api.artifact_collection(inp["type"], f"{project}/{inp['name']}")
-            match = [v for v in coll.artifacts() if v.digest == inp["digest"]]
-            if not match:
-                raise SystemExit(
-                    f"{run.name}: no synced version of {inp['name']} with digest {inp['digest']}"
-                )
-            run.use_artifact(match[0])
+            try:
+                coll = api.artifact_collection(inp["type"], f"{project}/{inp['name']}")
+                match = [v for v in coll.artifacts() if v.digest == inp["digest"]]
+                why = "no version with this digest"
+            except Exception as e:  # collection absent: the producer never logged it
+                match, why = [], type(e).__name__
+            if match:
+                run.use_artifact(match[0])
+            else:
+                unlinked.append({**inp, "reason": why})
         run.summary["inputs_linked"] = True
+        run.summary["inputs_unlinked"] = unlinked
         run.summary.update()
-        print(f"linked {len(pending)} inputs -> {run.name}")
+        note = f" ({len(unlinked)} without a producer artifact)" if unlinked else ""
+        print(f"{run.name}: linked {len(pending) - len(unlinked)}/{len(pending)} inputs{note}")
 
 
 if __name__ == "__main__":

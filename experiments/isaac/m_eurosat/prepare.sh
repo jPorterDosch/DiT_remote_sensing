@@ -24,6 +24,7 @@ _dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 while [ "$_dir" != "/" ] && [ ! -d "$_dir/.git" ]; do _dir="$(dirname "$_dir")"; done
 PROJECT_ROOT="$_dir"
 cd "$PROJECT_ROOT"
+source "$PROJECT_ROOT/experiments/isaac/scratch_env.sh" || exit 1  # caches + models/data/logs on Lustre scratch
 
 RAW="${RAW:-/lustre/isaac24/scratch/jdosch1/DeepLearning/datasets/m_eurosat_meta}"
 mkdir -p "$RAW"

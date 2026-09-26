@@ -10,17 +10,21 @@
 #             concurrent jobs and 56 queued, so all 13 jobs submit and run in one shot.
 #
 # After everything lands (README 'Evaluation pipeline'):
-#   python3 -m eval.gates official_flux_m_eurosat   # new harness reproduces the banked probe
+#   python3 -m pytest tests/test_eval_gates.py -v -rs -k official_flux   # new harness reproduces the banked probe
 #   python3 -m eval.probe --protocol official --dataset m_eurosat --arm flux-oneshot-ens8 --kind flux \
-#       --features 'models/m_eurosat_oneshot_ens8/*/multistep_{split}_feats_oneshot_g1.0.npz'
+#       --features 'models/m_eurosat_oneshot_ens8/*/multistep_{split}_feats_oneshot_g1.0.npz' \
+#       --expect extraction_mode=ONESHOT ensemble_size=8
 #   python3 -m eval.probe --protocol official --dataset m_eurosat --arm flux-inversion --kind flux \
-#       --features 'models/m_eurosat_inversion/*/multistep_{split}_feats_inversion_g1.0_n50.npz'
+#       --features 'models/m_eurosat_inversion/*/multistep_{split}_feats_inversion_g1.0_n50.npz' \
+#       --expect extraction_mode=INVERSION num_inversion_steps=50
 # (CPU-only; run on a login node or any campus node. It merges the inversion shards,
 #  verifies coverage/identity, selects on the official val split, and evaluates each
 #  arm once on test.)
 # ============================================================================
 set -euo pipefail
 cd "$(dirname "$0")/../../.."
+PROJECT_ROOT="$PWD"
+source "$PROJECT_ROOT/experiments/isaac/scratch_env.sh" || exit 1  # caches + models/data/logs on Lustre scratch
 
 [ -d data/m_eurosat_rgb/train ] || { echo "run experiments/isaac/m_eurosat/prepare.sh first" >&2; exit 1; }
 mkdir -p logs
