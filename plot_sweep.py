@@ -103,9 +103,7 @@ def get_metric_label(task: str, metric: str, label_fraction: float | None) -> st
     """Human-readable y-axis / title label."""
     if task == "correspondence":
         return f"Mean PCK@0.1 ({metric})"
-    frac_str = (
-        f" ({label_fraction * 100:.0f}% labels)" if label_fraction is not None else ""
-    )
+    frac_str = f" ({label_fraction * 100:.0f}% labels)" if label_fraction is not None else ""
     labels = {
         "top1_accuracy": f"Top-1 Accuracy{frac_str}",
         "macro_f1": f"Macro F1{frac_str}",
@@ -161,17 +159,13 @@ def load_results(
 
         # enforce task filter if explicitly set
         if task != "auto" and detected != task:
-            print(
-                f"  skipping (task mismatch — expected {task}, got {detected}): {json_path.name}"
-            )
+            print(f"  skipping (task mismatch — expected {task}, got {detected}): {json_path.name}")
             continue
         actual_task = detected
 
         val = extract_value(data, actual_task, metric, frac)
         if val is None:
-            print(
-                f"  skipping (metric '{metric}' not found at label_fraction={frac}): {json_path.name}"
-            )
+            print(f"  skipping (metric '{metric}' not found at label_fraction={frac}): {json_path.name}")
             continue
 
         dedup_key = (meta["t"], meta["k"], meta.get("seed"))
@@ -191,11 +185,7 @@ def load_results(
 
     df = pd.DataFrame(rows)
     print(f"  {len(df)} result(s) loaded  [task={df['task'].iloc[0]}]")
-    print(
-        df[["t", "k", "e", "seed", "value"]]
-        .sort_values(["t", "k"])
-        .to_string(index=False)
-    )
+    print(df[["t", "k", "e", "seed", "value"]].sort_values(["t", "k"]).to_string(index=False))
     return df
 
 
@@ -278,9 +268,7 @@ def main():
     df = load_results(args.results_dir, args.task, args.metric, args.label_fraction)
 
     task = df["task"].iloc[0]
-    ylabel = get_metric_label(
-        task, args.metric, args.label_fraction if task == "classification" else None
-    )
+    ylabel = get_metric_label(task, args.metric, args.label_fraction if task == "classification" else None)
 
     unique_t = df["t"].nunique()
     unique_k = df["k"].nunique()

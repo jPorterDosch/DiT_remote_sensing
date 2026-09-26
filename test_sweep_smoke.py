@@ -5,9 +5,9 @@ Tests are self-contained: they create temporary fixture data, run the
 relevant code paths, and clean up — no GPU, no cluster, no SPair-71k required.
 
 Run with:
-    pytest tests/smoke/test_smoke.py -v
+    pytest test_sweep_smoke.py -v
 or standalone:
-    python test_smoke.py
+    python test_sweep_smoke.py
 
 NOTE: k is normalised to str in the current implementation (Copilot fix applied).
 Single-block  → k = "28"

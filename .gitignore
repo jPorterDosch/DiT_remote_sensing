@@ -3,3 +3,10 @@ src/models/flux/__pycache__
 src/models/flux/modules/__pycache__
 data/*
 .secrets
+
+# ISAAC: experiments/isaac/scratch_env.sh turns these into symlinks to Lustre scratch;
+# never commit them (they would clash with the real directories on the workstation).
+/models
+/logs
+/ditf_models
+/data

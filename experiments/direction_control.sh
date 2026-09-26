@@ -95,7 +95,7 @@ fail=0
 for norm in raw normalized; do
     for seed in 42 43 44 45 46; do
         echo "=== control norm=$norm seed=$seed ==="
-        python3 "$PROJECT_ROOT/experiments/traj_readout.py" \
+        python3 "$PROJECT_ROOT/experiments/prototypes/traj_readout.py" \
             --cache-path "$CACHE_PATH" \
             --control \
             --control-arms traj,shuffle,mlp \

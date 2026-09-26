@@ -19,7 +19,9 @@ import tempfile
 import numpy as np
 import torch
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "experiments"))
+sys.path.insert(
+    0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "experiments", "prototypes")
+)
 import traj_readout as T  # noqa: E402
 
 T.EPOCHS = 60  # tiny model + tiny C -> converges fast

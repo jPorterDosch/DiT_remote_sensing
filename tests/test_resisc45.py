@@ -97,6 +97,7 @@ def test_wrapper_get_data_real_data():
         label_fraction=0.1,
         batch_size=8,
         num_workers=0,
+        max_samples=None,  # make_loaders reads this since the 2026-09-10 smoke-cap change
     )
     wrapper = DATASETS["resisc45"](cfg)
     assert len(wrapper.category_list) == 45

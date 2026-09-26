@@ -1,7 +1,7 @@
 #!/bin/bash
 # ============================================================================
 # Ordering experiment — nonlinear trajectory readout on the INVERSION cache (the gate).
-#   Runs experiments/traj_readout.py over the 500-image inversion cache:
+#   Runs experiments/traj_readout.py (→ experiments/prototypes/) over the 500-image inversion cache:
 #     arms  {traj, mlp, shuffle}  x  norms {raw, normalized}  x  seeds {42..46}
 #   traj vs shuffle isolates whether ORDERING of the 7 chain states is readable;
 #   mlp is the parameter-matched single-timestep content baseline. Ordering does its
@@ -78,7 +78,7 @@ OUT_CSV="${OUT_CSV:-$PROJECT_ROOT/results/ordering_inversion_g1.0.csv}"
 echo "out-csv: $OUT_CSV   best-t: $BEST_T   pos-enc: $POS_ENC (scale $POS_SCALE)"
 
 # --- GATE: permutation-sensitivity self-test must pass before any training.
-python3 "$PROJECT_ROOT/experiments/traj_readout.py" --cache-path "$CACHE_PATH" --self-test \
+python3 "$PROJECT_ROOT/experiments/prototypes/traj_readout.py" --cache-path "$CACHE_PATH" --self-test \
     --pos-enc "$POS_ENC" --pos-scale "$POS_SCALE" || {
     echo "FATAL: traj_readout self-test failed — aborting sweep (see message above)." >&2
     exit 1
@@ -90,7 +90,7 @@ for arm in traj mlp shuffle; do
     for norm in raw normalized; do
         for seed in 42 43 44 45 46; do
             echo "=== arm=$arm norm=$norm seed=$seed ==="
-            python3 "$PROJECT_ROOT/experiments/traj_readout.py" \
+            python3 "$PROJECT_ROOT/experiments/prototypes/traj_readout.py" \
                 --cache-path "$CACHE_PATH" \
                 --arm "$arm" \
                 --norm "$norm" \

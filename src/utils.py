@@ -1,3 +1,4 @@
+import os
 import random
 from dataclasses import asdict, is_dataclass
 from typing import Any
@@ -69,8 +70,6 @@ def env_value(name: str) -> str:
     inline at six call sites; gates that must agree byte-for-byte on when a flag is 'on'
     should share one implementation. Returns "" when off, else the raw value.
     """
-    import os
-
     v = os.getenv(name, "")
     return "" if v in ("", "0") else v
 

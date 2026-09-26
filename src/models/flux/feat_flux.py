@@ -347,6 +347,7 @@ class Featurizer4Eval(Featurizer):
         want_velocity: bool = False,
         want_states: bool = False,
         want_curvature: bool = False,
+        latents: torch.Tensor | None = None,
     ):
         """Invert a clean image toward noise along the reverse generative ODE, caching
         block hidden states at the requested timesteps.
@@ -390,8 +391,13 @@ class Featurizer4Eval(Featurizer):
         """
         if order not in (1, 2):
             raise ValueError(f"order must be 1 (Euler) or 2 (RF-Solver), got {order}")
-        if img_tensor.dim() != 3:
+        # `latents` (1, c, h, w) injects clean VAE latents directly, bypassing ae.encode —
+        # for perturbed-pair chains (6w-D) where BOTH chains must start from the SAME
+        # posterior sample (re-encoding would resample and confound the perturbation).
+        if latents is None and img_tensor.dim() != 3:
             raise ValueError(f"Expected img_tensor of shape (C, H, W), got {tuple(img_tensor.shape)}")
+        if latents is not None and latents.dim() != 4:
+            raise ValueError(f"Expected latents of shape (1, c, h, w), got {tuple(latents.shape)}")
 
         # Single source of truth for the block-range rule (shared with run.py). Check the
         # loaded model matches the assumed layout so a divergent architecture fails loudly
@@ -403,8 +409,11 @@ class Featurizer4Eval(Featurizer):
             )
         block_indices = [validate_inversion_block(block_idx)]
 
-        device = img_tensor.device if img_tensor.is_cuda else torch.device("cuda")
-        img_tensor = img_tensor.unsqueeze(0).to(device)
+        if latents is None:
+            device = img_tensor.device if img_tensor.is_cuda else torch.device("cuda")
+            img_tensor = img_tensor.unsqueeze(0).to(device)
+        else:
+            device = latents.device if latents.is_cuda else torch.device("cuda")
 
         grid = self.map_timesteps_to_grid(cache_timesteps, num_inversion_steps)
         if t_stop is None:
@@ -419,7 +428,7 @@ class Featurizer4Eval(Featurizer):
 
         txt, txt_ids, vec = self._null_text_inputs(device)
 
-        latents_clean = self.ae.encode(img_tensor).to(torch.bfloat16)
+        latents_clean = (latents if latents is not None else self.ae.encode(img_tensor)).to(device).to(torch.bfloat16)
         _, c, h, w = latents_clean.shape
         x, img_ids = prepare(img=latents_clean)
 

@@ -90,6 +90,7 @@ class Flux(nn.Module):
         guidance: Tensor | None = None,
         ft_indices=None,
         early_exit: bool = False,
+        detach_features: bool = True,
     ) -> tuple[Tensor | None, list]:
         """Single shared trunk behind forward / forward_feat / forward_velocity_feat.
 
@@ -137,7 +138,7 @@ class Flux(nn.Module):
                 img=img, txt=txt, vec=vec, pe=pe, return_feat=i in ft_indices
             )
             if i in ft_indices:
-                up_ft.append(img_feat.clone().detach())
+                up_ft.append(img_feat.clone().detach() if detach_features else img_feat)
 
         if n_single > 0:
             img = torch.cat((txt, img), 1)
@@ -147,7 +148,8 @@ class Flux(nn.Module):
                     img, vec=(vec, vec_t, vec_y), pe=pe, return_feat=(offset + i) in ft_indices
                 )
                 if (offset + i) in ft_indices:
-                    up_ft.append(img_feat[:, txt.shape[1] :, ...].clone().detach())
+                    feat_slice = img_feat[:, txt.shape[1] :, ...]
+                    up_ft.append(feat_slice.clone().detach() if detach_features else feat_slice)
                     up_ft.append(mod)
 
         if early_exit:
@@ -198,8 +200,13 @@ class Flux(nn.Module):
         y: Tensor,
         ft_indices,
         guidance: Tensor | None = None,
+        detach_features: bool = True,
     ):
         """Full forward pass returning BOTH the velocity prediction and block features.
+
+        detach_features=False keeps the graph attached to the returned features -- ONLY for
+        supervised joint probe+backbone training (finetune-diffusion supervised_finetune);
+        every extraction path must keep the default.
 
         Unlike forward_feat (which early-exits after max(ft_indices) and discards the
         velocity), this runs every block so the returned prediction is the model's
@@ -211,5 +218,14 @@ class Flux(nn.Module):
         [feat, mod] for single blocks, in ft_indices order).
         """
         return self._forward_trunk(
-            img, img_ids, txt, txt_ids, timesteps, y, guidance, ft_indices=ft_indices, early_exit=False
+            img,
+            img_ids,
+            txt,
+            txt_ids,
+            timesteps,
+            y,
+            guidance,
+            ft_indices=ft_indices,
+            early_exit=False,
+            detach_features=detach_features,
         )

@@ -17,8 +17,8 @@ def _find_project_root(start: str) -> str:
 
 
 _root = _find_project_root(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, _root)                              # registry.py lives here
-sys.path.insert(0, os.path.join(_root, "src"))         # datasets, tasks, utils, …
+sys.path.insert(0, _root)  # registry.py lives here
+sys.path.insert(0, os.path.join(_root, "src"))  # datasets, tasks, utils, …
 sys.path.insert(0, os.path.join(_root, "src", "models"))  # flux.* internal imports
 
 import matplotlib
@@ -59,7 +59,7 @@ class _FeatureCapture:
     def register(self, block: torch.nn.Module, txt_len: int) -> None:
         def _hook(module, inp, output):
             if isinstance(output, tuple):
-                self.features = output[0]               # DoubleStreamBlock: (img, txt)
+                self.features = output[0]  # DoubleStreamBlock: (img, txt)
             else:
                 self.features = output[:, txt_len:, :]  # SingleStreamBlock: slice off txt prefix
 
@@ -104,7 +104,7 @@ def test_overfit(
     n_steps: int = 100,
     guidance_scale: float = 3.5,
     timestep: int = 260,
-    min_reduction: float = 0.5,   # require >=50% combined loss drop
+    min_reduction: float = 0.5,  # require >=50% combined loss drop
     out_path: str | None = None,
 ) -> list[float]:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -271,15 +271,17 @@ def test_overfit(
     print(
         f"[overfit] initial(avg {window})={initial_loss:.6f}  "
         f"final(avg {window})={final_loss:.6f}  "
-        f"reduction={reduction*100:.1f}%"
+        f"reduction={reduction * 100:.1f}%"
     )
 
     assert reduction >= min_reduction, (
-        f"Combined loss did not decrease by >={min_reduction*100:.0f}% "
-        f"(got {reduction*100:.1f}%). "
+        f"Combined loss did not decrease by >={min_reduction * 100:.0f}% "
+        f"(got {reduction * 100:.1f}%). "
         f"initial={initial_loss:.4f}, final={final_loss:.4f}"
     )
-    print(f"[overfit] PASS — combined loss reduced by {reduction*100:.1f}% (>={min_reduction*100:.0f}% required)")
+    print(
+        f"[overfit] PASS — combined loss reduced by {reduction * 100:.1f}% (>={min_reduction * 100:.0f}% required)"
+    )
     return total_losses
 
 

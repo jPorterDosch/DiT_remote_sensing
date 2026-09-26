@@ -27,6 +27,17 @@ distilled backtrack — the section that documents the failure is cited inline.
    (shuffled-rows preferred: same marginals) as a paired per-image statistic — the width
    penalty is real, measured, and dataset-dependent.
 
+3a. **Nulls need the same instrument audit as positives.** A null measured under an
+   instrument that compresses the candidate harder than the baseline (fixed PCA on a wide
+   concat vs a narrow single arm) is provisional until re-measured with the base protected
+   and the candidate appended raw — the time-aggregation null stood for a month and
+   reversed to +1.4 pts under the corrected harness (section 13).
+
+3b. **"Adds beyond the base" needs BOTH raw delta > 0 AND the width-matched-null delta >
+   0.** A purely redundant block also beats its shuffled null (junk hurts, a copy does
+   not), so the null-corrected statistic alone only proves "image-linked, not junk" --
+   section 11 measured +0.30 vs null at ~zero raw gain for fully-redundant blocks.
+
 4. **Bootstrap unit = the independent sampling unit, i.e. the image.** (seed, fold)
    resampling re-partitions the same images and is anti-conservative (audit A1, 6o-B).
    Derived quantities inherit clustering: 42 ordered pairs per image = n≈images, not
@@ -82,3 +93,21 @@ distilled backtrack — the section that documents the failure is cited inline.
 15. **Smoke-test end-to-end before committing GPU** (`--max-samples`, strided so all
     classes appear). The finetune harness had 4 stacked crash bugs that 45 minutes of
     smoke runs caught one stage at a time.
+
+## External claims
+
+16. **A published table is prose, not data — verify the shipped artifact.** GEO-Bench's
+    paper says m-eurosat has 2,000 train samples; the shipped default partition contains
+    16,200, and SatDiFuser's paper repeats the stale 2,000 while its own loader provably
+    consumes 16,200 (no partition arg -> package default). Before quoting any external
+    number's protocol (split sizes, bands, label budget), download the actual artifact
+    (partition file, config, loader source) and count; a val/test count that doesn't
+    match the shipped file (1,000 vs 996) is the standard tell of a copied table.
+
+17. **A handoff is complete only if the other machine can run it: check referenced files
+    are tracked.** Two ISAAC campaign launches died because committed code referenced
+    files that existed only on the workstation (src/datasets/m_eurosat.py imported by a
+    committed __init__.py; experiments/m_eurosat_probe.py (→ experiments/prototypes/) referenced in 3 files). Before
+    any cross-machine handoff: `git ls-files --error-unmatch <every new file the diff
+    references>`, and grep the diff for paths not in `git ls-files`. RESEARCH_NOTES.md
+    is the ONE intentional exception (workstation-only by design).
