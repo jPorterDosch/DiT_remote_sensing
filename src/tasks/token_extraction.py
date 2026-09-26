@@ -4,6 +4,7 @@ import json
 import os
 
 import numpy as np
+import torch
 import wandb
 from torch.utils.data import DataLoader, Subset
 
@@ -191,8 +192,6 @@ class TokenExtractionTask:
             raise RuntimeError(
                 f"token rider collected {len(token_sink['feats'])} images, expected {len(indices)}"
             )
-        import torch
-
         tokens = torch.cat(token_sink["feats"], dim=0).numpy()  # N, S, L, C
         h, w = token_sink["hw"]
         expected_tok = (len(indices), len(per_token_t), h * w, feats.shape[-1])

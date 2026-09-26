@@ -54,6 +54,23 @@ class LoRALinear(torch.nn.Module):
         return base_out + self.scaling * lora_out
 
 
+# Stamped into every LoRA checkpoint and checked at load: the scope is not in config_hash
+# (rule 9), so without the tag a pre-2026-09-24 block-k-only checkpoint is identical by
+# name/cfg to an all-block one.
+LORA_SCOPE = "all_blocks"
+
+
+def lora_block_indices(model: torch.nn.Module) -> list[int]:
+    """Global indices of every double + single block: the LoRA scope for finetune-diffusion.
+
+    The ONE source for both training and adapted extraction (their key sets must match).
+    The probe reads block k's INPUT, so an adapter at block k alone can never move the
+    probed features (2026-09-24 review, finding 1); blocks after k adapt only the flow
+    loss's path.
+    """
+    return list(range(len(model.double_blocks) + len(model.single_blocks)))
+
+
 def lora_wrap_flux(
     model: torch.nn.Module,
     block_idx: int | list[int],

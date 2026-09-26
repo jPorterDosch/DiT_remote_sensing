@@ -6,6 +6,7 @@ import cv2
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+from utils import env_value
 from einops import rearrange
 from huggingface_hub import hf_hub_download
 from imwatermark import WatermarkEncoder
@@ -129,8 +130,6 @@ def load_flow_model(name: str, device: str | torch.device = "cuda", hf_download:
     # more label information than x_t, so a level gap over the raw baseline is NOT by
     # itself evidence of a representation. hf_download is forced off too, otherwise a
     # None ckpt_path silently falls through to downloading the real weights.
-    from utils import env_value
-
     if env_value("FLUX_RANDOM_INIT"):
         print("FLUX_RANDOM_INIT set — building UNTRAINED Flux (no checkpoint)")
         ckpt_path, hf_download = None, False

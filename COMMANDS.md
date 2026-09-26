@@ -73,7 +73,7 @@ On ISAAC, wrap in sbatch (no direct GPU runs on login nodes):
 
 Expected: `feats (4, 7, 3072)` printed, cache + meta.json under `models/smoke/<run_name>/`.
 Check the smoke caches with
-`python experiments/verify_paired_caches.py --expect-n 4 models/smoke/*/multistep_train_feats_*.npz`.
+`python experiments/prototypes/verify_paired_caches.py --expect-n 4 models/smoke/*/multistep_train_feats_*.npz`.
 
 ## 2. Submit the extraction jobs
 
@@ -91,7 +91,7 @@ the time, but that is presumption, not provenance), and if it was made with the
 is included by default. To decide:
 
 ```bash
-python experiments/verify_paired_caches.py --legacy /path/to/existing/multistep_train_feats.npz
+python experiments/prototypes/verify_paired_caches.py --legacy /path/to/existing/multistep_train_feats.npz
 ```
 
 - prints `LEGACY MATCHES` (same subset_indices/paths/t/k AND ensemble_size==1) → skip job 3;
@@ -103,7 +103,7 @@ identical config, `rm -rf models/paired_500/<that run_name>` first.
 ## 3. Verify the caches are shape-correct and image-paired
 
 ```bash
-python experiments/verify_paired_caches.py
+python experiments/prototypes/verify_paired_caches.py
 ```
 
 Asserts every cache under `models/paired_500/` has feats `(500, 7, 3072)`, mods
@@ -117,10 +117,10 @@ Login-node vs sbatch: the **linear probes are light → login node**; **B2 (tran
 training) → sbatch**. All three tiers evaluate by 5-fold stratified CV on the 500-image
 cache (B2's protocol), so they are directly comparable.
 
-### Tiers 1-2 + delta supplement — `experiments/linear_probes.py` (login node)
+### Tiers 1-2 + delta supplement — `experiments/linear_probes.py (→ experiments/prototypes/)` (login node)
 
 ```bash
-python experiments/linear_probes.py --out-csv results/linear_probes.csv
+python experiments/prototypes/linear_probes.py --out-csv results/linear_probes.csv
 ```
 
 numpy/sklearn only (no torch/GPU/FLUX). Globs `models/paired_500/*/multistep_train_feats_*.npz`,
@@ -141,8 +141,8 @@ sweep until it prints `self-test OK`:
 
 ```bash
 CACHE=$(ls models/paired_500/*/multistep_train_feats_inversion_g1.0_n50.npz)
-python experiments/traj_readout.py --cache-path "$CACHE" --self-test
-python experiments/traj_readout.py --cache-path "$CACHE" --arm traj --dry-run   # shapes + traj/mlp param parity
+python experiments/prototypes/traj_readout.py --cache-path "$CACHE" --self-test
+python experiments/prototypes/traj_readout.py --cache-path "$CACHE" --arm traj --dry-run   # shapes + traj/mlp param parity
 ```
 
 Then the sweep on the inversion cache — `{traj, mlp, shuffle} × {raw, normalized} × 5 seeds`

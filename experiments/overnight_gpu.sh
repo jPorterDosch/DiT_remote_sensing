@@ -31,8 +31,8 @@ stage () { # stage <name> <cmd...>
 }
 
 mkdir -p results/roundtrip
-stage rt_eurosat  python -u experiments/roundtrip_ood.py --dataset eurosat  --path "$ES"  --img-size 224 224 --n 200 --t-stop 580 --num-steps 50 --nfe-ablation --out results/roundtrip/eurosat_t580.json
-stage rt_resisc45 python -u experiments/roundtrip_ood.py --dataset resisc45 --path "$R45" --img-size 256 256 --n 200 --t-stop 580 --num-steps 50 --nfe-ablation --out results/roundtrip/resisc45_t580.json
+stage rt_eurosat  python -u experiments/prototypes/roundtrip_ood.py --dataset eurosat  --path "$ES"  --img-size 224 224 --n 200 --t-stop 580 --num-steps 50 --nfe-ablation --out results/roundtrip/eurosat_t580.json
+stage rt_resisc45 python -u experiments/prototypes/roundtrip_ood.py --dataset resisc45 --path "$R45" --img-size 256 256 --n 200 --t-stop 580 --num-steps 50 --nfe-ablation --out results/roundtrip/resisc45_t580.json
 
 fixedcond () { # fixedcond <dataset> <path> <H> <W>
     ds=$1; path=$2; h=$3; w=$4

@@ -5,6 +5,7 @@ from torchvision.transforms import PILToTensor
 from PIL import Image
 
 from data.utils import round_up_to_multiple
+from utils import env_int
 
 
 EUROSAT_CLASSES = [
@@ -86,8 +87,6 @@ class EuroSATDataset(Dataset):
         # 64px, so DEGRADE_TO=64 is a near-no-op here -- the hook exists so the
         # _DEGRADE_AWARE_DATASETS whitelist in tasks/extraction.py is true, and so
         # symmetric degradation sweeps can include EuroSAT without silent no-ops.
-        from utils import env_int  # shared "0 means off" rule + validation -- see src/utils.py
-
         _deg = env_int("DEGRADE_TO")
         if _deg:
             img = img.resize((_deg, _deg), Image.Resampling.BICUBIC)

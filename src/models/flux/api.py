@@ -5,6 +5,7 @@ from pathlib import Path
 
 import requests
 from PIL import Image
+from fire import Fire
 
 API_ENDPOINT = "https://api.bfl.ml"
 
@@ -189,6 +190,4 @@ class ImageRequest:
 
 
 if __name__ == "__main__":
-    from fire import Fire
-
     Fire(ImageRequest)

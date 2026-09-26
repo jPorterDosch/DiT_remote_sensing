@@ -8,8 +8,9 @@ import wandb
 from torch.utils.data import DataLoader, Subset
 
 from config_types import ExtractionMode
+from eval.wb import log_features
 from registry import register_task
-from utils import seed_worker
+from utils import env_int, env_value, seed_worker
 
 from .utils import extract_features
 
@@ -42,10 +43,6 @@ def env_provenance(cfg, honors: tuple[str, ...] = ALL_CONTROL_FLAGS):
     _RANDINIT over trained-VAE features. Pass the narrowest honors tuple that is true of your
     path; do not re-implement this function.
     """
-    from config_types import ExtractionMode
-
-    from utils import env_int, env_value
-
     randinit = env_value("FLUX_RANDOM_INIT")
     fixedcond = env_value("FIXED_COND_T")
     degrade = env_value("DEGRADE_TO")
@@ -121,7 +118,7 @@ def _stratified_indices(labels: np.ndarray, subset_size: int, seed: int) -> np.n
         cls_indices = np.flatnonzero(labels == cls)
         if len(cls_indices) < n_cls:
             raise ValueError(
-                f"class {cls} has only {len(cls_indices)} train images, need {n_cls} for a "
+                f"class {cls} has only {len(cls_indices)} images in this split, need {n_cls} for a "
                 f"stratified subset of {subset_size}"
             )
         selected.append(rng.choice(cls_indices, size=n_cls, replace=False))
@@ -141,7 +138,8 @@ class ExtractionTask:
                  previous one); features cached at the requested timesteps, which must
                  lie on the cfg.num_inversion_steps integration grid.
 
-    Extracts a class-stratified subset of the train split and caches features pooled
+    Extracts the cfg.extract_split split (class-stratified subset when subset_size is
+    set, else the full split) and caches features pooled
     but pre-normalization as (N, K, C). Cache filenames are mode- and guidance-tagged
     (and step-count-tagged for inversion) so caches can never collide or be confused,
     and a meta.json with the exact extraction settings is written beside each cache.
@@ -170,17 +168,28 @@ class ExtractionTask:
         if inversion:
             cache_tag += f"_n{cfg.num_inversion_steps}"
 
-        train_ds = dataset.get_data(cfg)["train"].dataset
-        if not hasattr(train_ds, "samples"):
-            raise ValueError(f"dataset {type(train_ds).__name__} has no .samples; cannot stratify by label")
-        all_labels = np.array([class_idx for _, class_idx, _ in train_ds.samples])
+        # cfg.extract_split is "train" for every historical cache; "test" extracts the
+        # official test split for full-split probe evaluation. The split is stamped into
+        # the cache FILENAME (multistep_{split}_feats_*) and meta.json, so a test cache
+        # can never be globbed as a train cache.
+        extract_ds_full = dataset.get_data(cfg)[cfg.extract_split].dataset
+        if not hasattr(extract_ds_full, "samples"):
+            raise ValueError(
+                f"dataset {type(extract_ds_full).__name__} has no .samples; cannot stratify by label"
+            )
+        all_labels = np.array([class_idx for _, class_idx, _ in extract_ds_full.samples])
 
         if cfg.subset_size is not None:
             indices = _stratified_indices(all_labels, cfg.subset_size, cfg.subset_seed)
-            extract_ds = Subset(train_ds, indices.tolist())
         else:
-            indices = np.arange(len(train_ds))
-            extract_ds = train_ds
+            indices = np.arange(len(extract_ds_full))
+        if cfg.num_shards > 1:
+            # Contiguous range shard for SLURM array jobs. subset_indices in the cache
+            # records exactly which images this shard holds; the merge step verifies
+            # the shards are disjoint and complete before any probe sees them.
+            indices = np.array_split(indices, cfg.num_shards)[cfg.shard_index]
+            print(f"shard {cfg.shard_index}/{cfg.num_shards}: {len(indices)} images")
+        extract_ds = Subset(extract_ds_full, indices.tolist())
 
         loader = DataLoader(
             extract_ds,
@@ -201,6 +210,7 @@ class ExtractionTask:
             "extraction/num_timesteps": num_timesteps,
             "extraction/timesteps": list(cfg.t),
             "extraction/block_idx": cfg.k,
+            "extraction/split": cfg.extract_split,
             "extraction/num_inversion_steps": cfg.num_inversion_steps if inversion else None,
             "extraction/eps_seed": eps_seed,
             "extraction/subset_size": len(indices),
@@ -216,7 +226,7 @@ class ExtractionTask:
         counts = np.bincount(all_labels[indices], minlength=len(class_names))
         print("per-class counts:", dict(zip(class_names, counts.tolist(), strict=True)))
 
-        feats, labels, mods = extract_features(cfg, model, loader, "train_subset")
+        feats, labels, mods = extract_features(cfg, model, loader, f"{cfg.extract_split}_subset")
 
         expected_shape = (len(indices), num_timesteps, feats.shape[-1])
         if feats.ndim != 3 or feats.shape != expected_shape:
@@ -231,18 +241,19 @@ class ExtractionTask:
             if inversion
             else {"eps_seed": np.array(eps_seed), "ensemble_size": np.array(cfg.model.ensemble_size)}
         )
-        out_path = os.path.join(cfg.save_dir, f"multistep_train_feats_{cache_tag}.npz")
+        out_path = os.path.join(cfg.save_dir, f"multistep_{cfg.extract_split}_feats_{cache_tag}.npz")
         np.savez(
             out_path,
             feats=feats,  # N, K, C — pooled, pre-normalization
             labels=labels,  # N
             mods=mods,  # K, 3, C — adaLN [shift, scale, gate] per timestep, for offline DiTF norm
             timesteps=np.array(cfg.t),
-            subset_indices=indices,  # into the train split
-            paths=np.array([train_ds.samples[i][0] for i in indices]),
+            subset_indices=indices,  # into cfg.extract_split's split
+            paths=np.array([extract_ds_full.samples[i][0] for i in indices]),
             block_idx=np.array(cfg.k),
             subset_seed=np.array(cfg.subset_seed),
             extraction_mode=np.array(cfg.extraction_mode.value),
+            split=np.array(cfg.extract_split),  # in-file, so split identity survives a rename/copy
             guidance_scale=np.array(cfg.guidance_scale),
             pooling=np.array(POOLING),
             weights=np.array(prov_meta["weights"]),
@@ -261,9 +272,13 @@ class ExtractionTask:
             "k": cfg.k,
             "num_inversion_steps": cfg.num_inversion_steps if inversion else None,
             "eps_seed": eps_seed,
+            "seed": cfg.seed,  # global RNG seed (VAE posterior stream) — audited by probes
             "ensemble_size": None if inversion else cfg.model.ensemble_size,
             "subset_size": len(indices),
             "subset_seed": cfg.subset_seed,
+            "split": cfg.extract_split,
+            "num_shards": cfg.num_shards,
+            "shard_index": cfg.shard_index,
             "img_size": cfg.img_size,
             "dataset": cfg.dataset.name,
             "pooling": POOLING,
@@ -272,9 +287,12 @@ class ExtractionTask:
             # in the filename so provenance survives a rename or a copy.
             **prov_meta,
         }
-        meta_path = os.path.join(cfg.save_dir, f"multistep_train_feats_{cache_tag}_meta.json")
+        meta_path = os.path.join(cfg.save_dir, f"multistep_{cfg.extract_split}_feats_{cache_tag}_meta.json")
         with open(meta_path, "w") as f:
             json.dump(meta, f, indent=4)
 
         wandb.log({"extraction/num_images": feats.shape[0], "extraction/feat_dim": feats.shape[-1]})
+        # Reference artifact (path + checksum, no upload): eval.probe declares the same
+        # reference as its input, giving the extract -> probe lineage edge.
+        log_features(out_path)
         return {"feats_path": out_path, "meta_path": meta_path, "shape": list(feats.shape)}

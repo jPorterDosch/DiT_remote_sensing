@@ -7,6 +7,7 @@ from einops import rearrange
 from registry import register_model
 
 from .feat_flux import Featurizer4Eval, prepare
+from models.lora import LORA_SCOPE, lora_block_indices, lora_wrap_flux
 
 
 @register_model("flux")
@@ -21,13 +22,19 @@ class FluxModel:
         )
 
         if getattr(cfg, "lora_checkpoint", ""):
-            from models.lora import lora_wrap_flux
-
             flux = self._inner.model
 
             # load all tensors onto cpu first regardless of where they were saved from
             ckpt = torch.load(cfg.lora_checkpoint, map_location="cpu", weights_only=False)
             sd = ckpt["lora_state_dict"]
+            if not sd:
+                # Freeze-mode runs save checkpoints with an EMPTY lora_state_dict (only
+                # the probe head trains); without this check the key-set comparison below
+                # fails with a misleading "wrong k/wrap_output at training?" message.
+                raise ValueError(
+                    f"{cfg.lora_checkpoint} has an empty lora_state_dict — this is a "
+                    "freeze_backbone (probe-only) checkpoint; there is no adapter to load."
+                )
 
             # Hyperparameters that leave NO trace in key names or tensor shapes must be
             # verified against the checkpoint's recorded training config: lora_alpha exists
@@ -35,6 +42,12 @@ class FluxModel:
             # applies the adapter at the wrong strength (2026-09-11 review, finding 5).
             # k/wrap_output/rank are also compared here for a clearer message than the
             # key-set/shape errors below would give.
+            if ckpt.get("lora_scope") != LORA_SCOPE:
+                raise ValueError(
+                    f"{cfg.lora_checkpoint} has lora_scope={ckpt.get('lora_scope')!r}, expected "
+                    f"{LORA_SCOPE!r}. Checkpoints trained before 2026-09-24 adapted only block k, "
+                    "whose adapter cannot reach the probed features (block k's INPUT); retrain."
+                )
             tcfg = ckpt.get("cfg", {}) or {}
             for field in ("lora_alpha", "lora_rank", "k", "wrap_output", "lora_dropout"):
                 if field in tcfg and getattr(cfg, field) != tcfg[field]:
@@ -56,7 +69,7 @@ class FluxModel:
             with torch.random.fork_rng(devices=[_dev] if _dev.type == "cuda" else []):
                 lora_wrap_flux(
                     flux,
-                    cfg.k,
+                    lora_block_indices(flux),
                     cfg.lora_rank,
                     cfg.lora_alpha,
                     cfg.lora_dropout,
