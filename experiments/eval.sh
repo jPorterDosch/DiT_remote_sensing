@@ -81,7 +81,7 @@ declare -A params
 params=(
     [task]="classification"
     [dataset.name]="eurosat"
-    [dataset.path]="/lustre/isaac24/scratch/jdosch1/DeepLearning/datasets/EuroSAT"
+    [dataset.path]="/lustre/isaac24/scratch/jdosch1/DiT_remote_sensing/datasets/EuroSAT"
     [model.name]="flux"
     [model.ensemble-size]="8"
     [save-dir]="$SAVE_DIR"

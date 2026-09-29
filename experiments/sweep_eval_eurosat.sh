@@ -51,7 +51,7 @@ for t in "${T_VALUES[@]}"; do
         python3 "$PROJECT_ROOT/run.py" \
             --task classification \
             --dataset.name eurosat \
-            --dataset.path "/lustre/isaac24/scratch/jdosch1/DeepLearning/datasets/EuroSAT" \
+            --dataset.path "/lustre/isaac24/scratch/jdosch1/DiT_remote_sensing/datasets/EuroSAT" \
             --img_size 224 224 \
             --model.name flux \
             --model.ensemble-size 8 \
