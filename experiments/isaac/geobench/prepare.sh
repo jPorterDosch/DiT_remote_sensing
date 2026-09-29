@@ -40,5 +40,5 @@ done
 # DINOv3 hub code, cached on scratch (TORCH_HOME) for compute nodes that may lack internet;
 # torch.hub falls back to this cache offline. The gated checkpoints are placed by hand in
 # ditf_models/dinov3/ under their original filenames (eval/extract_dino.PRESETS).
-python3 -c "import torch; torch.hub.load('facebookresearch/dinov3', 'dinov3_vitl16', pretrained=False)" >/dev/null
+python3 -c "import torch; torch.hub.list('facebookresearch/dinov3')" >/dev/null  # code only, no model
 echo "prep complete: ${TASKS[*]} (+ DINOv3 hub code)"

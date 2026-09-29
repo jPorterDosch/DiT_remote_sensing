@@ -4,16 +4,16 @@
 # match their count). ISAAC only: the gated DINOv3 checkpoints live on scratch,
 # ditf_models/dinov3/<hub filename> (ditf_models/ is a scratch symlink).
 # One array task per dataset (registry order), independent and re-runnable:
-#   sbatch --export=ALL,PRESET=dinov3_vitl16_web experiments/isaac/geobench/dino.sbatch
-#   sbatch --export=ALL,PRESET=dinov3_vitl16_sat experiments/isaac/geobench/dino.sbatch
-#   (7B: PRESET=dinov3_vit7b16_{web,sat}, --time=24:00:00)
+#   sbatch --export=ALL,PRESET=dinov3_vit7b16_web experiments/isaac/geobench/dino.sbatch
+#   sbatch --export=ALL,PRESET=dinov3_vit7b16_sat experiments/isaac/geobench/dino.sbatch
 # Per dataset: (1) the pre-registered control gate (tests/test_eval_gates.py::
 # test_dino_control_geobench) must PASS -- a skip (missing weights/data) or FAIL stops the
 # task; (2) extract_dino -> models/dino_feats/ (scratch); (3) probe --protocol official with
 # the features.DINO_OFFICIAL_VIEWS x C selection on val, one test eval -> results/eval/.
 # Prereq (login node): experiments/isaac/geobench/prepare.sh (exports + DINOv3 hub code).
-# TIME: ViT-L extraction is minutes per task; m-bigearthnet's one-vs-rest probes dominate
-# (~30 min for the gate + ~1 h for the arm). 12 h leaves room for 7B-on-small-tasks too.
+# TIME: 7B extraction (bf16, batch 8) is minutes-to-an-hour per task on an H100; probing the
+# 7B widths (cls 4096 ... cls4mp 20480-d) dominates, worst on m-bigearthnet (43 one-vs-rest
+# fits per cell, ~6 h est. from the DINOv2-L timing x width). 24 h leaves ~4x margin, < 72 h.
 # ============================================================================
 #SBATCH --job-name=geobench-dino
 #SBATCH -A isaac-utk0256
@@ -24,7 +24,7 @@
 #SBATCH --mem=96G
 #SBATCH --qos=ai-tenn
 #SBATCH --partition=ai-tenn
-#SBATCH --time=12:00:00
+#SBATCH --time=24:00:00
 #SBATCH --array=0-5
 #SBATCH --output=logs/%x-%A_%a.out
 #SBATCH --error=logs/%x-%A_%a.out
@@ -43,7 +43,7 @@ nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader
 export WANDB_MODE="${WANDB_MODE:-offline}"
 set -euo pipefail
 
-PRESET="${PRESET:?submit with --export=ALL,PRESET=dinov3_vitl16_{web,sat}}"
+PRESET="${PRESET:?submit with --export=ALL,PRESET=dinov3_vit7b16_{web,sat}}"
 KEY="$(python3 -c "import sys; from eval.features import OFFICIAL; print(list(OFFICIAL)[int(sys.argv[1])])" \
     "${SLURM_ARRAY_TASK_ID:?run as an array job}")"  # array index -> OFFICIAL key, in registry order
 echo "=== $KEY $PRESET $(date -Is)"

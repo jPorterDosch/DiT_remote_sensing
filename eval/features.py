@@ -78,6 +78,13 @@ OFFICIAL = {
 }
 
 
+def path_key(p: str) -> str:
+    """An image's identity independent of where the tree lives: its last 3 path components
+    (<tree>/<split>/<file> or <split>/<class>/<file>). Absolute vs relative --dataset.path
+    (banked m-eurosat caches vs sweep caches) must not make the same image two images."""
+    return "/".join(os.path.normpath(p).split(os.sep)[-3:])
+
+
 def key(task: str) -> str:
     """GEO-Bench task name -> OFFICIAL key (m-brick-kiln -> m_brick_kiln)."""
     return task.replace("-", "_")

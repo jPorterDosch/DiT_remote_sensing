@@ -2,7 +2,7 @@
 
     python -m eval.extract_dino --preset dinov2_vitl14 --dataset resisc45          # CV identity set
     python -m eval.extract_dino --preset dinov2_vitl14 --dataset m_eurosat         # official splits
-    python -m eval.extract_dino --preset dinov3_vitl16_sat --dataset m_forestnet  # weights: see PRESETS
+    python -m eval.extract_dino --preset dinov3_vit7b16_sat --dataset m_forestnet  # weights: see PRESETS
 
 resisc45 (any CV dataset): the images are the CV identity cache's paths in cache order
 (eval/features.CV_IDENTITY), so the output pairs with every FLUX arm.
@@ -12,9 +12,9 @@ Official datasets: every image of every official split, class-list order.
 
 Model loading and the forward pass are dino_family_resisc45's (which generalized
 dinov2_resisc45/dinov2_m_eurosat). DINOv3 presets load a local gated checkpoint (Meta's
-download form -> ditf_models/dinov3/) and refuse a file whose name lacks the preset's hash:
-the hub picks the ViT-L architecture from that hash, and web vs sat weights need different
-normalization, so a swapped file would otherwise run silently mislabelled.
+download form -> ditf_models/dinov3/, ISAAC scratch) and refuse a file whose name lacks the
+preset's hash: web and sat weights need different normalization, so a swapped file would
+otherwise run silently mislabelled.
 """
 
 from __future__ import annotations
@@ -54,8 +54,8 @@ def _dinov3(entry: str, data: str, hash_: str, norm: tuple, dtype, batch: int) -
     )
 
 
-# Web (LVD-1689M) vs satellite (SAT-493M) pretraining at matched architecture; checkpoint
-# hashes from dinov3/hub/backbones.py.
+# Web (LVD-1689M) vs satellite (SAT-493M) pretraining at matched architecture (ViT-7B/16, the
+# pre-registered 6ad pair and Meta's Table-18 comparison); hashes from dinov3/hub/backbones.py.
 PRESETS = {
     "dinov2_vitl14": dict(
         repo="facebookresearch/dinov2",
@@ -65,8 +65,6 @@ PRESETS = {
         dtype=torch.float32,
         batch=64,
     ),
-    "dinov3_vitl16_web": _dinov3("dinov3_vitl16", "lvd1689m", "8aa4cbdd", IMAGENET, torch.float32, 64),
-    "dinov3_vitl16_sat": _dinov3("dinov3_vitl16", "sat493m", "eadcf0ff", SAT493M, torch.float32, 64),
     "dinov3_vit7b16_web": _dinov3("dinov3_vit7b16", "lvd1689m", "a955f4ea", IMAGENET, torch.bfloat16, 8),
     "dinov3_vit7b16_sat": _dinov3("dinov3_vit7b16", "sat493m", "a6675841", SAT493M, torch.bfloat16, 8),
 }

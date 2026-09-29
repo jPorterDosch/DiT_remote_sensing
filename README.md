@@ -28,7 +28,7 @@ Every stage logs to one W&B project (`eval/wb.py`), as `{exp}_{dataset}_{arm}_{h
 | FLUX features (frozen / adapted) | `python run.py --task extract ...` | `models/<save-dir>/<run>/multistep_<split>_feats_*.npz` |
 | LoRA adaptation (all 57 blocks) | `python run.py --task finetune-diffusion ...` | `models/<save-dir>/<run>/checkpoints/` |
 | GEO-Bench export | `python -m eval.export_geobench --task m-forestnet --dataset-dir <raw> --out data/m_forestnet_rgb --download` (ISAAC: `experiments/isaac/geobench/prepare.sh`) | `data/<task>_rgb/{train,val,test}/<Class>/*.png` (multi-label: `<split>/*.png` + `labels.npz`), checked against `eval/manifests/<task>.json` |
-| DINO features | `python -m eval.extract_dino --preset dinov3_vitl16_{web,sat} --dataset <OFFICIAL key>` (gated weights on ISAAC scratch, `ditf_models/dinov3/`; run via `experiments/isaac/geobench/dino.sbatch`; `dinov2_vitl14` for the banked RESISC45 gates) | `results/eval_feats/` |
+| DINO features | `python -m eval.extract_dino --preset dinov3_vit7b16_{web,sat} --dataset <OFFICIAL key>` (gated weights on ISAAC scratch, `ditf_models/dinov3/`; run via `experiments/isaac/geobench/dino.sbatch`; `dinov2_vitl14` for the banked RESISC45 gates) | `results/eval_feats/` |
 | Probe one arm | `python -m eval.probe --protocol {cv,budget,mlp,official} --dataset D --arm NAME --kind {flux,dino,vae} --features F --view V` | `results/eval/<run>.npz` (per-image correctness) |
 | Paired comparison | `python -m eval.compare A.npz B.npz` | B−A per cell, image-level bootstrap CI |
 | t × k sweep (official split) | `python -m eval.sweep block ...` per block, then `python -m eval.sweep select ...` | val grid + plot; (t, k, C) selected on val, test reported once |

@@ -36,7 +36,7 @@ Record anything odd (masks, repeated sites, split overlap by location) in RESEAR
 pytest tests/test_geobench.py -q                                         # registry + guards
 ```
 DINOv3 control (ISAAC only -- gated weights on scratch; bump dino.sbatch's --array to the OFFICIAL count):
-`sbatch --export=ALL,PRESET=dinov3_vitl16_{web,sat} experiments/isaac/geobench/dino.sbatch`.
+`sbatch --export=ALL,PRESET=dinov3_vit7b16_{web,sat} experiments/isaac/geobench/dino.sbatch`.
 PASS: clsmp beats the shuffled-label null by >= 0.10 and the null is not above the majority
 rate + 0.05; the job produces the DINO result only after its gate passes. Then the FLUX smoke (~5 min, caches deleted after):
 ```bash

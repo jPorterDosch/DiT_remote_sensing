@@ -265,18 +265,18 @@ def test_multilabel_subset_deterministic():
 
 def test_dinov3_checkpoint_hash_guard(tmp_path):
     """A web checkpoint under a sat preset (or vice versa) is refused before torch.hub runs:
-    the hub picks the ViT-L architecture from the filename hash, and the norms differ."""
+    web and sat need different normalization."""
     from eval import extract_dino as X
 
-    web = X.PRESETS["dinov3_vitl16_web"]["weights"]
-    assert X.PRESETS["dinov3_vitl16_sat"]["norm"] != X.PRESETS["dinov3_vitl16_web"]["norm"]
-    with pytest.raises(SystemExit, match="lacks hash eadcf0ff"):
-        X.load_model("dinov3_vitl16_sat", web, "cpu")
+    web = X.PRESETS["dinov3_vit7b16_web"]["weights"]
+    assert X.PRESETS["dinov3_vit7b16_sat"]["norm"] != X.PRESETS["dinov3_vit7b16_web"]["norm"]
+    with pytest.raises(SystemExit, match="lacks hash a6675841"):
+        X.load_model("dinov3_vit7b16_sat", web, "cpu")
     with pytest.raises(SystemExit, match="would be ignored"):
         X.load_model("dinov2_vitl14", web, "cpu")
     with pytest.raises(SystemExit, match="missing"):
         X.load_model(
-            "dinov3_vitl16_sat",
-            str(tmp_path / os.path.basename(X.PRESETS["dinov3_vitl16_sat"]["weights"])),
+            "dinov3_vit7b16_sat",
+            str(tmp_path / os.path.basename(X.PRESETS["dinov3_vit7b16_sat"]["weights"])),
             "cpu",
         )

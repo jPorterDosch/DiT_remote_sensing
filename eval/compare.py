@@ -24,12 +24,9 @@ if __package__ in (None, ""):
 
 import wandb  # noqa: E402
 
+from eval import features as F  # noqa: E402
 from eval import wb  # noqa: E402
 from eval.protocols import metric, paired_delta  # noqa: E402
-
-
-def _key(p: str) -> str:
-    return "/".join(os.path.normpath(p).split(os.sep)[-3:])
 
 
 def load(path: str) -> dict:
@@ -58,7 +55,7 @@ def pair(a: dict, b: dict) -> dict[str, tuple[np.ndarray, np.ndarray]]:
         raise SystemExit(f"UNPAIRED: cells {sorted(a['cells'])} vs {sorted(b['cells'])}")
     out = {}
     if a["protocol"] == "official":
-        ka, kb = [_key(p) for p in a["paths"]], [_key(p) for p in b["paths"]]
+        ka, kb = [F.path_key(p) for p in a["paths"]], [F.path_key(p) for p in b["paths"]]
         if len(set(ka)) != len(ka) or set(ka) != set(kb):
             raise SystemExit("UNPAIRED: official test sets are not the same images")
         pos_b = {k: i for i, k in enumerate(kb)}

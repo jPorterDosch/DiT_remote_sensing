@@ -158,7 +158,7 @@ def load_blocks(paths: list[str], dataset: str):
         if k in blocks:
             raise SystemExit(f"two result files for block k={k} -- pass exactly one per block")
         ident = (
-            [str(x) for x in d["test_paths"]],
+            [F.path_key(str(x)) for x in d["test_paths"]],  # banked caches used an absolute path
             d["test_labels"].tolist(),
             list(d["candidates"]),
             json.loads(str(d["pins"])) | {"k": None},

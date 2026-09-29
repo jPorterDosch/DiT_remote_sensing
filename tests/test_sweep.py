@@ -318,3 +318,19 @@ def test_cross_split_seed_guard_inversion(tmp_path, monkeypatch):
     _write_shard(str(tmp_path), 0, 42, n_shards=1, split="test")
     with pytest.raises(SystemExit, match="seed shared between train and test"):
         _official_flux(tmp_path, PINS_INV)
+
+
+def test_banked_absolute_paths_join_the_sweep(tmp_path):
+    """m-eurosat's banked k=28 caches were extracted with an absolute --dataset.path, the sweep
+    blocks with a relative one: the same images must still form one sweep, while a truly
+    different image is still refused."""
+    rel = [f"data/m_eurosat_rgb/test/c/{i}.png" for i in range(N_TEST)]
+    absolute = [f"/nfs/home/u/repo/{p}" for p in rel]
+    p1 = write_block(tmp_path / "b28.npz", 28, flat(0.5), test_paths=absolute)
+    p2 = write_block(tmp_path / "b33.npz", 33, flat(0.5), test_paths=rel)
+    blocks, _, _ = sweep.load_blocks([p1, p2], "m_eurosat")
+    assert sorted(blocks) == [28, 33]
+    other = rel[:-1] + ["data/m_eurosat_rgb/test/c/999.png"]
+    p3 = write_block(tmp_path / "b38.npz", 38, flat(0.5), test_paths=other)
+    with pytest.raises(SystemExit, match="not one sweep"):
+        sweep.load_blocks([p1, p3], "m_eurosat")
