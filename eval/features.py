@@ -7,7 +7,7 @@ VIEW of it. Views reproduce exactly what the validated prototypes fed their prob
                     the other timesteps appended raw  (6ac arm A1, section 13)
         t:<i>       DiTF-normalized single timestep i  (6ac arm A2)
         concat      DiTF-normalized all-t concat  (Q2 flux_7t)
-  dino  cls | mp | clsmp
+  dino  cls | mp | clsmp | cls4 | cls4mp  (cls4 = last-4-block CLS concat; see DINO_OFFICIAL_VIEWS)
   vae   full | pool8 | pool4 | pool2 | pool1  (Q1 poolings of the 16x32x32 clean latent;
         poolN = N x N grid x 16 ch: 1024 / 256 / 64 / 16-d. Q1's "pool 4x4 (256d)" arm is pool8)
 
@@ -28,6 +28,9 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(REPO_ROOT, "src"))
 
 DISCARD = [154, 1446]  # DiTF massive-activation channels
+# The DINO arm's official candidates: DINOv2/v3 linear eval's own grid, n_last_blocks in
+# {1, 4} x use_avgpool (dinov3/eval/linear.py create_linear_input), selected on val with C.
+DINO_OFFICIAL_VIEWS = "cls,clsmp,cls4,cls4mp"
 
 # cv/budget/mlp identity: the ordered image set every paired arm must consume. The
 # RESISC45 5,000 are the section-13 inversion cache's paths, in cache order (6ac).
@@ -141,9 +144,16 @@ def view(kind: str, d, spec: str):
         if spec == "concat":
             return "plain", np.ascontiguousarray(fi.reshape(len(fi), -1)).astype(np.float32)
     elif kind == "dino":
-        parts = {"cls": [d["cls"]], "mp": [d["mp"]], "clsmp": [d["cls"], d["mp"]]}
-        if spec in parts:
-            return "plain", np.ascontiguousarray(np.concatenate(parts[spec], axis=1)).astype(np.float32)
+        fields = {
+            "cls": ["cls"],
+            "mp": ["mp"],
+            "clsmp": ["cls", "mp"],
+            "cls4": ["cls4"],
+            "cls4mp": ["cls4", "mp"],
+        }
+        if spec in fields:  # read only the requested arrays: banked files have no cls4
+            X = np.concatenate([d[f] for f in fields[spec]], axis=1)
+            return "plain", np.ascontiguousarray(X).astype(np.float32)
     elif kind == "vae":
         lat = d["lat"]
         N, C_, H, W = lat.shape
@@ -274,10 +284,11 @@ def load_flux_split(pattern: str, pins: dict, split: str, n_expect: int, smoke: 
     return feats[order].astype(np.float64), labels[order], ts, meta, [str(p) for p in paths[order]], hits
 
 
-def list_official_split(dataset: str, split: str, root: str | None = None):
+def list_official_split(dataset: str, split: str, root: str | None = None, classes: list | None = None):
     """Image files + labels of one official split, in class-list order then sorted names
-    (multi-label: labels.npz order, y multi-hot). Source: dinov2_m_eurosat.list_split (size
-    check against the OFFICIAL entry)."""
+    (multi-label: labels.npz order, y multi-hot). `classes` overrides the registry's list (the
+    exporter, before a manifest exists). Source: dinov2_m_eurosat.list_split (size check
+    against the OFFICIAL entry)."""
     spec = official_spec(dataset)
     root = root or spec["root"]
     if spec.get("multilabel"):
@@ -288,7 +299,7 @@ def list_official_split(dataset: str, split: str, root: str | None = None):
             raise SystemExit(f"{dataset} {split}: labels.npz lists images missing under {root}")
     else:
         files, labels = [], []
-        for ci, cls in enumerate(official_classes(dataset)):
+        for ci, cls in enumerate(classes or official_classes(dataset)):
             for f in sorted(glob.glob(os.path.join(root, split, cls, "*.png"))):
                 files.append(f)
                 labels.append(ci)

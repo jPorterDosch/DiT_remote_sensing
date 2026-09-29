@@ -233,11 +233,20 @@ def run_mlp_seed(X, y, seed, device, epochs=MLP_EPOCHS, n_eval=MLP_N_EVAL):
 OFFICIAL_MAX_ITER = 3000
 
 
+class MultiLabelLR(OneVsRestClassifier):
+    """One binary LR per label, predicting p > 0.5 (SatDiFuser utils/val_logger.py:
+    sigmoid(logits) > 0.5). Not OneVsRestClassifier.predict: sklearn takes the threshold from
+    estimators_[0] alone, and when label 0 is constant in train that is a constant predictor,
+    so EVERY label gets thresholded at decision_function > 0.5 (tests/test_geobench.py)."""
+
+    def predict(self, X):
+        return (self.predict_proba(X) > 0.5).astype(np.int64)
+
+
 def official_lr(Cv, y):
-    """Single-label y: the prototype LR, unchanged. Multi-hot y: one binary LR per label,
-    predicting at p > 0.5 (SatDiFuser utils/val_logger.py: sigmoid(logits) > 0.5)."""
+    """Single-label y: the prototype LR, unchanged. Multi-hot y: MultiLabelLR."""
     lr = LogisticRegression(C=Cv, max_iter=OFFICIAL_MAX_ITER)
-    return OneVsRestClassifier(lr) if y.ndim == 2 else lr
+    return MultiLabelLR(lr) if y.ndim == 2 else lr
 
 
 def per_image(y, pred):

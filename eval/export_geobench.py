@@ -2,6 +2,7 @@
 
     python -m eval.export_geobench --task m-forestnet --dataset-dir data/m_forestnet_meta \\
         --out data/m_forestnet_rgb [--download] [--rm-raw] [--write-manifest]
+    python -m eval.export_geobench --task m-forestnet --out data/m_forestnet_rgb   # verify only
 
     single-label: <out>/{train,val,test}/<ClassDir>/<sample_name>.png
     multi-label:  <out>/{train,val,test}/<sample_name>.png + <out>/<split>/labels.npz (names, y)
@@ -10,11 +11,12 @@ Every TaskSpec value is read from the SHIPPED artifact (default_partition.json c
 band names, dtype range, sample shapes) or a reference loader's source -- never from a
 paper table (CLAUDE.md rule 16). Split sizes come from eval/features.OFFICIAL.
 
-REPLICATION: the export hashes the decoded pixels + labels + sample names per split (not
-PNG bytes: zlib versions differ) and compares them to the committed eval/manifests/<key>.json
-(written once on the workstation with --write-manifest). A mismatch refuses, so the ISAAC
-tree is provably the one the workstation gates ran on. The manifest's class list IS the
-registry's class list for the tasks registered after m-eurosat.
+REPLICATION: tree_manifest() reads the written tree back and hashes every image's name,
+label and DECODED pixels (not PNG bytes: zlib versions differ) per split; the export then
+must equal the committed eval/manifests/<key>.json (written once on the workstation with
+--write-manifest), so the ISAAC tree is provably the one the workstation gates ran on.
+Omit --dataset-dir to re-verify an existing tree (no raw data needed). The manifest's class
+list IS the registry's class list for the tasks registered after m-eurosat.
 """
 
 from __future__ import annotations
@@ -153,7 +155,7 @@ def _class_names(label_type) -> list[str]:
 
 
 def export(task: str, dataset_dir: str, out: str) -> dict:
-    """Write the RGB tree; return its manifest (classes + per-split counts and pixel hash)."""
+    """Write the RGB tree, then return tree_manifest() of what landed on disk."""
     import geobench  # deferred: heavy import, and the error should name the missing dep
 
     spec, ds_key = SPECS[task], F.key(task)
@@ -174,14 +176,12 @@ def export(task: str, dataset_dir: str, out: str) -> dict:
         raise SystemExit("mapped class set != the pipeline's class list")
     to_idx = np.array([classes.index(d) for d in dirs])
 
-    manifest = {"classes": classes, "splits": {}}
     for split, out_split in OUT_SPLIT.items():
         ds = geobench.GeobenchDataset(dataset_dir, split=split, partition_name="default")
         if len(ds) != sizes[out_split]:
             raise SystemExit(
                 f"{split}: got {len(ds)} samples, expected {sizes[out_split]} -- wrong partition?"
             )
-        digest, counts = hashlib.sha256(), np.zeros(len(classes), np.int64)
         clipped, sample_names, ys = np.zeros(3), [], []
         for i in range(len(ds)):
             sample = ds[i]
@@ -191,18 +191,14 @@ def export(task: str, dataset_dir: str, out: str) -> dict:
             px = (np.clip(image.astype(np.float32) / spec.scale, 0.0, 1.0) * 255.0).round().astype(np.uint8)
             clipped += ((px == 0) | (px == 255)).mean((0, 1))
             if multilabel:
-                y = np.zeros(len(classes), np.int8)
+                y = np.zeros(len(classes), np.int64)
                 y[to_idx[np.flatnonzero(sample.label)]] = 1
-                counts += y
                 d = os.path.join(out, out_split)
             else:
-                y = np.array(to_idx[int(sample.label)])
-                counts[y] += 1
-                d = os.path.join(out, out_split, classes[int(y)])
+                y = to_idx[int(sample.label)]
+                d = os.path.join(out, out_split, classes[y])
             os.makedirs(d, exist_ok=True)
             Image.fromarray(px).save(os.path.join(d, f"{sample.sample_name}.png"))
-            for part in (sample.sample_name.encode(), y.tobytes(), px.tobytes()):
-                digest.update(part)
             sample_names.append(sample.sample_name)
             ys.append(y)
             if i % 2000 == 0:
@@ -215,13 +211,40 @@ def export(task: str, dataset_dir: str, out: str) -> dict:
             )
         if multilabel:
             np.savez(os.path.join(out, out_split, "labels.npz"), names=np.array(sample_names), y=np.stack(ys))
-        manifest["splits"][out_split] = {
-            "n": len(ds),
-            "counts": counts.tolist(),
-            "sha256": digest.hexdigest(),
-        }
-        print(f"{split}: {len(ds)} images; per-class: {dict(zip(classes, counts.tolist()))}", flush=True)
-    return manifest
+    return tree_manifest(ds_key, out, classes)
+
+
+def tree_manifest(ds_key: str, root: str, classes: list[str] | None = None) -> dict:
+    """Manifest of an exported tree, READ BACK FROM DISK in the pipeline's own listing order
+    (features.list_official_split, which also checks split sizes): per split, the per-class
+    counts and one sha256 over every image's (file name, label, decoded shape + pixels).
+    Covers the PNGs actually written, labels.npz and the class-dir layout, refuses stray
+    PNGs, and needs no raw data -- so any tree can be re-verified on any machine."""
+    classes = list(classes or F.official_classes(ds_key))
+    out = {"classes": classes, "splits": {}}
+    for split in F.official_spec(ds_key)["sizes"]:
+        files, y = F.list_official_split(ds_key, split, root, classes)
+        on_disk = glob.glob(os.path.join(root, split, "**", "*.png"), recursive=True)
+        if sorted(on_disk) != sorted(files):
+            raise SystemExit(
+                f"{root}/{split}: {len(on_disk)} PNGs on disk, {len(files)} listed -- stray/misplaced"
+            )
+        digest = hashlib.sha256()
+        for f, label in zip(files, y, strict=True):
+            px = np.asarray(Image.open(f))
+            if px.dtype != np.uint8 or px.ndim != 3 or px.shape[2] != 3:
+                raise SystemExit(f"{f}: {px.dtype} {px.shape}, expected uint8 RGB")
+            for part in (
+                os.path.basename(f).encode(),
+                str(px.shape).encode(),
+                np.int64(label).tobytes(),
+                px.tobytes(),
+            ):
+                digest.update(part)
+        counts = y.sum(0) if y.ndim == 2 else np.bincount(y, minlength=len(classes))
+        out["splits"][split] = {"n": len(files), "counts": counts.tolist(), "sha256": digest.hexdigest()}
+        print(f"{split}: {len(files)} images; per-class: {dict(zip(classes, counts.tolist()))}", flush=True)
+    return out
 
 
 def check_manifest(task: str, manifest: dict, write: bool = False) -> None:
@@ -255,18 +278,26 @@ def main(argv=None) -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--task", required=True, choices=sorted(SPECS))
     p.add_argument(
-        "--dataset-dir", required=True, help="dir with task_specs.pkl, default_partition.json, *.hdf5"
+        "--out", required=True, help="the RGB tree (written, or verified if --dataset-dir is omitted)"
     )
-    p.add_argument("--out", required=True)
+    p.add_argument(
+        "--dataset-dir", default=None, help="raw geobench dir (task_specs.pkl, partitions, *.hdf5): export"
+    )
     p.add_argument("--download", action="store_true", help="fetch + md5-check the Zenodo record first")
     p.add_argument(
         "--rm-raw", action="store_true", help="delete the sample .hdf5 files after a verified export"
     )
     p.add_argument("--write-manifest", action="store_true", help="workstation only: (re)create the manifest")
     args = p.parse_args(argv)
-    if args.download:
-        download(SPECS[args.task].zenodo, args.dataset_dir)
-    check_manifest(args.task, export(args.task, args.dataset_dir, args.out), write=args.write_manifest)
+    if args.dataset_dir is None:
+        if args.download or args.rm_raw:
+            raise SystemExit("--download/--rm-raw need --dataset-dir")
+        manifest = tree_manifest(F.key(args.task), args.out)  # verify an existing tree
+    else:
+        if args.download:
+            download(SPECS[args.task].zenodo, args.dataset_dir)
+        manifest = export(args.task, args.dataset_dir, args.out)
+    check_manifest(args.task, manifest, write=args.write_manifest)
     if args.rm_raw:
         remove_raw(args.dataset_dir)
 

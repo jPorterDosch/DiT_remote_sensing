@@ -7,7 +7,7 @@
 # to data/<key>_rgb (data/ is a scratch symlink, scratch_env.sh), and REFUSE unless the
 # export matches the committed eval/manifests/<key>.json -- i.e. the images and labels are
 # identical to the ones the workstation gates ran on. RM_RAW=1 (default) then deletes the
-# sample .hdf5 files; a later re-run re-downloads.
+# sample .hdf5 files; a later re-run re-downloads. An existing data/<key>_rgb is only verified.
 # m-eurosat works here too (verified against its manifest); its own prepare.sh is kept.
 # Requires geobench installed WITHOUT its over-pinned deps (see m_eurosat/prepare.sh header).
 # ============================================================================
@@ -25,8 +25,9 @@ TASKS=("$@")
 
 for t in "${TASKS[@]}"; do
     k="${t//-/_}"
-    if [ -d "data/${k}_rgb" ]; then
-        echo "$t: data/${k}_rgb exists -- move it aside to re-export"; continue
+    if [ -d "data/${k}_rgb" ]; then  # existing tree (e.g. m-eurosat's): verify, never overwrite
+        echo "=== $t: verifying existing data/${k}_rgb against its manifest"
+        python3 -m eval.export_geobench --task "$t" --out "data/${k}_rgb"; continue
     fi
     echo "=== $t $(date -Is)"
     # export to .tmp and rename only after the manifest check passed: a failed export never

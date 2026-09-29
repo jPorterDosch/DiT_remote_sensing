@@ -96,25 +96,35 @@ def load_model(preset, weights, device):
 
 @torch.no_grad()
 def extract(model, spec, paths, device, mean, std):
-    """Source: dino_family_resisc45.extract (verbatim)."""
+    """CLS + mean-patch of the last block (cls, mp: source dino_family_resisc45.extract) and
+    the CLS tokens of the last 4 blocks concatenated (cls4) -- the inputs of DINOv2/v3's own
+    linear eval, create_linear_input(n_last_blocks in {1, 4}, use_avgpool) in
+    dinov3/eval/linear.py. One pass via get_intermediate_layers(norm=True); batch 0 is
+    checked against forward_features so cls/mp keep their old definition (incl. DINOv3's
+    untied cls norm)."""
     mean_t = torch.tensor(mean).view(1, 3, 1, 1)
     std_t = torch.tensor(std).view(1, 3, 1, 1)
     batch = spec["batch"]
-    cls_all, mp_all = [], []
+    cls_all, mp_all, cls4_all = [], [], []
     for i in range(0, len(paths), batch):
         imgs = []
         for f in paths[i : i + batch]:
             im = Image.open(f).convert("RGB").resize((224, 224), Image.Resampling.BICUBIC)
             imgs.append(torch.from_numpy(np.array(im)).permute(2, 0, 1).float() / 255.0)
         x = ((torch.stack(imgs) - mean_t) / std_t).to(device=device, dtype=spec["dtype"])
-        out = model.forward_features(x)
-        if not (isinstance(out, dict) and "x_norm_clstoken" in out and "x_norm_patchtokens" in out):
-            raise SystemExit(f"unexpected forward_features output: {type(out)}")
-        cls_all.append(out["x_norm_clstoken"].float().cpu().numpy())
-        mp_all.append(out["x_norm_patchtokens"].mean(dim=1).float().cpu().numpy())
+        blocks = model.get_intermediate_layers(x, n=4, return_class_token=True, norm=True)
+        patch, cls = blocks[-1]
+        if i == 0:
+            ref = model.forward_features(x)
+            for got, want in ((cls, ref["x_norm_clstoken"]), (patch, ref["x_norm_patchtokens"])):
+                if not torch.allclose(got.float(), want.float(), atol=1e-3, rtol=1e-3):
+                    raise SystemExit("get_intermediate_layers' last block != forward_features -- refusing")
+        cls_all.append(cls.float().cpu().numpy())
+        mp_all.append(patch.mean(dim=1).float().cpu().numpy())
+        cls4_all.append(torch.cat([c for _, c in blocks], dim=-1).float().cpu().numpy())
         if i % (batch * 20) == 0:
             print(f"  {i}/{len(paths)}", flush=True)
-    return np.concatenate(cls_all), np.concatenate(mp_all)
+    return np.concatenate(cls_all), np.concatenate(mp_all), np.concatenate(cls4_all)
 
 
 def main(argv=None) -> list[str]:
@@ -152,7 +162,7 @@ def main(argv=None) -> list[str]:
         "mean": mean,
         "std": std,
         "img": 224,
-        "pool": "cls+meanpatch",
+        "pool": "cls+meanpatch+cls4",
         "max_images": args.max_images,
         # which images, in which order (rule 11): the run name changes with the image set
         "images": {
@@ -174,19 +184,20 @@ def main(argv=None) -> list[str]:
     outs = []
     for split, (paths, y) in jobs.items():
         print(f"{split}: {len(paths)} images")
-        cls_f, mp_f = extract(model, spec, paths, device, mean, std)
+        cls_f, mp_f, cls4_f = extract(model, spec, paths, device, mean, std)
         out = os.path.join(args.out_dir, f"{args.preset}_{args.dataset}_{split}{tag}.npz")
         np.savez(
             out,
             cls=cls_f,
             mp=mp_f,
+            cls4=cls4_f,
             paths=np.array(paths),
             labels=y,
             mean=np.array(mean),
             std=np.array(std),
             preset=np.array(args.preset),
         )
-        print(f"cached {cls_f.shape} + {mp_f.shape} to {out}")
+        print(f"cached cls {cls_f.shape} + mp {mp_f.shape} + cls4 {cls4_f.shape} to {out}")
         wb.log_features(out)
         outs.append(out)
     if wandb.run is not None:

@@ -249,6 +249,16 @@ def test_export_m_eurosat(tmp_path):
     assert not bad and extra == 0, f"{len(bad)} differing/missing, {extra} extra (first: {bad[:3]})"
 
 
+@pytest.mark.parametrize("key", list(F.OFFICIAL))
+def test_tree_matches_manifest(key):
+    """The exported RGB tree on this machine is byte-for-byte (decoded) the committed
+    manifest's: pixels, labels, names = partition membership, and no stray files."""
+    from eval import export_geobench
+
+    need(F.OFFICIAL[key]["root"])
+    export_geobench.check_manifest(key, export_geobench.tree_manifest(key, F.OFFICIAL[key]["root"]))
+
+
 def test_official_flux_m_eurosat(out_dir):
     """(ISAAC) probe --protocol official on the FLUX m-eurosat caches reproduces m_eurosat_probe.npz."""
     ref_path = "results/m_eurosat_probe.npz"
@@ -314,6 +324,8 @@ def test_official_dino_m_eurosat(out_dir):
         "dino",
         "--features",
         pat,
+        "--view",
+        "cls,clsmp",  # the prototype's candidates (the default now adds cls4, cls4mp)
     )
     ref = np.load(ref_path, allow_pickle=True)
     sel = json.loads(str(np.load(r["_path"], allow_pickle=True)["info"]))["selected"]

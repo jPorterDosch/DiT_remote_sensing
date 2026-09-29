@@ -12,7 +12,7 @@ import types
 
 import numpy as np
 import pytest
-from sklearn.metrics import f1_score
+from PIL import Image
 
 from eval import export_geobench as E
 from eval import features as F
@@ -87,10 +87,10 @@ def _fake_geobench(monkeypatch, multilabel, value, shape=(4, 4, 3)):
 @pytest.mark.parametrize("multilabel", [False, True])
 def test_export_roundtrip(tmp_path, monkeypatch, multilabel):
     """Export -> list_official_split returns every image with its label; manifest counts
-    match; a re-export matches the manifest and a changed pixel does not."""
+    match; a re-export matches the manifest."""
     _fake_geobench(monkeypatch, multilabel, value=50.0)
-    man = E.export("m-fake", "unused", str(tmp_path))
-    files, y = F.list_official_split("m_fake", "train", str(tmp_path))
+    man = E.export("m-fake", "unused", str(tmp_path / "tree"))
+    files, y = F.list_official_split("m_fake", "train", str(tmp_path / "tree"))
     assert len(files) == 6 and all(os.path.exists(f) for f in files)
     want = np.array([[1, 1, 0], [0, 1, 1], [1, 0, 1]] * 2) if multilabel else np.array([0, 0, 1, 1, 2, 2])
     assert np.array_equal(y, want)  # single-label: class-dir order, then sorted names
@@ -98,9 +98,61 @@ def test_export_roundtrip(tmp_path, monkeypatch, multilabel):
     monkeypatch.setattr(E, "manifest_path", lambda t: str(tmp_path / "man.json"))
     E.check_manifest("m-fake", man, write=True)
     E.check_manifest("m-fake", E.export("m-fake", "unused", str(tmp_path / "again")))
-    _fake_geobench(monkeypatch, multilabel, value=51.0)
-    with pytest.raises(SystemExit, match="differs from the committed manifest"):
-        E.check_manifest("m-fake", E.export("m-fake", "unused", str(tmp_path / "changed")))
+    E.check_manifest("m-fake", E.tree_manifest("m_fake", str(tmp_path / "tree")))  # verify-only path
+
+
+def _pixel(root):
+    f = F.list_official_split("m_fake", "test", root)[0][0]
+    a = np.asarray(Image.open(f)).copy()
+    a[0, 0, 0] ^= 1
+    Image.fromarray(a).save(f)
+
+
+def _stray(root):
+    Image.new("RGB", (4, 4)).save(os.path.join(root, "val", "class_a", "zz.png"))
+
+
+def _relabel(root):
+    if F.OFFICIAL["m_fake"]["multilabel"]:
+        p = os.path.join(root, "train", "labels.npz")
+        d = dict(np.load(p))
+        d["y"][0, 2] ^= 1
+        np.savez(p, **d)
+    else:  # move one image to another class dir: same pixels, different label
+        f = F.list_official_split("m_fake", "train", root)[0][0]
+        os.replace(f, f.replace("class_a", "class_b"))
+
+
+def _delete(root):
+    os.remove(F.list_official_split("m_fake", "val", root)[0][0])
+
+
+@pytest.mark.parametrize("multilabel", [False, True])
+@pytest.mark.parametrize(
+    "corrupt, match",
+    [
+        (_pixel, "differs"),
+        (_stray, "stray|expected 3"),
+        (_relabel, "differs"),
+        (_delete, "expected 3|missing"),
+    ],
+)
+def test_manifest_catches_corruption(tmp_path, monkeypatch, multilabel, corrupt, match):
+    """The committed manifest refuses a tree with one flipped pixel bit, a stray PNG, one
+    changed label, or one missing image (rule 6: each guard fed its mismatch)."""
+    import shutil
+
+    _fake_geobench(monkeypatch, multilabel, value=50.0)
+    root = str(tmp_path / "tree")
+    monkeypatch.setattr(E, "manifest_path", lambda t: str(tmp_path / "man.json"))
+    E.check_manifest("m-fake", E.export("m-fake", "unused", root), write=True)
+    bad = str(tmp_path / "bad")
+    shutil.copytree(root, bad)
+    if corrupt is _stray and multilabel:
+        os.makedirs(os.path.join(bad, "val", "class_a"))
+    corrupt(bad)
+    with pytest.raises(SystemExit, match=match):
+        E.check_manifest("m-fake", E.tree_manifest("m_fake", bad))
 
 
 @pytest.mark.parametrize("value", [0.0, 1000.0])
@@ -141,14 +193,38 @@ def _multihot(rng, n, L=5):
     return (rng.random((n, L)) < 0.3).astype(np.int64)
 
 
-def test_micro_f1_matches_sklearn():
+def _satdifuser_f1(y, pred):
+    """SatDiFuser utils/val_logger.py MultiLabelClsEvaluator, verbatim call."""
+    from sklearn.metrics import precision_recall_fscore_support
+
+    return precision_recall_fscore_support(y_true=y, y_pred=pred, average="micro", zero_division=0)[2]
+
+
+def test_micro_f1_matches_satdifuser():
+    """metric(per_image(...)) == SatDiFuser's micro-F1, incl. the zero_division edge cases."""
     rng = np.random.default_rng(0)
     y, pred = _multihot(rng, 200), _multihot(rng, 200)
-    v = P.per_image(y, pred)
-    assert v.shape == (200, 3)
-    assert abs(P.metric(v) - f1_score(y, pred, average="micro")) < 1e-12
+    zeros = np.zeros_like(y)
+    for yy, pp in ((y, pred), (y, zeros), (zeros, pred), (zeros, zeros), (y, y)):
+        assert abs(P.metric(P.per_image(yy, pp)) - _satdifuser_f1(yy, pp)) < 1e-12
     c = P.per_image(y[:, 0], pred[:, 0])  # single-label path unchanged: top-1
     assert c.dtype == np.int8 and P.metric(c) == float((y[:, 0] == pred[:, 0]).mean())
+
+
+def test_ovr_threshold_is_sigmoid_half():
+    """official_lr on multi-hot labels predicts exactly sigmoid(logit) > 0.5 per label, even
+    when label 0 is constant in train (where sklearn's own OneVsRest predict shifts every
+    label's threshold -- fed here, and shown to differ)."""
+    from sklearn.multiclass import OneVsRestClassifier
+
+    rng = np.random.default_rng(4)
+    X, y = rng.standard_normal((150, 6)), _multihot(rng, 150)
+    y[:, 0] = 0
+    clf = P.official_lr(1.0, y).fit(X, y)
+    logit = np.stack([e.decision_function(X) for e in clf.estimators_], 1)
+    want = (1 / (1 + np.exp(-logit)) > 0.5).astype(int)
+    assert np.array_equal(clf.predict(X), want)
+    assert not np.array_equal(np.asarray(OneVsRestClassifier.predict(clf, X)), want)
 
 
 def test_paired_delta():

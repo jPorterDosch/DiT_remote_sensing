@@ -10,7 +10,7 @@
 # Per dataset: (1) the pre-registered control gate (tests/test_eval_gates.py::
 # test_dino_control_geobench) must PASS -- a skip (missing weights/data) or FAIL stops the
 # task; (2) extract_dino -> models/dino_feats/ (scratch); (3) probe --protocol official with
-# the (cls, clsmp) x C selection on val, one test eval -> results/eval/ (home).
+# the features.DINO_OFFICIAL_VIEWS x C selection on val, one test eval -> results/eval/.
 # Prereq (login node): experiments/isaac/geobench/prepare.sh (exports + DINOv3 hub code).
 # TIME: ViT-L extraction is minutes per task; m-bigearthnet's one-vs-rest probes dominate
 # (~30 min for the gate + ~1 h for the arm). 12 h leaves room for 7B-on-small-tasks too.
@@ -48,6 +48,7 @@ KEY="$(python3 -c "import sys; from eval.features import OFFICIAL; print(list(OF
     "${SLURM_ARRAY_TASK_ID:?run as an array job}")"  # array index -> OFFICIAL key, in registry order
 echo "=== $KEY $PRESET $(date -Is)"
 
+python3 -m eval.export_geobench --task "${KEY//_/-}" --out "data/${KEY}_rgb"  # tree == manifest
 GATE_LOG="$(mktemp)"
 WANDB_MODE=disabled python3 -m pytest tests/test_eval_gates.py --gpu -s -rs \
     -k "dino_control_geobench and $KEY and $PRESET" 2>&1 | tee "$GATE_LOG" || true

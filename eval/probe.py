@@ -202,7 +202,7 @@ def official_dino(args):
         files, y = F.list_official_split(args.dataset, s)
         F.check_identity(d, files, path)
         data[s] = (d, y, files, path)
-    names = (args.view or "cls,clsmp").split(",")
+    names = (args.view or F.DINO_OFFICIAL_VIEWS).split(",")
     cands = {n: tuple(F.view("dino", data[s][0], n)[1] for s in ("train", "val", "test")) for n in names}
     return (
         cands,
