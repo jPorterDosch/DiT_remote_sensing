@@ -36,7 +36,7 @@ for t in 200 260 300; do
             --task correspondence \
             --img-size 640 640 \
             --dataset.name spair \
-            --dataset.path "/lustre/isaac24/scratch/jdosch1/DeepLearning/datasets/SPair-71k" \
+            --dataset.path "/lustre/isaac24/scratch/jdosch1/DiT_remote_sensing/datasets/SPair-71k" \
             --save-dir "$SAVE_DIR" \
             --model.name flux \
             --model.ensemble-size 8 \

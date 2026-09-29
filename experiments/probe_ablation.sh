@@ -63,7 +63,7 @@ declare -A params
 params=(
     [task]="finetune-diffusion"
     [dataset.name]="eurosat"
-    [dataset.path]="/lustre/isaac24/scratch/jdosch1/DeepLearning/datasets/EuroSAT"
+    [dataset.path]="/lustre/isaac24/scratch/jdosch1/DiT_remote_sensing/datasets/EuroSAT"
     [model.name]="flux"
     [save-dir]="$SAVE_DIR"
     [t]="340"
