@@ -14,11 +14,12 @@ BLOCK scores every (candidate x C) cell of the official protocol at one block k
 It stores val accuracies in the clear and the TEST predictions SEALED, so the feature
 caches can be deleted afterwards (the ISAAC job does, once this file is verified).
 
-SELECT picks the cell with the highest val accuracy across all blocks (first max wins, in
-block / candidate / C order, as run_official does), then unseals exactly ONE test vector
--- the selected cell's -- and writes it in eval.probe's result format, so eval.compare
-can pair it with any other official-protocol arm (rule 1: nothing about test influenced
-the choice). The plot shows val accuracy only; test appears as the one reported number.
+SELECT picks the cell with the highest val metric (top-1; micro-F1 for multi-label tasks)
+across all blocks (first max wins, in block / candidate / C order, as run_official does),
+then unseals exactly ONE test vector -- the selected cell's -- and writes it in eval.probe's
+result format, so eval.compare can pair it with any other official-protocol arm (rule 1:
+nothing about test influenced the choice). The plot shows val only; test appears as the
+one reported number.
 """
 
 from __future__ import annotations
@@ -81,7 +82,7 @@ def run_block(args) -> str:
     rows, preds = P.official_all_cells(cands, ytr, yva, yte)
     for r in rows:
         warn = "" if r["conv_warnings"] == 0 else f"  [NOT CONVERGED x{r['conv_warnings']}]"
-        print(f"  k={args.k} val {r['candidate']:>9} C={r['C']:<5} acc={r['val_acc']:.4f}{warn}")
+        print(f"  k={args.k} val {r['candidate']:>9} C={r['C']:<5} score={r['val_acc']:.4f}{warn}")
 
     os.makedirs(args.out_dir, exist_ok=True)
     out = os.path.join(args.out_dir, f"{name}.npz")
@@ -126,8 +127,7 @@ def verify_block(path: str) -> None:
             f"{path}: cells incomplete -- {len(rows)} val rows / {len(sealed)} sealed vectors, "
             f"expected {len(want_keys)} ({len(want_cands)} candidates x {len(P.C_GRID)} C)"
         )
-    n = len(d["test_labels"])
-    if any(d[s].shape != (n,) for s in sealed):
+    if any(d[s].shape != d["test_labels"].shape for s in sealed):
         raise SystemExit(f"{path}: a sealed test vector has the wrong length")
 
 
@@ -184,7 +184,9 @@ def select(blocks: dict) -> tuple[dict, list[dict]]:
     return best, grid
 
 
-def plot(grid: list[dict], best: dict, cands: list[str], title: str, out_png: str) -> None:
+def plot(
+    grid: list[dict], best: dict, cands: list[str], title: str, out_png: str, metric: str = "top-1"
+) -> None:
     import matplotlib
 
     matplotlib.use("Agg")
@@ -196,7 +198,7 @@ def plot(grid: list[dict], best: dict, cands: list[str], title: str, out_png: st
     blue_ramp = ["#cde2fb", "#9ec5f4", "#6da7ec", "#3987e5", "#256abf", "#184f95", "#0d366b"]
     cmap = LinearSegmentedColormap.from_list("seq_blue", blue_ramp)
     ks = sorted({g["k"] for g in grid})
-    # Display value per (k, candidate) = best val acc over C (a val-only statistic).
+    # Display value per (k, candidate) = best val metric over C (a val-only statistic).
     M = np.full((len(ks), len(cands)), np.nan)
     for g in grid:
         i, j = ks.index(g["k"]), cands.index(g["candidate"])
@@ -227,10 +229,12 @@ def plot(grid: list[dict], best: dict, cands: list[str], title: str, out_png: st
         color=muted,
     )
     ax1.set_yticks(range(len(ks)), [f"k={k}" for k in ks], fontsize=8, color=muted)
-    ax1.set_title("Val top-1 (%), best C per cell; outlined = selected", fontsize=10, color=ink, loc="left")
+    ax1.set_title(
+        f"Val {metric} (%), best C per cell; outlined = selected", fontsize=10, color=ink, loc="left"
+    )
     for s in ax1.spines.values():
         s.set_visible(False)
-    cb = fig.colorbar(im, ax=ax1, fraction=0.035, pad=0.02, label="val top-1 (%)")
+    cb = fig.colorbar(im, ax=ax1, fraction=0.035, pad=0.02, label=f"val {metric} (%)")
     cb.ax.yaxis.label.set_color(muted)
     cb.ax.yaxis.label.set_fontsize(8)
     cb.ax.tick_params(labelsize=7, colors=muted)
@@ -269,14 +273,14 @@ def plot(grid: list[dict], best: dict, cands: list[str], title: str, out_png: st
     ax2.set_xticks(ts, [str(t) for t in ts], fontsize=8, color=muted)
     ax2.tick_params(axis="y", labelsize=8, colors=muted)
     ax2.set_xlabel("timestep t", fontsize=9, color=muted)
-    ax2.set_ylabel("val top-1 (%)", fontsize=9, color=muted)
+    ax2.set_ylabel(f"val {metric} (%)", fontsize=9, color=muted)
     ax2.grid(axis="y", color="#e6e4df", linewidth=0.8)
     for s in ("top", "right"):
         ax2.spines[s].set_visible(False)
     for s in ("left", "bottom"):
         ax2.spines[s].set_color("#d6d4ce")
     ax2.set_title(
-        "Val top-1 vs t (gray: other blocks, values in the heatmap)", fontsize=10, color=ink, loc="left"
+        f"Val {metric} vs t (gray: other blocks, values in the heatmap)", fontsize=10, color=ink, loc="left"
     )
     ax2.set_xlim(ts[0] - 20, ts[-1] + 110)
     fig.suptitle(title, fontsize=11, color=ink, x=0.01, ha="left")
@@ -286,8 +290,6 @@ def plot(grid: list[dict], best: dict, cands: list[str], title: str, out_png: st
 
 
 def run_select(args) -> str:
-    from sklearn.metrics import f1_score
-
     paths = sorted({p for pat in args.blocks for p in glob.glob(pat)})
     if not paths:
         raise SystemExit(f"no block results match {args.blocks}")
@@ -309,16 +311,14 @@ def run_select(args) -> str:
     sealed = SealedTests(blocks)
     pred = sealed.open(best["k"], best["candidate"], best["C"])
     yte = np.asarray(test_labels)
-    correct = (pred == yte).astype(np.int8)
-    n_cls = len(F.official_classes(args.dataset))
-    f1 = float(f1_score(yte, pred, average="macro", labels=np.arange(n_cls)))
-    top1 = float(correct.mean())
-    se = (top1 * (1 - top1) / len(yte)) ** 0.5
-    print(f"TEST (reported once): top1={top1:.4f} ±{1.96 * se:.4f}  macro_f1={f1:.4f}")
+    correct = P.per_image(yte, pred)
+    score, line, extra_metrics = PR.report_test(args.dataset, yte, pred, correct)
+    metric = "micro-F1" if yte.ndim == 2 else "top-1"
+    print(f"TEST (reported once): {line}")
 
     os.makedirs(args.out_dir, exist_ok=True)
     out = os.path.join(args.out_dir, f"{name}.npz")
-    info = {"selected": best, "macro_f1": f1, "n_cells": len(grid), "blocks": list(blocks)}
+    info = {"selected": best, **extra_metrics, "n_cells": len(grid), "blocks": list(blocks)}
     np.savez(
         out,
         cells=np.array(["test"]),
@@ -338,12 +338,12 @@ def run_select(args) -> str:
     png = out.replace(".npz", ".png")
     title = (
         f"{args.dataset} t x k sweep ({args.arm}): selected k={best['k']} {best['candidate']} C={best['C']}, "
-        f"test top-1 {100 * top1:.1f}% (reported once)"
+        f"test {metric} {100 * score:.1f}% (reported once)"
     )
-    plot(grid, best, cands, title, png)
+    plot(grid, best, cands, title, png, metric)
     print(f"result -> {out}\nplot   -> {png}")
     if wandb.run is not None:
-        wandb.run.summary.update({"acc/test": top1, "macro_f1": f1, "selected": json.dumps(best)})
+        wandb.run.summary.update({"acc/test": score, **extra_metrics, "selected": json.dumps(best)})
         wb.log_table("val_grid", grid)
         wandb.log({"sweep_plot": wandb.Image(png)})
         wb.log_results(out)

@@ -2,8 +2,7 @@
 
     python -m eval.extract_dino --preset dinov2_vitl14 --dataset resisc45          # CV identity set
     python -m eval.extract_dino --preset dinov2_vitl14 --dataset m_eurosat         # official splits
-    python -m eval.extract_dino --preset dinov3_sat7b --weights <pth> --mean M M M --std S S S \\
-        --dataset resisc45
+    python -m eval.extract_dino --preset dinov3_vitl16_sat --dataset m_forestnet  # weights: see PRESETS
 
 resisc45 (any CV dataset): the images are the CV identity cache's paths in cache order
 (eval/features.CV_IDENTITY), so the output pairs with every FLUX arm.
@@ -12,7 +11,10 @@ Official datasets: every image of every official split, class-list order.
 -> results/eval_feats/<preset>_<dataset>_<split>.npz
 
 Model loading and the forward pass are dino_family_resisc45's (which generalized
-dinov2_resisc45/dinov2_m_eurosat); the sat preset REFUSES ImageNet normalization.
+dinov2_resisc45/dinov2_m_eurosat). DINOv3 presets load a local gated checkpoint (Meta's
+download form -> ditf_models/dinov3/) and refuse a file whose name lacks the preset's hash:
+the hub picks the ViT-L architecture from that hash, and web vs sat weights need different
+normalization, so a swapped file would otherwise run silently mislabelled.
 """
 
 from __future__ import annotations
@@ -35,29 +37,38 @@ from eval import features as F  # noqa: E402
 from eval import wb  # noqa: E402
 
 IMAGENET = ((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
+# dinov3 README "Image transforms", SAT-493M weights (read from the shipped repo 2026-09-29)
+SAT493M = ((0.430, 0.411, 0.296), (0.213, 0.156, 0.143))
+
+
+def _dinov3(entry: str, data: str, hash_: str, norm: tuple, dtype, batch: int) -> dict:
+    ckpt = f"ditf_models/dinov3/{entry}_pretrain_{data}-{hash_}.pth"
+    return dict(
+        repo="facebookresearch/dinov3",
+        entry=entry,
+        weights=ckpt,
+        hash=hash_,
+        norm=norm,
+        dtype=dtype,
+        batch=batch,
+    )
+
+
+# Web (LVD-1689M) vs satellite (SAT-493M) pretraining at matched architecture; checkpoint
+# hashes from dinov3/hub/backbones.py.
 PRESETS = {
     "dinov2_vitl14": dict(
         repo="facebookresearch/dinov2",
         entry="dinov2_vitl14",
-        needs_weights=False,
+        weights=None,
+        norm=IMAGENET,
         dtype=torch.float32,
         batch=64,
     ),
-    "dinov3_web7b": dict(
-        repo="facebookresearch/dinov3",
-        entry="dinov3_vit7b16",
-        needs_weights=True,
-        dtype=torch.bfloat16,
-        batch=8,
-    ),
-    "dinov3_sat7b": dict(
-        repo="facebookresearch/dinov3",
-        entry="dinov3_vit7b16",
-        needs_weights=True,
-        dtype=torch.bfloat16,
-        batch=8,
-        needs_explicit_norm=True,
-    ),
+    "dinov3_vitl16_web": _dinov3("dinov3_vitl16", "lvd1689m", "8aa4cbdd", IMAGENET, torch.float32, 64),
+    "dinov3_vitl16_sat": _dinov3("dinov3_vitl16", "sat493m", "eadcf0ff", SAT493M, torch.float32, 64),
+    "dinov3_vit7b16_web": _dinov3("dinov3_vit7b16", "lvd1689m", "a955f4ea", IMAGENET, torch.bfloat16, 8),
+    "dinov3_vit7b16_sat": _dinov3("dinov3_vit7b16", "sat493m", "a6675841", SAT493M, torch.bfloat16, 8),
 }
 
 
@@ -65,9 +76,16 @@ def load_model(preset, weights, device):
     """Source: dino_family_resisc45.load_model."""
     spec = PRESETS[preset]
     kwargs = {}
-    if spec["needs_weights"]:
-        if not (weights and os.path.exists(weights)):
-            raise SystemExit(f"--weights required and must exist for {preset}")
+    if weights and not spec["weights"]:
+        raise SystemExit(f"{preset} loads its hub weights; --weights would be ignored")
+    if spec["weights"]:
+        weights = weights or spec["weights"]
+        if spec["hash"] not in os.path.basename(weights):
+            raise SystemExit(f"{preset}: checkpoint {weights} lacks hash {spec['hash']} -- wrong weights")
+        if not os.path.exists(weights):
+            raise SystemExit(
+                f"{preset}: {weights} missing (gated: ai.meta.com/resources/models-and-libraries/dinov3-downloads)"
+            )
         kwargs["weights"] = weights
     model = torch.hub.load(spec["repo"], spec["entry"], **kwargs)
     model = model.to(device=device, dtype=spec["dtype"]).eval()
@@ -105,21 +123,13 @@ def main(argv=None) -> list[str]:
     p.add_argument(
         "--dataset", required=True, help="a CV_IDENTITY key (resisc45) or an OFFICIAL key (m_eurosat)"
     )
-    p.add_argument("--weights", default=None, help="local checkpoint path (gated presets)")
-    p.add_argument("--mean", type=float, nargs=3, default=None)
-    p.add_argument("--std", type=float, nargs=3, default=None)
+    p.add_argument("--weights", default=None, help="override the preset's checkpoint path (DINOv3)")
     p.add_argument("--max-images", type=int, default=None, help="SMOKE: strided cap per split")
     p.add_argument("--out-dir", default="results/eval_feats")
     args = p.parse_args(argv)
 
     spec = PRESETS[args.preset]
-    if spec.get("needs_explicit_norm") and (args.mean is None or args.std is None):
-        raise SystemExit(
-            f"{args.preset}: pass --mean/--std copied from the SHIPPED dinov3 repo README "
-            f"({torch.hub.get_dir()}/facebookresearch_dinov3_main/README* after first hub load). "
-            "Sat-493M does not use ImageNet statistics (rule 16: verify the artifact)."
-        )
-    mean, std = (args.mean or IMAGENET[0]), (args.std or IMAGENET[1])
+    mean, std = spec["norm"]
 
     if args.dataset in F.CV_IDENTITY:
         paths, y = F.load_identity(F.CV_IDENTITY[args.dataset])
@@ -138,7 +148,7 @@ def main(argv=None) -> list[str]:
 
     config = {
         "preset": args.preset,
-        "weights": args.weights,
+        "weights": args.weights or spec["weights"],
         "mean": mean,
         "std": std,
         "img": 224,

@@ -120,7 +120,7 @@ def test_select_end_to_end_reports_selected_cell_only(tmp_path, monkeypatch):
 
 def test_sweep_is_dataset_agnostic(tmp_path, monkeypatch):
     """A task registered ONLY in features.OFFICIAL runs select end to end: nothing in the
-    sweep depends on m-eurosat (the GEO-Bench tasks arrive in a separate PR)."""
+    sweep depends on m-eurosat."""
     from eval import features as F
 
     monkeypatch.setenv("WANDB_MODE", "disabled")

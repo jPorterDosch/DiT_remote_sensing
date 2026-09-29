@@ -42,19 +42,42 @@ def _eurosat_classes() -> list[str]:
     return list(EUROSAT_CLASSES)
 
 
+def _geobench(name: str, train: int, val: int, test: int, **extra) -> dict:
+    """An OFFICIAL entry whose class list (LABEL order) is the committed export manifest's."""
+
+    def classes() -> list[str]:
+        with open(os.path.join(REPO_ROOT, "eval", "manifests", f"{name}.json")) as f:
+            return json.load(f)["classes"]
+
+    sizes = {"train": train, "val": val, "test": test}
+    return {"sizes": sizes, "root": f"data/{name}_rgb", "classes": classes, **extra}
+
+
 # Official-protocol datasets -- the ONLY place a GEO-Bench task is registered for
-# eval.probe / eval.extract_dino / eval.sweep. Adding a task = one entry here (plus its
-# TaskSpec in eval/export_geobench.py and a run.py dataset wrapper for FLUX extraction).
-#   sizes:   per-split counts COUNTED from the shipped partition (rule 16), never a paper
-#   root:    exported RGB tree, <root>/<split>/<Class>/*.png
-#   classes: zero-arg callable -> class names in LABEL order (the exporter's order)
+# eval.probe / eval.extract_dino / eval.sweep / run.py (src/datasets/geobench.py). Adding a
+# task = one entry here plus its TaskSpec in eval/export_geobench.py.
+#   sizes:      per-split counts COUNTED from the shipped partition (rule 16), never a paper
+#   root:       exported RGB tree, <root>/<split>/<Class>/*.png (multi-label: <root>/<split>/*.png
+#               + labels.npz)
+#   classes:    zero-arg callable -> class names in LABEL order (the exporter's order)
+#   multilabel: labels are multi-hot rows; the metric is micro-F1 (SatDiFuser val_logger)
 OFFICIAL = {
     "m_eurosat": {
         "sizes": {"train": 16200, "val": 996, "test": 996},
         "root": "data/m_eurosat_rgb",
         "classes": _eurosat_classes,
     },
+    "m_forestnet": _geobench("m_forestnet", 6464, 989, 993),
+    "m_so2sat": _geobench("m_so2sat", 19992, 986, 986),
+    "m_brick_kiln": _geobench("m_brick_kiln", 15063, 999, 999),
+    "m_pv4ger": _geobench("m_pv4ger", 11814, 999, 999),
+    "m_bigearthnet": _geobench("m_bigearthnet", 20000, 1000, 1000, multilabel=True),
 }
+
+
+def key(task: str) -> str:
+    """GEO-Bench task name -> OFFICIAL key (m-brick-kiln -> m_brick_kiln)."""
+    return task.replace("-", "_")
 
 
 def official_spec(dataset: str) -> dict:
@@ -252,17 +275,26 @@ def load_flux_split(pattern: str, pins: dict, split: str, n_expect: int, smoke: 
 
 
 def list_official_split(dataset: str, split: str, root: str | None = None):
-    """Image files + labels of one official split, in class-list order then sorted names.
-    Source: dinov2_m_eurosat.list_split (size check against the OFFICIAL entry)."""
+    """Image files + labels of one official split, in class-list order then sorted names
+    (multi-label: labels.npz order, y multi-hot). Source: dinov2_m_eurosat.list_split (size
+    check against the OFFICIAL entry)."""
     spec = official_spec(dataset)
     root = root or spec["root"]
-    files, labels = [], []
-    for ci, cls in enumerate(official_classes(dataset)):
-        for f in sorted(glob.glob(os.path.join(root, split, cls, "*.png"))):
-            files.append(f)
-            labels.append(ci)
+    if spec.get("multilabel"):
+        d = np.load(os.path.join(root, split, "labels.npz"))
+        files = [os.path.join(root, split, f"{n}.png") for n in d["names"]]
+        labels = d["y"].astype(np.int64)
+        if not all(map(os.path.exists, files)):
+            raise SystemExit(f"{dataset} {split}: labels.npz lists images missing under {root}")
+    else:
+        files, labels = [], []
+        for ci, cls in enumerate(official_classes(dataset)):
+            for f in sorted(glob.glob(os.path.join(root, split, cls, "*.png"))):
+                files.append(f)
+                labels.append(ci)
+        labels = np.array(labels, dtype=np.int64)
     if len(files) != spec["sizes"][split]:
         raise SystemExit(
             f"{dataset} {split}: {len(files)} images under {root}, expected {spec['sizes'][split]}"
         )
-    return files, np.array(labels, dtype=np.int64)
+    return files, labels

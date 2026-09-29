@@ -25,7 +25,7 @@ if __package__ in (None, ""):
 import wandb  # noqa: E402
 
 from eval import wb  # noqa: E402
-from eval.protocols import ci  # noqa: E402
+from eval.protocols import metric, paired_delta  # noqa: E402
 
 
 def _key(p: str) -> str:
@@ -88,23 +88,22 @@ def compare(a_path: str, b_path: str) -> list[dict]:
     a, b = load(a_path), load(b_path)
     rows = []
     for c, (va, vb) in sorted(pair(a, b).items()):
-        d = vb - va
-        lo, hi = ci(d)
+        delta, lo, hi = paired_delta(va, vb)
         verdict = "PARITY (CI spans 0)" if lo <= 0 <= hi else ("B > A" if lo > 0 else "A > B")
         rows.append(
             {
                 "cell": c,
-                "acc_a": float(va.mean()),
-                "acc_b": float(vb.mean()),
-                "delta": float(d.mean()),
+                "acc_a": metric(va),
+                "acc_b": metric(vb),
+                "delta": delta,
                 "ci_lo": lo,
                 "ci_hi": hi,
-                "n": len(d),
+                "n": len(va),
                 "verdict": verdict,
             }
         )
         print(
-            f"  {c:<10} A {va.mean():.4f}  B {vb.mean():.4f}  B-A {d.mean():+.4f} [{lo:+.4f},{hi:+.4f}]  -> {verdict}"
+            f"  {c:<10} A {metric(va):.4f}  B {metric(vb):.4f}  B-A {delta:+.4f} [{lo:+.4f},{hi:+.4f}]  -> {verdict}"
         )
     return rows
 

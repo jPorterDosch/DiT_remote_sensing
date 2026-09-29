@@ -27,8 +27,8 @@ Every stage logs to one W&B project (`eval/wb.py`), as `{exp}_{dataset}_{arm}_{h
 |---|---|---|
 | FLUX features (frozen / adapted) | `python run.py --task extract ...` | `models/<save-dir>/<run>/multistep_<split>_feats_*.npz` |
 | LoRA adaptation (all 57 blocks) | `python run.py --task finetune-diffusion ...` | `models/<save-dir>/<run>/checkpoints/` |
-| GEO-Bench export | `python -m eval.export_geobench --task m-eurosat --dataset-dir <raw> --out data/m_eurosat_rgb` | `data/<task>_rgb/{train,val,test}/<Class>/*.png` |
-| DINO features | `python -m eval.extract_dino --preset dinov2_vitl14 --dataset {resisc45,m_eurosat}` | `results/eval_feats/` |
+| GEO-Bench export | `python -m eval.export_geobench --task m-forestnet --dataset-dir <raw> --out data/m_forestnet_rgb --download` (ISAAC: `experiments/isaac/geobench/prepare.sh`) | `data/<task>_rgb/{train,val,test}/<Class>/*.png` (multi-label: `<split>/*.png` + `labels.npz`), checked against `eval/manifests/<task>.json` |
+| DINO features | `python -m eval.extract_dino --preset dinov3_vitl16_{web,sat} --dataset <OFFICIAL key>` (gated weights on ISAAC scratch, `ditf_models/dinov3/`; run via `experiments/isaac/geobench/dino.sbatch`; `dinov2_vitl14` for the banked RESISC45 gates) | `results/eval_feats/` |
 | Probe one arm | `python -m eval.probe --protocol {cv,budget,mlp,official} --dataset D --arm NAME --kind {flux,dino,vae} --features F --view V` | `results/eval/<run>.npz` (per-image correctness) |
 | Paired comparison | `python -m eval.compare A.npz B.npz` | B−A per cell, image-level bootstrap CI |
 | t × k sweep (official split) | `python -m eval.sweep block ...` per block, then `python -m eval.sweep select ...` | val grid + plot; (t, k, C) selected on val, test reported once |
@@ -50,13 +50,14 @@ FLUX arms must pin the cache they expect (`--expect extraction_mode=ONESHOT ense
 
 **Sweep.** Per dataset, the FLUX operating point (timestep, block, C) is selected on the official val split. On ISAAC:
 ```
-sbatch --export=ALL,DATASET=m_eurosat,REUSE_K=28,REUSE_DIR=models/m_eurosat_oneshot_ens8 experiments/isaac/sweep/sweep.sbatch
+REUSE_K=28 REUSE_DIR=models/m_eurosat_oneshot_ens8 bash experiments/isaac/sweep/submit.sh m_eurosat
+bash experiments/isaac/sweep/submit.sh m_so2sat   # any OFFICIAL key; --time sized per dataset, <= 72 h
 python -m eval.sweep select --dataset m_eurosat --arm flux-oneshot-ens8 \
     --blocks 'results/eval/sweep/sweep-block_m_eurosat_flux-oneshot-ens8-k*.npz'   # login node, after all blocks
 ```
 Each array task handles one single-stream block (k ∈ {19, 24, 28, 33, 38, 43, 48, 54}): extract ens8 features for every official split, score every (timestep candidate × C) cell with val in the clear and test predictions sealed, then delete that block's caches (`REUSE_K/REUSE_DIR` probes banked caches instead and never deletes them). `select` picks the cell on val, opens exactly one test vector, and writes the plot plus an `eval.compare`-ready result.
 
-**Adding a GEO-Bench task** (nothing in `eval/` or the sweep scripts changes): a verified `TaskSpec` in `eval/export_geobench.py`, an `OFFICIAL` entry in `eval/features.py` (split sizes counted from the shipped partition, export root, class list), and a `run.py` dataset wrapper for FLUX extraction. Everything else keys off the dataset name.
+**GEO-Bench tasks**: m-eurosat, m-forestnet, m-so2sat, m-brick-kiln, m-pv4ger (top-1) and m-bigearthnet (multi-label: one-vs-rest LR, micro-F1 at p > 0.5 as SatDiFuser reports it; result files store per-image TP/FP/FN counts and `eval.compare` bootstraps the F1 difference). **Adding one** (nothing in `eval/` or the sweep scripts changes): a verified `TaskSpec` in `eval/export_geobench.py` and an `OFFICIAL` entry in `eval/features.py` (split sizes counted from the shipped partition), then export once on the workstation with `--write-manifest` and commit the manifest; `src/datasets/geobench.py` registers the run.py wrapper from `OFFICIAL`.
 
 **Gates.** `pytest tests/test_eval_gates.py -v -rs` (add `--gpu` for the extraction/MLP gates) re-runs every entry point against the banked per-image vectors of the prototype it replaced and reports PASS/FAIL/SKIP (a SKIP names the inputs missing on this machine). Run it after any change under `eval/`. Before any finetune launch, run the `smoke-finetune` skill, which includes the LoRA gradient-reach gate (`tests/check_lora_grad_reach.py`).
 

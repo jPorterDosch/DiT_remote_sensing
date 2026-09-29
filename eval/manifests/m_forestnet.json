@@ -1,0 +1,72 @@
+{
+ "classes": [
+  "Oil_palm_plantation",
+  "Timber_plantation",
+  "Other_large_scale_plantations",
+  "Grassland_shrubland",
+  "Small_scale_agriculture",
+  "Small_scale_mixed_plantation",
+  "Small_scale_oil_palm_plantation",
+  "Mining",
+  "Fish_pond",
+  "Logging",
+  "Secondary_forest",
+  "Other"
+ ],
+ "splits": {
+  "train": {
+   "n": 6464,
+   "counts": [
+    1348,
+    924,
+    472,
+    572,
+    1420,
+    476,
+    328,
+    192,
+    96,
+    156,
+    284,
+    196
+   ],
+   "sha256": "cd2c29df528adaef01c47d9f205a6dd243de25663c94d11eae5410797fb99257"
+  },
+  "val": {
+   "n": 989,
+   "counts": [
+    208,
+    142,
+    73,
+    88,
+    219,
+    73,
+    50,
+    29,
+    14,
+    20,
+    43,
+    30
+   ],
+   "sha256": "a2e71610ee8e06120ba074b973ddb9c306bd8f357adfb4cc5f55686b20864efb"
+  },
+  "test": {
+   "n": 993,
+   "counts": [
+    208,
+    142,
+    73,
+    88,
+    219,
+    73,
+    50,
+    29,
+    14,
+    24,
+    43,
+    30
+   ],
+   "sha256": "a6a64345ea2db3ebd11afc95e0656c0648dc844c85b64b1260389c9e15990fd5"
+  }
+ }
+}
