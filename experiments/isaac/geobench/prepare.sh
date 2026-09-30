@@ -19,7 +19,7 @@ PROJECT_ROOT="$_dir"
 cd "$PROJECT_ROOT"
 source "$PROJECT_ROOT/experiments/isaac/scratch_env.sh" || exit 1  # data/ -> Lustre scratch
 
-RAW="${RAW:-/lustre/isaac24/scratch/jdosch1/DeepLearning/datasets}"
+RAW="${RAW:-/lustre/isaac24/scratch/jdosch1/DiT_remote_sensing/datasets}"
 TASKS=("$@")
 [ ${#TASKS[@]} -gt 0 ] || TASKS=(m-forestnet m-so2sat m-brick-kiln m-pv4ger m-bigearthnet)
 

@@ -43,7 +43,7 @@ configs = {
         # than sending load_sft("") / defeating the ckpt_path-is-None HF fallback.
         ckpt_path=(
             os.getenv("FLUX_DEV")
-            or "/lustre/isaac24/scratch/jdosch1/DeepLearning/FLUX.1-dev/flux1-dev.safetensors"
+            or "/lustre/isaac24/scratch/jdosch1/DiT_remote_sensing/FLUX.1-dev/flux1-dev.safetensors"
         ),
         params=FluxParams(
             in_channels=64,
@@ -59,7 +59,7 @@ configs = {
             qkv_bias=True,
             guidance_embed=True,
         ),
-        ae_path=(os.getenv("AE") or "/lustre/isaac24/scratch/jdosch1/DeepLearning/FLUX.1-dev/ae.safetensors"),
+        ae_path=(os.getenv("AE") or "/lustre/isaac24/scratch/jdosch1/DiT_remote_sensing/FLUX.1-dev/ae.safetensors"),
         ae_params=AutoEncoderParams(
             resolution=256,
             in_channels=3,
@@ -159,7 +159,7 @@ def load_flow_model(name: str, device: str | torch.device = "cuda", hf_download:
 # def load_t5(device: str | torch.device = "cuda", max_length: int = 512) -> HFEmbedder:
 #     # max length 64, 128, 256 and 512 should work (if your sequence is short enough)
 #     return HFEmbedder(
-#         "/lustre/isaac24/scratch/jdosch1/DeepLearning/t5-v1_1-xxl",
+#         "/lustre/isaac24/scratch/jdosch1/DiT_remote_sensing/t5-v1_1-xxl",
 #         # "/home/jdosch1/personal/dit_remote_sensing/ditf_models/t5-v1_1-xxl",
 #         max_length=max_length,
 #         torch_dtype=torch.bfloat16,
@@ -168,7 +168,7 @@ def load_flow_model(name: str, device: str | torch.device = "cuda", hf_download:
 
 # def load_clip(device: str | torch.device = "cuda") -> HFEmbedder:
 #     return HFEmbedder(
-#         "/lustre/isaac24/scratch/jdosch1/DeepLearning/clip-vit-large-patch14",
+#         "/lustre/isaac24/scratch/jdosch1/DiT_remote_sensing/clip-vit-large-patch14",
 #         # "/home/jdosch1/personal/dit_remote_sensing/ditf_models/clip-vit-large-patch14",
 #         max_length=77,
 #         torch_dtype=torch.bfloat16,

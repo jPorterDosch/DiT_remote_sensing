@@ -26,7 +26,7 @@ PROJECT_ROOT="$_dir"
 cd "$PROJECT_ROOT"
 source "$PROJECT_ROOT/experiments/isaac/scratch_env.sh" || exit 1  # caches + models/data/logs on Lustre scratch
 
-RAW="${RAW:-/lustre/isaac24/scratch/jdosch1/DeepLearning/datasets/m_eurosat_meta}"
+RAW="${RAW:-/lustre/isaac24/scratch/jdosch1/DiT_remote_sensing/datasets/m_eurosat_meta}"
 mkdir -p "$RAW"
 Z="https://zenodo.org/api/records/8276933/files"
 

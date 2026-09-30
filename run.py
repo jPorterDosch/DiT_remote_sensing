@@ -43,6 +43,8 @@ class ModelConfig:
 @dataclass
 class DatasetConfig:
     name: str = "eurosat"
+    # Hashed into config_hash: do NOT repoint (rule 9). The data now lives under
+    # DiT_remote_sensing/datasets/; DeepLearning/datasets/{EuroSAT,SPair-71k} are symlinks to it.
     path: str = "/lustre/isaac24/scratch/jdosch1/DeepLearning/datasets/EuroSAT"
 
 
