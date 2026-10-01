@@ -202,7 +202,7 @@ def official_dino(args):
         files, y = F.list_official_split(args.dataset, s)
         F.check_identity(d, files, path)
         data[s] = (d, y, files, path)
-    names = (args.view or "cls,clsmp").split(",")
+    names = (args.view or F.DINO_OFFICIAL_VIEWS).split(",")
     cands = {n: tuple(F.view("dino", data[s][0], n)[1] for s in ("train", "val", "test")) for n in names}
     return (
         cands,
@@ -215,9 +215,20 @@ def official_dino(args):
     )
 
 
-def run_official(args):
+def report_test(dataset: str, yte, pred, v) -> tuple[float, str, dict]:
+    """The reported test number: top-1 (+ macro-F1), or micro-F1 for multi-label tasks."""
     from sklearn.metrics import f1_score
 
+    score = P.metric(v)
+    if yte.ndim == 2:
+        return score, f"micro_f1={score:.4f}", {"micro_f1": score}
+    n_cls = len(F.official_classes(dataset))
+    f1 = float(f1_score(yte, pred, average="macro", labels=np.arange(n_cls)))
+    se = (score * (1 - score) / len(yte)) ** 0.5
+    return score, f"top1={score:.4f} ±{1.96 * se:.4f}  macro_f1={f1:.4f}", {"macro_f1": f1}
+
+
+def run_official(args):
     if args.dataset not in F.OFFICIAL:
         raise SystemExit(f"{args.dataset}: no OFFICIAL entry (count the shipped partition first, rule 16)")
     loader = {"flux": official_flux, "dino": official_dino}.get(args.kind)
@@ -229,20 +240,14 @@ def run_official(args):
     correct, pred, sel, table = P.run_official(cands, ytr, yva, yte)
     for r in table:
         print(
-            f"  val {r['candidate']:>9} C={r['C']:<5} acc={r['val_acc']:.4f}"
+            f"  val {r['candidate']:>9} C={r['C']:<5} score={r['val_acc']:.4f}"
             + ("" if r["conv_warnings"] == 0 else f"  [NOT CONVERGED x{r['conv_warnings']}]")
         )
-    n_cls = len(F.official_classes(args.dataset))
-    f1 = float(f1_score(yte, pred, average="macro", labels=np.arange(n_cls)))
-    top1 = float(correct.mean())
-    se = (top1 * (1 - top1) / len(yte)) ** 0.5
+    _, sel_line, extra_metrics = report_test(args.dataset, yte, pred, correct)
     print(f"  SELECTED on val: {sel['candidate']}, C={sel['C']} (val {sel['val_acc']:.4f})")
-    print(
-        f"  TEST: top1={top1:.4f} ±{1.96 * se:.4f}  macro_f1={f1:.4f}"
-        + ("" if sel["test_warn"] == 0 else f"  [NOT CONVERGED x{sel['test_warn']}]")
-    )
+    print(f"  TEST: {sel_line}" + ("" if sel["test_warn"] == 0 else f"  [NOT CONVERGED x{sel['test_warn']}]"))
     wb.log_table("val_selection", table)
-    info = {"selected": sel, "macro_f1": f1, "conv_warnings": sel["test_warn"], **extra}
+    info = {"selected": sel, **extra_metrics, "conv_warnings": sel["test_warn"], **extra}
     return {"test": (correct, np.arange(len(yte)))}, info, test_paths, yte
 
 
@@ -346,8 +351,8 @@ def main(argv=None) -> str:
     print(f"per-image vectors cached to {out}")
     if wandb.run is not None:
         for c, (v, _) in cells.items():
-            wandb.run.summary[f"acc/{c}"] = float(v.mean())
-        wandb.run.summary["acc/mean_over_cells"] = float(np.mean([v.mean() for v, _ in cells.values()]))
+            wandb.run.summary[f"acc/{c}"] = P.metric(v)
+        wandb.run.summary["acc/mean_over_cells"] = float(np.mean([P.metric(v) for v, _ in cells.values()]))
         wandb.run.summary["n_images"] = len(labels)
         for k, v in info.items():
             wandb.run.summary[k] = v if isinstance(v, (int, float, str)) else json.dumps(v, default=str)

@@ -1,0 +1,32 @@
+{
+ "classes": [
+  "no_solar_pv",
+  "solar_pv"
+ ],
+ "splits": {
+  "train": {
+   "n": 11814,
+   "counts": [
+    10000,
+    1814
+   ],
+   "sha256": "44eb17ae24b6aaacd2cc9b56b54cb6f8617e07df1d1d8e7efe73ef28d6408d68"
+  },
+  "val": {
+   "n": 999,
+   "counts": [
+    846,
+    153
+   ],
+   "sha256": "50bd3a05d8c50797e38fd52f6c1aeffbac114abc98803785eddffea3f293f34d"
+  },
+  "test": {
+   "n": 999,
+   "counts": [
+    846,
+    153
+   ],
+   "sha256": "339c90d64eeb18eded18576cf8a8b1a9eef7205615bc2bf64596733686fdbf8b"
+  }
+ }
+}

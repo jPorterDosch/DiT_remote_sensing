@@ -24,12 +24,9 @@ if __package__ in (None, ""):
 
 import wandb  # noqa: E402
 
+from eval import features as F  # noqa: E402
 from eval import wb  # noqa: E402
-from eval.protocols import ci  # noqa: E402
-
-
-def _key(p: str) -> str:
-    return "/".join(os.path.normpath(p).split(os.sep)[-3:])
+from eval.protocols import metric, paired_delta  # noqa: E402
 
 
 def load(path: str) -> dict:
@@ -58,7 +55,7 @@ def pair(a: dict, b: dict) -> dict[str, tuple[np.ndarray, np.ndarray]]:
         raise SystemExit(f"UNPAIRED: cells {sorted(a['cells'])} vs {sorted(b['cells'])}")
     out = {}
     if a["protocol"] == "official":
-        ka, kb = [_key(p) for p in a["paths"]], [_key(p) for p in b["paths"]]
+        ka, kb = [F.path_key(p) for p in a["paths"]], [F.path_key(p) for p in b["paths"]]
         if len(set(ka)) != len(ka) or set(ka) != set(kb):
             raise SystemExit("UNPAIRED: official test sets are not the same images")
         pos_b = {k: i for i, k in enumerate(kb)}
@@ -88,23 +85,22 @@ def compare(a_path: str, b_path: str) -> list[dict]:
     a, b = load(a_path), load(b_path)
     rows = []
     for c, (va, vb) in sorted(pair(a, b).items()):
-        d = vb - va
-        lo, hi = ci(d)
+        delta, lo, hi = paired_delta(va, vb)
         verdict = "PARITY (CI spans 0)" if lo <= 0 <= hi else ("B > A" if lo > 0 else "A > B")
         rows.append(
             {
                 "cell": c,
-                "acc_a": float(va.mean()),
-                "acc_b": float(vb.mean()),
-                "delta": float(d.mean()),
+                "acc_a": metric(va),
+                "acc_b": metric(vb),
+                "delta": delta,
                 "ci_lo": lo,
                 "ci_hi": hi,
-                "n": len(d),
+                "n": len(va),
                 "verdict": verdict,
             }
         )
         print(
-            f"  {c:<10} A {va.mean():.4f}  B {vb.mean():.4f}  B-A {d.mean():+.4f} [{lo:+.4f},{hi:+.4f}]  -> {verdict}"
+            f"  {c:<10} A {metric(va):.4f}  B {metric(vb):.4f}  B-A {delta:+.4f} [{lo:+.4f},{hi:+.4f}]  -> {verdict}"
         )
     return rows
 

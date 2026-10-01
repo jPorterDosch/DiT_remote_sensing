@@ -6,7 +6,8 @@ vectors; change behaviour only in a new, re-gated function, never in place.
             [+ optional in-fold PCA / nested C]. Per-image correctness averaged over seeds.
   budget    k labels/class x 3 seeds, train drawn stratified, eval = the remaining rows.
   mlp       6x MLP head (hidden 12288), the 6x study's holdout split per seed (3 splits, n_eval=1000), inner-lr selection.
-  official  select (candidate x C) on the official val split, ONE test evaluation.
+  official  select (candidate x C) on the official val split, ONE test evaluation. Multi-hot
+            labels (m-bigearthnet): one-vs-rest LR, metric micro-F1 instead of top-1.
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from sklearn.decomposition import PCA
 from sklearn.exceptions import ConvergenceWarning
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import StratifiedKFold
+from sklearn.multiclass import OneVsRestClassifier
 from sklearn.preprocessing import StandardScaler
 
 C = 0.1  # standing a-priori probe C (never selected on eval data)
@@ -231,27 +233,74 @@ def run_mlp_seed(X, y, seed, device, epochs=MLP_EPOCHS, n_eval=MLP_N_EVAL):
 OFFICIAL_MAX_ITER = 3000
 
 
+class MultiLabelLR(OneVsRestClassifier):
+    """One binary LR per label, predicting p > 0.5 (SatDiFuser utils/val_logger.py:
+    sigmoid(logits) > 0.5). Not OneVsRestClassifier.predict: sklearn takes the threshold from
+    estimators_[0] alone, and when label 0 is constant in train that is a constant predictor,
+    so EVERY label gets thresholded at decision_function > 0.5 (tests/test_geobench.py)."""
+
+    def predict(self, X):
+        return (self.predict_proba(X) > 0.5).astype(np.int64)
+
+
+def official_lr(Cv, y):
+    """Single-label y: the prototype LR, unchanged. Multi-hot y: MultiLabelLR."""
+    lr = LogisticRegression(C=Cv, max_iter=OFFICIAL_MAX_ITER)
+    return MultiLabelLR(lr) if y.ndim == 2 else lr
+
+
+def per_image(y, pred):
+    """The per-image vector a result file stores: correctness (N,) int8, or for multi-hot
+    labels the (N, 3) true-positive / false-positive / false-negative counts (micro-F1 is not
+    a per-image mean, but it is a function of these sums)."""
+    if y.ndim == 1:
+        return (pred == y).astype(np.int8)
+    return np.stack([(pred * y).sum(1), (pred * (1 - y)).sum(1), ((1 - pred) * y).sum(1)], 1)
+
+
+def _micro_f1(sums):
+    tp, fp, fn = np.moveaxis(sums, -1, 0)
+    return 2 * tp / np.maximum(2 * tp + fp + fn, 1)
+
+
+def metric(v) -> float:
+    """top-1 from a correctness vector, micro-F1 (SatDiFuser: average="micro") from counts."""
+    return float(v.mean()) if v.ndim == 1 else float(_micro_f1(v.sum(0)))
+
+
+def paired_delta(va, vb, n=10000, seed=0):
+    """metric(B) - metric(A) and its image-level bootstrap 95% CI (rule 4). Correctness
+    vectors: mean(vb - va) with ci(), as before; counts: micro-F1 of every resample."""
+    if va.ndim == 1:
+        d = vb - va
+        return (float(d.mean()), *ci(d, n, seed))
+    idx = np.random.default_rng(seed).integers(0, len(va), (n, len(va)))
+    ds = np.concatenate([_micro_f1(vb[i].sum(1)) - _micro_f1(va[i].sum(1)) for i in np.array_split(idx, 10)])
+    return metric(vb) - metric(va), float(np.quantile(ds, 0.025)), float(np.quantile(ds, 0.975))
+
+
 def official_fit_eval(Xtr, ytr, Xev, Cv):
     """Source: m_eurosat_probe.fit_eval / dinov2_m_eurosat.fit_eval (identical)."""
     with warnings.catch_warnings(record=True) as wl:
         warnings.simplefilter("always", ConvergenceWarning)
-        clf = LogisticRegression(C=Cv, max_iter=OFFICIAL_MAX_ITER).fit(Xtr, ytr)
+        clf = official_lr(Cv, ytr).fit(Xtr, ytr)
         n_warn = sum(issubclass(w.category, ConvergenceWarning) for w in wl)
     return clf.predict(Xev), n_warn
 
 
 def run_official(cands, ytr, yva, yte):
-    """Select (candidate x C) on val, then ONE test evaluation. Source: the selection loop
+    """Select (candidate x C) on val by metric() (the "val_acc" key holds micro-F1 for
+    multi-hot labels), then ONE test evaluation. Source: the selection loop
     shared by m_eurosat_probe.main and dinov2_m_eurosat.main (first max wins, candidate
     order then C order). cands: {name: (Xtr, Xva, Xte)} in selection order.
-    Returns (test correctness int8, test preds, selected dict, val table rows)."""
+    Returns (test per_image vector, test preds, selected dict, val table rows)."""
     best, table = None, []
     for name, (Atr, Ava, _) in cands.items():
         sc = StandardScaler().fit(Atr)
         A, V = sc.transform(Atr), sc.transform(Ava)
         for Cv in C_GRID:
             pred, n_warn = official_fit_eval(A, ytr, V, Cv)
-            acc = float((pred == yva).mean())
+            acc = metric(per_image(yva, pred))
             table.append({"candidate": name, "C": Cv, "val_acc": acc, "conv_warnings": n_warn})
             if best is None or acc > best[0]:
                 best = (acc, name, Cv, n_warn)
@@ -259,7 +308,7 @@ def run_official(cands, ytr, yva, yte):
     Atr, _, Ate = cands[name]
     sc = StandardScaler().fit(Atr)
     pred, n_warn = official_fit_eval(sc.transform(Atr), ytr, sc.transform(Ate), Cv)
-    correct = (pred == yte).astype(np.int8)
+    correct = per_image(yte, pred)
     sel = {"candidate": name, "C": Cv, "val_acc": val_acc, "sel_warn": sel_warn, "test_warn": n_warn}
     return correct, pred, sel, table
 
@@ -278,13 +327,13 @@ def official_all_cells(cands, ytr, yva, yte):
         for Cv in C_GRID:
             with warnings.catch_warnings(record=True) as wl:
                 warnings.simplefilter("always", ConvergenceWarning)
-                clf = LogisticRegression(C=Cv, max_iter=OFFICIAL_MAX_ITER).fit(A, ytr)
+                clf = official_lr(Cv, ytr).fit(A, ytr)
                 n_warn = sum(issubclass(w.category, ConvergenceWarning) for w in wl)
             rows.append(
                 {
                     "candidate": name,
                     "C": Cv,
-                    "val_acc": float((clf.predict(V) == yva).mean()),
+                    "val_acc": metric(per_image(yva, clf.predict(V))),
                     "conv_warnings": n_warn,
                 }
             )

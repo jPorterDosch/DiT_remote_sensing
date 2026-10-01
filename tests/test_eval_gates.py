@@ -23,7 +23,7 @@ import numpy as np  # noqa: E402
 import pytest  # noqa: E402
 from sklearn.model_selection import StratifiedKFold  # noqa: E402
 
-from eval import compare, probe  # noqa: E402
+from eval import compare, extract_dino, probe  # noqa: E402
 from eval import features as F  # noqa: E402
 from eval import protocols as P  # noqa: E402
 
@@ -249,6 +249,16 @@ def test_export_m_eurosat(tmp_path):
     assert not bad and extra == 0, f"{len(bad)} differing/missing, {extra} extra (first: {bad[:3]})"
 
 
+@pytest.mark.parametrize("key", list(F.OFFICIAL))
+def test_tree_matches_manifest(key):
+    """The exported RGB tree on this machine is byte-for-byte (decoded) the committed
+    manifest's: pixels, labels, names = partition membership, and no stray files."""
+    from eval import export_geobench
+
+    need(F.OFFICIAL[key]["root"])
+    export_geobench.check_manifest(key, export_geobench.tree_manifest(key, F.OFFICIAL[key]["root"]))
+
+
 def test_official_flux_m_eurosat(out_dir):
     """(ISAAC) probe --protocol official on the FLUX m-eurosat caches reproduces m_eurosat_probe.npz."""
     ref_path = "results/m_eurosat_probe.npz"
@@ -288,8 +298,6 @@ def test_official_flux_m_eurosat(out_dir):
 def test_extract_dino_resisc45(out_dir):
     """Fresh DINOv2 extraction reproduces the 6ac feature cache (atol 1e-4)."""
     need(DINO_R45, R45_INV)
-    from eval import extract_dino
-
     (out,) = extract_dino.main(["--preset", "dinov2_vitl14", "--dataset", "resisc45", "--out-dir", out_dir])
     new, ref = np.load(out, allow_pickle=True), np.load(DINO_R45, allow_pickle=True)
     assert list(new["paths"]) == list(ref["paths"]), "path order differs"
@@ -302,8 +310,6 @@ def test_official_dino_m_eurosat(out_dir):
     """extract_dino + probe --protocol official reproduce results/dinov2_m_eurosat.npz exactly."""
     ref_path = "results/dinov2_m_eurosat.npz"
     need(ref_path, F.OFFICIAL["m_eurosat"]["root"])
-    from eval import extract_dino
-
     extract_dino.main(["--preset", "dinov2_vitl14", "--dataset", "m_eurosat", "--out-dir", out_dir])
     pat = os.path.join(out_dir, "dinov2_vitl14_m_eurosat_{split}.npz")
     r = run_probe(
@@ -318,12 +324,42 @@ def test_official_dino_m_eurosat(out_dir):
         "dino",
         "--features",
         pat,
+        "--view",
+        "cls,clsmp",  # the prototype's candidates (the default now adds cls4, cls4mp)
     )
     ref = np.load(ref_path, allow_pickle=True)
     sel = json.loads(str(np.load(r["_path"], allow_pickle=True)["info"]))["selected"]
     want = str(ref["selected"]).split(",")  # "variant,C=..,val=..,test=..,f1=.."
     assert sel["candidate"] == want[0] and f"C={sel['C']}" == want[1], (sel, want)
     assert np.array_equal(r["test"][0], ref["correct_test"]), "test vector differs"
+
+
+@pytest.mark.gpu
+@pytest.mark.parametrize("preset", [p for p in extract_dino.PRESETS if p.startswith("dinov3")])
+@pytest.mark.parametrize("key", list(F.OFFICIAL))
+def test_dino_control_geobench(out_dir, key, preset):
+    """Positive + null control per GEO-Bench task and DINOv3 arm (rule 2), pre-registered in
+    RESEARCH_NOTES before the first run: extract_dino + probe --protocol official must beat
+    the same probe on SHUFFLED train labels by >= 0.10, and (single-label) that null must not
+    exceed the majority-class rate by more than 0.05 (a null above chance = leakage).
+    Catches a broken export, label map, split, or checkpoint/normalization mismatch. Runs on
+    ISAAC (experiments/isaac/geobench/dino.sbatch): the gated checkpoints live on scratch."""
+    need(F.OFFICIAL[key]["root"], extract_dino.PRESETS[preset]["weights"])
+    extract_dino.main(["--preset", preset, "--dataset", key, "--out-dir", out_dir])
+    pat = os.path.join(out_dir, f"{preset}_{key}_{{split}}.npz")
+    r = run_probe(out_dir, "--protocol", "official", "--dataset", key, "--arm", preset, "--kind", "dino",
+                  "--features", pat, "--view", "clsmp")  # fmt: skip
+    score = P.metric(r["test"][0])
+    d = {s: np.load(pat.format(split=s)) for s in ("train", "val", "test")}
+    X = {s: F.view("dino", d[s], "clsmp")[1] for s in d}
+    ytr, yva, yte = (d[s]["labels"] for s in ("train", "val", "test"))
+    ytr = ytr[np.random.default_rng(0).permutation(len(ytr))]
+    null = P.metric(P.run_official({"clsmp": (X["train"], X["val"], X["test"])}, ytr, yva, yte)[0])
+    print(f"{key} {preset}: clsmp test {score:.4f}, shuffled-label null {null:.4f}")
+    assert score - null >= 0.10, (score, null)
+    if yte.ndim == 1:
+        majority = float(np.bincount(yte).max() / len(yte))
+        assert null <= majority + 0.05, (null, majority)
 
 
 @pytest.mark.gpu

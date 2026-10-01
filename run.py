@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.join(_root, "src", "models"))  # flux.* internal impo
 
 import torch
 import tyro
+
 import wandb
 
 warnings.filterwarnings("ignore")
@@ -21,7 +22,6 @@ warnings.filterwarnings("ignore")
 import datasets  # noqa: F401  — triggers @register_dataset decorators
 import models  # noqa: F401  — resolves to src/models/, triggers @register_model decorators
 import tasks  # noqa: F401  — triggers @register_task decorators
-from registry import DATASETS, MODELS, TASKS
 from config_types import (
     NUM_BLOCKS,
     ExtractionMode,
@@ -29,9 +29,10 @@ from config_types import (
     map_timesteps_to_grid,
     validate_inversion_block,
 )
-from utils import seed_all, to_jsonable
-from tasks.extraction import env_provenance
 from eval.wb import WANDB_ENTITY, WANDB_PROJECT
+from registry import DATASETS, MODELS, TASKS
+from tasks.extraction import env_provenance
+from utils import seed_all, to_jsonable
 
 
 @dataclass
