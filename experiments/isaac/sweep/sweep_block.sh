@@ -51,6 +51,9 @@ print(s['root'], ','.join(s['sizes']))" "$DATASET")
 DATA="${DATA:-$REG_ROOT}"
 IFS=',' read -r -a SPLIT_LIST <<<"$SPLITS"
 [ -d "$DATA/${SPLIT_LIST[0]}" ] || { echo "FATAL: $DATA missing -- export $DATASET first (eval.export_geobench)" >&2; exit 1; }
+# The images must be the committed manifest's (eval/manifests/): same pixels/labels/partition
+# as the workstation gates saw. ~1 min; refuses on any mismatch.
+python3 -m eval.export_geobench --task "${DATASET//_/-}" --out "$DATA"
 
 seed_for() { case "$1" in train) echo 42 ;; test) echo 43 ;; val) echo 44 ;; *) echo "FATAL: no seed for split $1" >&2; exit 1 ;; esac; }
 # Complete = npz AND its _meta.json (extraction.py writes the meta after np.savez, so a

@@ -1,0 +1,64 @@
+{
+ "classes": [
+  "AnnualCrop",
+  "Forest",
+  "HerbaceousVegetation",
+  "Highway",
+  "Industrial",
+  "Pasture",
+  "PermanentCrop",
+  "Residential",
+  "River",
+  "SeaLake"
+ ],
+ "splits": {
+  "train": {
+   "n": 16200,
+   "counts": [
+    1799,
+    1827,
+    1481,
+    1863,
+    1791,
+    1460,
+    1505,
+    1787,
+    1492,
+    1195
+   ],
+   "sha256": "f358727198d9286ba6e0059a3663999764dab5bbf0d3f1b46f0da8390382459c"
+  },
+  "val": {
+   "n": 996,
+   "counts": [
+    111,
+    112,
+    91,
+    115,
+    110,
+    90,
+    92,
+    110,
+    92,
+    73
+   ],
+   "sha256": "ec748bd281ddf8799b56c917e147dfca076fe76b63191b4bde0757480b17fb04"
+  },
+  "test": {
+   "n": 996,
+   "counts": [
+    111,
+    112,
+    91,
+    115,
+    110,
+    90,
+    92,
+    110,
+    92,
+    73
+   ],
+   "sha256": "38d594de569843a773198dd31eee8ecb08239732bcdbf0b1c9d8c29063fe4f96"
+  }
+ }
+}

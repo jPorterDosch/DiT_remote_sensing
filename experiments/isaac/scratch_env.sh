@@ -29,6 +29,10 @@ export WANDB_DIR="$STORE"
 export WANDB_CACHE_DIR="$STORE/cache/wandb"
 export WANDB_DATA_DIR="$STORE/cache/wandb-data"
 export TMPDIR="$STORE/tmp"
+# FLUX weights live in the store; util.py's fallback matches, but exporting here keeps every
+# ISAAC job pinned to $STORE even if STORE is overridden. Not part of config_hash.
+export FLUX_DEV="${FLUX_DEV:-$STORE/FLUX.1-dev/flux1-dev.safetensors}"
+export AE="${AE:-$STORE/FLUX.1-dev/ae.safetensors}"
 mkdir -p "$HF_HOME" "$TORCH_HOME" "$PIP_CACHE_DIR" "$WANDB_CACHE_DIR" "$WANDB_DATA_DIR" "$TMPDIR" || {
     echo "FATAL: cannot create $STORE (scratch mounted? set STORE=...)" >&2
     return 1 2>/dev/null || exit 1

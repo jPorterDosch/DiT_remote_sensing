@@ -106,8 +106,11 @@ def _stratified_indices(labels: np.ndarray, subset_size: int, seed: int) -> np.n
 
     Deterministic given (labels order, subset_size, seed): np.random.default_rng(seed)
     plus per-class sorted-filename dataset order. All extraction runs that share these
-    inputs select the IDENTICAL image subset — paired caches rely on this.
+    inputs select the IDENTICAL image subset — paired caches rely on this. Multi-hot labels
+    (m-bigearthnet) have no single class to stratify on: a seeded uniform subset instead.
     """
+    if labels.ndim == 2:
+        return np.sort(np.random.default_rng(seed).choice(len(labels), subset_size, replace=False))
     classes = np.unique(labels)
     base, rem = divmod(subset_size, len(classes))
     rng = np.random.default_rng(seed)
@@ -223,7 +226,8 @@ class ExtractionTask:
             print(f"{key}: {value}")
 
         class_names = getattr(dataset, "class_names", dataset.category_list)
-        counts = np.bincount(all_labels[indices], minlength=len(class_names))
+        sub = all_labels[indices]
+        counts = sub.sum(0) if sub.ndim == 2 else np.bincount(sub, minlength=len(class_names))
         print("per-class counts:", dict(zip(class_names, counts.tolist(), strict=True)))
 
         feats, labels, mods = extract_features(cfg, model, loader, f"{cfg.extract_split}_subset")
@@ -245,7 +249,7 @@ class ExtractionTask:
         np.savez(
             out_path,
             feats=feats,  # N, K, C — pooled, pre-normalization
-            labels=labels,  # N
+            labels=labels,  # N (multi-label: N x L multi-hot)
             mods=mods,  # K, 3, C — adaLN [shift, scale, gate] per timestep, for offline DiTF norm
             timesteps=np.array(cfg.t),
             subset_indices=indices,  # into cfg.extract_split's split

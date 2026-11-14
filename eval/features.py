@@ -7,7 +7,7 @@ VIEW of it. Views reproduce exactly what the validated prototypes fed their prob
                     the other timesteps appended raw  (6ac arm A1, section 13)
         t:<i>       DiTF-normalized single timestep i  (6ac arm A2)
         concat      DiTF-normalized all-t concat  (Q2 flux_7t)
-  dino  cls | mp | clsmp
+  dino  cls | mp | clsmp | cls4 | cls4mp  (cls4 = last-4-block CLS concat; see DINO_OFFICIAL_VIEWS)
   vae   full | pool8 | pool4 | pool2 | pool1  (Q1 poolings of the 16x32x32 clean latent;
         poolN = N x N grid x 16 ch: 1024 / 256 / 64 / 16-d. Q1's "pool 4x4 (256d)" arm is pool8)
 
@@ -28,6 +28,9 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(REPO_ROOT, "src"))
 
 DISCARD = [154, 1446]  # DiTF massive-activation channels
+# The DINO arm's official candidates: DINOv2/v3 linear eval's own grid, n_last_blocks in
+# {1, 4} x use_avgpool (dinov3/eval/linear.py create_linear_input), selected on val with C.
+DINO_OFFICIAL_VIEWS = "cls,clsmp,cls4,cls4mp"
 
 # cv/budget/mlp identity: the ordered image set every paired arm must consume. The
 # RESISC45 5,000 are the section-13 inversion cache's paths, in cache order (6ac).
@@ -42,19 +45,49 @@ def _eurosat_classes() -> list[str]:
     return list(EUROSAT_CLASSES)
 
 
+def _geobench(name: str, train: int, val: int, test: int, **extra) -> dict:
+    """An OFFICIAL entry whose class list (LABEL order) is the committed export manifest's."""
+
+    def classes() -> list[str]:
+        with open(os.path.join(REPO_ROOT, "eval", "manifests", f"{name}.json")) as f:
+            return json.load(f)["classes"]
+
+    sizes = {"train": train, "val": val, "test": test}
+    return {"sizes": sizes, "root": f"data/{name}_rgb", "classes": classes, **extra}
+
+
 # Official-protocol datasets -- the ONLY place a GEO-Bench task is registered for
-# eval.probe / eval.extract_dino / eval.sweep. Adding a task = one entry here (plus its
-# TaskSpec in eval/export_geobench.py and a run.py dataset wrapper for FLUX extraction).
-#   sizes:   per-split counts COUNTED from the shipped partition (rule 16), never a paper
-#   root:    exported RGB tree, <root>/<split>/<Class>/*.png
-#   classes: zero-arg callable -> class names in LABEL order (the exporter's order)
+# eval.probe / eval.extract_dino / eval.sweep / run.py (src/datasets/geobench.py). Adding a
+# task = one entry here plus its TaskSpec in eval/export_geobench.py.
+#   sizes:      per-split counts COUNTED from the shipped partition (rule 16), never a paper
+#   root:       exported RGB tree, <root>/<split>/<Class>/*.png (multi-label: <root>/<split>/*.png
+#               + labels.npz)
+#   classes:    zero-arg callable -> class names in LABEL order (the exporter's order)
+#   multilabel: labels are multi-hot rows; the metric is micro-F1 (SatDiFuser val_logger)
 OFFICIAL = {
     "m_eurosat": {
         "sizes": {"train": 16200, "val": 996, "test": 996},
         "root": "data/m_eurosat_rgb",
         "classes": _eurosat_classes,
     },
+    "m_forestnet": _geobench("m_forestnet", 6464, 989, 993),
+    "m_so2sat": _geobench("m_so2sat", 19992, 986, 986),
+    "m_brick_kiln": _geobench("m_brick_kiln", 15063, 999, 999),
+    "m_pv4ger": _geobench("m_pv4ger", 11814, 999, 999),
+    "m_bigearthnet": _geobench("m_bigearthnet", 20000, 1000, 1000, multilabel=True),
 }
+
+
+def path_key(p: str) -> str:
+    """An image's identity independent of where the tree lives: its last 3 path components
+    (<tree>/<split>/<file> or <split>/<class>/<file>). Absolute vs relative --dataset.path
+    (banked m-eurosat caches vs sweep caches) must not make the same image two images."""
+    return "/".join(os.path.normpath(p).split(os.sep)[-3:])
+
+
+def key(task: str) -> str:
+    """GEO-Bench task name -> OFFICIAL key (m-brick-kiln -> m_brick_kiln)."""
+    return task.replace("-", "_")
 
 
 def official_spec(dataset: str) -> dict:
@@ -118,9 +151,16 @@ def view(kind: str, d, spec: str):
         if spec == "concat":
             return "plain", np.ascontiguousarray(fi.reshape(len(fi), -1)).astype(np.float32)
     elif kind == "dino":
-        parts = {"cls": [d["cls"]], "mp": [d["mp"]], "clsmp": [d["cls"], d["mp"]]}
-        if spec in parts:
-            return "plain", np.ascontiguousarray(np.concatenate(parts[spec], axis=1)).astype(np.float32)
+        fields = {
+            "cls": ["cls"],
+            "mp": ["mp"],
+            "clsmp": ["cls", "mp"],
+            "cls4": ["cls4"],
+            "cls4mp": ["cls4", "mp"],
+        }
+        if spec in fields:  # read only the requested arrays: banked files have no cls4
+            X = np.concatenate([d[f] for f in fields[spec]], axis=1)
+            return "plain", np.ascontiguousarray(X).astype(np.float32)
     elif kind == "vae":
         lat = d["lat"]
         N, C_, H, W = lat.shape
@@ -251,18 +291,28 @@ def load_flux_split(pattern: str, pins: dict, split: str, n_expect: int, smoke: 
     return feats[order].astype(np.float64), labels[order], ts, meta, [str(p) for p in paths[order]], hits
 
 
-def list_official_split(dataset: str, split: str, root: str | None = None):
-    """Image files + labels of one official split, in class-list order then sorted names.
-    Source: dinov2_m_eurosat.list_split (size check against the OFFICIAL entry)."""
+def list_official_split(dataset: str, split: str, root: str | None = None, classes: list | None = None):
+    """Image files + labels of one official split, in class-list order then sorted names
+    (multi-label: labels.npz order, y multi-hot). `classes` overrides the registry's list (the
+    exporter, before a manifest exists). Source: dinov2_m_eurosat.list_split (size check
+    against the OFFICIAL entry)."""
     spec = official_spec(dataset)
     root = root or spec["root"]
-    files, labels = [], []
-    for ci, cls in enumerate(official_classes(dataset)):
-        for f in sorted(glob.glob(os.path.join(root, split, cls, "*.png"))):
-            files.append(f)
-            labels.append(ci)
+    if spec.get("multilabel"):
+        d = np.load(os.path.join(root, split, "labels.npz"))
+        files = [os.path.join(root, split, f"{n}.png") for n in d["names"]]
+        labels = d["y"].astype(np.int64)
+        if not all(map(os.path.exists, files)):
+            raise SystemExit(f"{dataset} {split}: labels.npz lists images missing under {root}")
+    else:
+        files, labels = [], []
+        for ci, cls in enumerate(classes or official_classes(dataset)):
+            for f in sorted(glob.glob(os.path.join(root, split, cls, "*.png"))):
+                files.append(f)
+                labels.append(ci)
+        labels = np.array(labels, dtype=np.int64)
     if len(files) != spec["sizes"][split]:
         raise SystemExit(
             f"{dataset} {split}: {len(files)} images under {root}, expected {spec['sizes'][split]}"
         )
-    return files, np.array(labels, dtype=np.int64)
+    return files, labels

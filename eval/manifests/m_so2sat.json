@@ -1,0 +1,92 @@
+{
+ "classes": [
+  "Compact_high_rise",
+  "Compact_mid_rise",
+  "Compact_low_rise",
+  "Open_high_rise",
+  "Open_mid_rise",
+  "Open_low_rise",
+  "Lightweight_low_rise",
+  "Large_low_rise",
+  "Sparsely_built",
+  "Heavy_industry",
+  "Dense_trees",
+  "Scattered_trees",
+  "Bush_scrub",
+  "Low_plants",
+  "Bare_rock_or_paved",
+  "Bare_soil_or_sand",
+  "Water"
+ ],
+ "splits": {
+  "train": {
+   "n": 19992,
+   "counts": [
+    1176,
+    1176,
+    1176,
+    1176,
+    1176,
+    1176,
+    1176,
+    1176,
+    1176,
+    1176,
+    1176,
+    1176,
+    1176,
+    1176,
+    1176,
+    1176,
+    1176
+   ],
+   "sha256": "1c8d6d9d178a50cbacb47f5a3e51c19e9d800fab8768e789367fc90dca317dd6"
+  },
+  "val": {
+   "n": 986,
+   "counts": [
+    58,
+    58,
+    58,
+    58,
+    58,
+    58,
+    58,
+    58,
+    58,
+    58,
+    58,
+    58,
+    58,
+    58,
+    58,
+    58,
+    58
+   ],
+   "sha256": "b7faa1458d66aea202131f4112cf8234dc7f164d7420c44982f93a06e0ff2059"
+  },
+  "test": {
+   "n": 986,
+   "counts": [
+    58,
+    58,
+    58,
+    58,
+    58,
+    58,
+    58,
+    58,
+    58,
+    58,
+    58,
+    58,
+    58,
+    58,
+    58,
+    58,
+    58
+   ],
+   "sha256": "a2bb53f2a1c2ba86a758f92d7fada74f5d9fa773038f7cd6f4991ed9755ecc24"
+  }
+ }
+}

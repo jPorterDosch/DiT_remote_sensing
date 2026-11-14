@@ -1,0 +1,32 @@
+{
+ "classes": [
+  "not_brick_kiln",
+  "brick_kiln"
+ ],
+ "splits": {
+  "train": {
+   "n": 15063,
+   "counts": [
+    10000,
+    5063
+   ],
+   "sha256": "bc568d65a0910ff906d3787316b0dac362a091e5e41acd8a880dd26ee479a1ec"
+  },
+  "val": {
+   "n": 999,
+   "counts": [
+    663,
+    336
+   ],
+   "sha256": "5d8f3ebfe4cfeede1e8f39207389af72440d5774757dd942490e6bea7e80b999"
+  },
+  "test": {
+   "n": 999,
+   "counts": [
+    663,
+    336
+   ],
+   "sha256": "380024fdaf0df9fbb0ff99b3f3de9c47f50bc6e3fc68346e4ebaba449a8bf8cd"
+  }
+ }
+}

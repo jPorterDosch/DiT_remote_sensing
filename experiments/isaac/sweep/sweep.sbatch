@@ -2,9 +2,8 @@
 # ============================================================================
 # t x k SWEEP on a registered official-split dataset (frozen FLUX, ens8, 7-t grid, g=1.0),
 # one array task per block. The dataset is a parameter; nothing below is task-specific.
-#   sbatch --export=ALL,DATASET=m_eurosat,REUSE_K=28,REUSE_DIR=models/m_eurosat_oneshot_ens8 \
-#       experiments/isaac/sweep/sweep.sbatch
-#   sbatch --export=ALL,DATASET=<any eval/features.OFFICIAL key> experiments/isaac/sweep/sweep.sbatch
+#   bash experiments/isaac/sweep/submit.sh <eval/features.OFFICIAL key>   (sizes --time, <= 72 h)
+#   REUSE_K=28 REUSE_DIR=models/m_eurosat_oneshot_ens8 bash experiments/isaac/sweep/submit.sh m_eurosat
 # Each task runs experiments/isaac/sweep/sweep_block.sh <k>: extract every official split
 # at block k -> eval.sweep block -> delete the caches. Then, on a login node:
 #   python3 -m eval.sweep select --dataset $DATASET --arm flux-oneshot-ens8 \
@@ -15,10 +14,10 @@
 # a mid-block post-modulation activation, a different definition from the single blocks'
 # block INPUT (RESEARCH_NOTES 9.6).
 #
-# TIME (m-eurosat, 18,192 images): one-shot early-exits at block k, so cost ~ (k+1)/29 x
-# the measured k=28 rate (4.99 s/img A6000, ~2 s/img H100): ~7 h (k=19) ... ~19 h (k=54),
-# plus ~1-2 h CPU probing. Worst task ~21 h, so 30 h leaves ~1.4x margin; ~92 H100 GPU-h
-# for 7 extracted blocks. Other datasets scale with their image count -- recheck --time.
+# TIME: one-shot early-exits at block k, so cost ~ (k+1)/29 x the measured k=28 rate (4.99
+# s/img A6000, ~2 s/img H100), plus CPU probing. submit.sh sizes --time per dataset from its
+# image count (x1.5 margin) and refuses > 72 h (ISAAC limit); the #SBATCH value below is only
+# the default for a direct sbatch. m-eurosat: ~7 h (k=19) ... ~19 h (k=54), ~103 H100-h.
 # STORAGE: ~1.6 GB of caches per running task (m-eurosat) on scratch, deleted after probing.
 # ============================================================================
 #SBATCH --job-name=geobench-sweep
