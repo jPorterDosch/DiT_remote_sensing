@@ -14,7 +14,6 @@ sys.path.insert(0, os.path.join(_root, "src", "models"))  # flux.* internal impo
 
 import torch
 import tyro
-
 import wandb
 
 warnings.filterwarnings("ignore")
@@ -22,21 +21,27 @@ warnings.filterwarnings("ignore")
 import datasets  # noqa: F401  — triggers @register_dataset decorators
 import models  # noqa: F401  — resolves to src/models/, triggers @register_model decorators
 import tasks  # noqa: F401  — triggers @register_task decorators
+from registry import DATASETS, MODELS, TASKS
 from config_types import (
+    ALIGN_ARMS,
+    AlignConfig,
+    Git10MConfig,
     NUM_BLOCKS,
     ExtractionMode,
     ProbeType,
     map_timesteps_to_grid,
     validate_inversion_block,
 )
-from eval.wb import WANDB_ENTITY, WANDB_PROJECT
-from registry import DATASETS, MODELS, TASKS
-from tasks.extraction import env_provenance
 from utils import seed_all, to_jsonable
+from tasks.extraction import env_provenance
+from eval import features as F
+from eval.wb import WANDB_ENTITY, WANDB_PROJECT
 
 
 @dataclass
 class ModelConfig:
+    # "flux" (FLUX.1-dev, src/models/flux) or "geocore" (GeoCore-9B, src/models/geocore; needs
+    # RunConfig.geocore_ckpt / geocore_vae).
     name: str = "flux"
     ensemble_size: int = 8
 
@@ -44,7 +49,9 @@ class ModelConfig:
 @dataclass
 class DatasetConfig:
     name: str = "eurosat"
-    path: str = "/lustre/isaac24/scratch/jdosch1/DiT_remote_sensing/datasets/EuroSAT"
+    # Hashed into config_hash: do NOT repoint (rule 9). The data now lives under
+    # DiT_remote_sensing/datasets/; DeepLearning/datasets/{EuroSAT,SPair-71k} are symlinks to it.
+    path: str = "/lustre/isaac24/scratch/jdosch1/DeepLearning/datasets/EuroSAT"
 
 
 @dataclass
@@ -98,6 +105,9 @@ class RunConfig:
     # features); every historical cache is train-split, so "train" stays the default and
     # the field is config_hash-blacklisted (rule 9) with a "+test" run-name suffix.
     extract_split: str = "train"
+    # task="extract_seg_tokens" only: strided SMOKE cap on the split (stamped into the cache tag,
+    # never quotable). None = the full split.
+    max_images: int | None = None
     # task="extract" only: split the extraction into num_shards contiguous index ranges
     # and run only shard_index (for SLURM array jobs over the expensive inversion chain).
     # Blacklisted from config_hash (rule 9); shards are distinguished by a "+sNofM"
@@ -117,6 +127,14 @@ class RunConfig:
     k: int | list[int] = 28
     cd: bool = False
     discard_channels: list[int] = field(default_factory=lambda: [154, 1446])
+    # model.name == "geocore" only: the GeoCore-9B snapshot directory (model-*.safetensors +
+    # model.safetensors.index.json, verified against pinned sha256s in models/geocore/adapter.py)
+    # and the FLUX.2 VAE safetensors file. Both are hashed into config_hash when the model is
+    # geocore (the user's 2026-11-02 decision); for every other model they must stay empty and are
+    # dropped from the hash, so no FLUX run directory moves (rule 9; tests/test_geocore_config.py
+    # pins a historical FLUX hash).
+    geocore_ckpt: str = ""
+    geocore_vae: str = ""
 
     ## correspondence (spair)
     captions_path: str = "spair_detailed_captions.json"
@@ -200,6 +218,22 @@ class RunConfig:
     wandb_entity: str = WANDB_ENTITY
     wandb_project: str = WANDB_PROJECT
 
+    ## finetune-diffusion: semantic alignment to a frozen teacher (config_types.AlignConfig,
+    ## tasks/align.py) and the Git-10M training corpus (config_types.Git10MConfig,
+    ## datasets/git10m.py). Both nested blocks are config_hash-BLACKLISTED (rule 9: hashing new
+    ## fields repoints every existing run dir); their identity is the +<arm>-<8 hex> run-name
+    ## suffix (make_run_name) and is recorded in full in every checkpoint / meta.json.
+    align: AlignConfig = field(default_factory=AlignConfig)
+    git10m: Git10MConfig = field(default_factory=Git10MConfig)
+
+    def align_hash(self) -> str:
+        """8-hex identity of the alignment + corpus settings (the resume path and the checkpoint
+        cadence excluded: a resume must produce the SAME run name)."""
+        payload = to_jsonable({"align": self.align.identity(), "git10m": self.git10m.identity()})
+        return hashlib.sha1(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[
+            :8
+        ]
+
     def config_hash(self) -> str:
         payload = to_jsonable(asdict(self))
 
@@ -231,13 +265,24 @@ class RunConfig:
             # Ditto: shards are distinguished by the +sNofM run-name suffix.
             "num_shards",
             "shard_index",
+            # Ditto (rule 9): extract_seg_tokens' smoke cap is stamped into its cache tag instead.
+            "max_images",
             # Same reasoning: requesting the velocity adds an ADDITIONAL artifact and does
             # not alter the pooled features (the terminal step's forward_velocity_feat
             # returns the same block-k features as the early-exiting forward_feat), so it
             # must not change the run name. The velocity lands in its own
             # multistep_train_vels_*.npz, so the two artifacts cannot be confused.
             "want_velocity",
+            # Same rule-9 reasoning: the alignment / corpus blocks are new; their identity is the
+            # +<arm>-<align_hash> suffix of make_run_name.
+            "align",
+            "git10m",
         }
+
+        if self.model.name != "geocore":
+            # Empty by construction (validated in __post_init__); dropping them keeps every
+            # pre-2026-11-02 FLUX hash byte-identical.
+            blacklist |= {"geocore_ckpt", "geocore_vae"}
 
         for k in blacklist:
             payload.pop(k, None)
@@ -265,7 +310,7 @@ class RunConfig:
         # so no previously-extracted cache changes path.
         # Control-provenance suffix, derived from the SAME parts list the cache tag uses
         # (tasks.extraction.env_provenance) -- one source of truth for both formats.
-        _, _, parts = env_provenance(self, honors=_task_honors(self.task))
+        _, _, parts = env_provenance(self, honors=_task_honors(self.task, self.model.name))
         suffix = "".join("+" + p for p in parts)
         # Protocol-mode suffixes (fields are config_hash-blacklisted; the name is their
         # identity -- CLAUDE.md rule 9).
@@ -277,6 +322,8 @@ class RunConfig:
             suffix += f"+{self.extract_split}"
         if self.num_shards > 1:
             suffix += f"+s{self.shard_index}of{self.num_shards}"
+        if self.align.arm:
+            suffix += f"+{self.align.arm}-{self.align_hash()}"
         if suffix:
             return f"{dataset_name}_{model_name}_{self.config_hash()}+{seed}{suffix}"
         return f"{dataset_name}_{model_name}_{self.config_hash()}+{seed}"
@@ -307,6 +354,16 @@ class RunConfig:
             if any(a >= b for a, b in zip(self.t, self.t[1:])):
                 raise ValueError(f"t list must be strictly increasing, got {self.t}")
 
+        if self.model.name == "geocore":
+            if not self.geocore_ckpt or not self.geocore_vae:
+                raise ValueError(
+                    "model.name='geocore' requires --geocore-ckpt <snapshot dir> and --geocore-vae <safetensors>"
+                )
+        elif self.geocore_ckpt or self.geocore_vae:
+            raise ValueError(
+                f"geocore_ckpt / geocore_vae are only valid with model.name='geocore', got model.name={self.model.name!r}"
+            )
+
         if self.subset_size is not None and self.subset_size <= 0:
             raise ValueError(f"subset_size must be positive or None, got {self.subset_size}")
 
@@ -316,17 +373,131 @@ class RunConfig:
             raise ValueError(
                 f"invalid shard spec: shard_index={self.shard_index}, num_shards={self.num_shards}"
             )
-        if self.num_shards > 1 and self.task != "extract":
+        if self.num_shards > 1 and self.task not in ("extract", "extract_seg_tokens"):
             raise ValueError(
-                f"num_shards={self.num_shards} is only honored by task='extract', got task={self.task!r}"
+                f"num_shards={self.num_shards} is only honored by task='extract' / 'extract_seg_tokens', got task={self.task!r}"
             )
-        if self.extract_split != "train" and self.task != "extract":
+        if self.extract_split != "train" and self.task not in ("extract", "extract_seg_tokens"):
             # A set-but-unhonored flag must raise, not silently mislabel (rule 10): only
-            # tasks/extraction.py reads extract_split; every other task would train/probe
-            # on its usual splits while the run dir claimed "+test".
+            # tasks/extraction.py and tasks/seg_tokens.py read extract_split; every other task
+            # would train/probe on its usual splits while the run dir claimed "+test".
             raise ValueError(
-                f"extract_split={self.extract_split!r} is only honored by task='extract', got task={self.task!r}"
+                f"extract_split={self.extract_split!r} is only honored by task='extract' / 'extract_seg_tokens', got task={self.task!r}"
             )
+        if self.max_images is not None and (self.task != "extract_seg_tokens" or self.max_images < 1):
+            raise ValueError(
+                f"max_images={self.max_images} is only honored by task='extract_seg_tokens' (>= 1), got task={self.task!r}"
+            )
+        if self.task == "extract_seg_tokens" and self.dataset.name not in F.OFFICIAL_SEG:
+            raise ValueError(
+                f"task='extract_seg_tokens' is for the OFFICIAL_SEG datasets {sorted(F.OFFICIAL_SEG)}, got {self.dataset.name!r}"
+            )
+        if self.dataset.name in F.OFFICIAL_SEG and self.task != "extract_seg_tokens":
+            raise ValueError(
+                f"segmentation dataset {self.dataset.name!r} is served to task='extract_seg_tokens' only, got {self.task!r}"
+            )
+        if self.align.arm and self.task != "finetune-diffusion":
+            # Rule 10 again: only train_diffusion reads align; the run name would carry +<arm>.
+            raise ValueError(
+                f"align.arm={self.align.arm!r} is only honored by task='finetune-diffusion', got task={self.task!r}"
+            )
+        if self.align.arm and self.align.arm not in ALIGN_ARMS:
+            raise ValueError(
+                f"align.arm must be one of {ALIGN_ARMS} (or empty = off), got {self.align.arm!r}"
+            )
+        if self.align.resume and not os.path.isfile(self.align.resume):
+            raise ValueError(f"align.resume does not exist: {self.align.resume}")
+        if self.align.stop_step:
+            if self.align.arm not in ("naive", "proj"):
+                raise ValueError(
+                    f"align.stop_step needs arm naive or proj (fm has no semantic step to stop, sem would stop training), got {self.align.arm!r}"
+                )
+            if not (0 < self.align.stop_step < self.max_train_steps):
+                raise ValueError(
+                    f"align.stop_step={self.align.stop_step} must lie in (0, max_train_steps={self.max_train_steps})"
+                )
+        if self.align.snapshot_every < 0 or self.align.keep_ckpt_every < 0:
+            raise ValueError("align.snapshot_every / keep_ckpt_every must be >= 0")
+        if self.align.keep_ckpt_every and (
+            not self.align.ckpt_every or self.align.keep_ckpt_every % self.align.ckpt_every
+        ):
+            raise ValueError(
+                f"align.keep_ckpt_every={self.align.keep_ckpt_every} must be a multiple of align.ckpt_every={self.align.ckpt_every} (> 0)"
+            )
+        if self.align.ckpt_every < 0 or self.align.meas_every < 0 or self.align.proj_warmup_steps < 0:
+            raise ValueError("align.ckpt_every / meas_every / proj_warmup_steps must be >= 0")
+        if self.align.fid_n < 0 or self.align.fid_subsets < 1:
+            raise ValueError("align.fid_n must be >= 0 and align.fid_subsets >= 1")
+        if self.align.fid_n and self.align.no_gen:
+            raise ValueError("align.fid_n > 0 needs generation: drop --align.no-gen")
+        if self.align.fid_n and self.align.fid_n < 2 * self.align.gen_n:
+            raise ValueError(
+                f"align.fid_n={self.align.fid_n} too small: use >= 2 x gen_n ({self.align.gen_n})"
+            )
+        if self.align.feat not in ("ditf", "ln", "raw"):
+            raise ValueError(f"align.feat must be 'ditf', 'ln' or 'raw', got {self.align.feat!r}")
+        if self.align.target_shuffle not in ("", "batch"):
+            raise ValueError(f"align.target_shuffle must be '' or 'batch', got {self.align.target_shuffle!r}")
+        if self.align.target_shuffle and not self.align.arm:  # rule 10: set-but-unhonored raises
+            raise ValueError("align.target_shuffle is only honored with align.arm set")
+        if self.align.target_shuffle and self.batch_size < 2:
+            raise ValueError(
+                "align.target_shuffle='batch' needs --batch-size >= 2 (a 1-row batch rolls onto itself)"
+            )
+        if self.align.t_weights is not None:
+            tw = list(self.align.t_weights)
+            n_t = len(self.t) if isinstance(self.t, list) else 1
+            if len(tw) != n_t or any(not (w > 0) for w in tw):
+                raise ValueError(
+                    f"align.t_weights must give one positive weight per t ({n_t} timesteps: {self.t}), got {tw}"
+                )
+            if not self.align.arm:  # rule 10: a set-but-unhonored flag raises (uniform sampling otherwise)
+                raise ValueError(
+                    "align.t_weights is only honored with align.arm set: set the arm or drop the weights"
+                )
+        if self.align.sem_t_weights is not None:
+            sw = list(self.align.sem_t_weights)
+            n_t = len(self.t) if isinstance(self.t, list) else 1
+            if len(sw) != n_t or any(not (w >= 0) for w in sw) or not any(w > 0 for w in sw):
+                raise ValueError(
+                    f"align.sem_t_weights must give one weight >= 0 per t, not all 0 ({n_t} timesteps: {self.t}), got {sw}"
+                )
+            if self.align.arm not in (
+                "naive",
+                "proj",
+                "sem",
+            ):  # rule 10: the fm arm applies no semantic gradient
+                raise ValueError("align.sem_t_weights needs align.arm in naive / proj / sem")
+        if (
+            self.align.weight < 0
+            or self.align.proj_lr <= 0
+            or self.align.gen_n <= 0
+            or self.align.gen_steps <= 0
+        ):
+            raise ValueError("align.weight must be >= 0; align.proj_lr, gen_n, gen_steps must be positive")
+        bad_mt = [x for x in self.align.meas_t if x < 1 or x > 1000]
+        if bad_mt or any(a >= b for a, b in zip(self.align.meas_t, self.align.meas_t[1:])):
+            raise ValueError(
+                f"align.meas_t must be strictly increasing within [1, 1000], got {self.align.meas_t}"
+            )
+        if (self.git10m.index or self.git10m.val_index) and self.dataset.name != "git10m":
+            raise ValueError(
+                f"git10m.* settings are only honored by dataset.name='git10m', got {self.dataset.name!r}"
+            )
+        if self.dataset.name == "git10m":
+            if self.task not in ("finetune-diffusion", "gen-eval"):
+                raise ValueError(
+                    "dataset.name='git10m' is a training corpus: task must be 'finetune-diffusion' "
+                    "(or 'gen-eval', which only reads its val holdout as the FID reference)"
+                )
+            if self.task == "finetune-diffusion" and not self.align.arm:
+                raise ValueError(
+                    "dataset.name='git10m' has no labels: set align.arm (fm = flow matching only)"
+                )
+            if not self.git10m.index:
+                raise ValueError("dataset.name='git10m' needs git10m.index")
+            if self.git10m.holdout_every < 2:
+                raise ValueError("git10m.holdout_every must be >= 2")
         if (self.freeze_backbone or self.supervised_finetune) and self.task != "finetune-diffusion":
             # Same rule-10 guard: only train_diffusion reads these, but make_run_name stamps
             # +frozen / +sup for every task, so e.g. an extraction would be mislabelled.
@@ -353,6 +524,14 @@ class RunConfig:
                 raise ValueError(
                     f"all k values must be in the range [0, {max_k}], got invalid values {bad_k}"
                 )
+
+        if not isinstance(self.k, int) and self.task not in ("extract", "extract_seg_tokens"):
+            # Only the one-shot multi-block extractors read a block list. Every other path takes
+            # one block: FluxModel.extract would apply the first block's adaLN mod to all of them
+            # and emit B rows per image (review 2026-10-11). Refuse before the model loads.
+            raise ValueError(
+                f"a block list k={self.k} is only honored by task='extract' / 'extract_seg_tokens', got task={self.task!r}"
+            )
 
         if self.extraction_mode == ExtractionMode.INVERSION:
             # Reject at config time instead of crashing after the model loads; the block
@@ -438,14 +617,21 @@ class RunConfig:
         if self.lora_dropout < 0 or self.lora_dropout >= 1:
             raise ValueError(f"lora_dropout must be in the range [0, 1), got {self.lora_dropout}")
 
-        if self.guidance_scale <= 0:
+        if self.model.name == "geocore":
+            # No guidance embedding in GeoCore-9B: the pinned value is 0.0 and the cache tag reads g0.0
+            # (models/geocore/adapter.PINNED_GUIDANCE); any other value would mislabel the cache.
+            if self.guidance_scale != 0.0:
+                raise ValueError(
+                    f"model.name='geocore' requires guidance_scale=0.0, got {self.guidance_scale}"
+                )
+        elif self.guidance_scale <= 0:
             raise ValueError(f"guidance_scale must be positive, got {self.guidance_scale}")
 
         if self.mim_loss_weight < 0:
             raise ValueError(f"mim_loss_weight must be non-negative, got {self.mim_loss_weight}")
 
 
-def _task_honors(task: str) -> tuple[str, ...]:
+def _task_honors(task: str, model_name: str = "flux") -> tuple[str, ...]:
     """Which extraction-control env flags each task's code path actually implements, for
     env_provenance's set-but-not-honored guard.
 
@@ -458,8 +644,19 @@ def _task_honors(task: str) -> tuple[str, ...]:
     the probe separately under task=extract if you want it.
 
     FLUX_RANDOM_INIT (model load) and DEGRADE_TO (dataset __getitem__, further guarded by
-    the degrade-aware-dataset check) genuinely apply to every task."""
+    the degrade-aware-dataset check) genuinely apply to every task.
+
+    A non-FLUX backbone (geocore) honors none of them: its loader never reads FLUX_RANDOM_INIT,
+    its one-shot path never reads FIXED_COND_T, and DEGRADE_TO is a dataset hook the GeoCore
+    protocol does not use -- a set flag must raise, not stamp a control label on a vanilla cache."""
+    if model_name != "flux":
+        return ()
     if task == "finetune-diffusion":
+        return ("FLUX_RANDOM_INIT", "DEGRADE_TO")
+    if task == "gen-eval":
+        # Generation only (tasks/gen_eval.py): denoise() never goes through Featurizer4Eval.forward,
+        # the only reader of FIXED_COND_T, so a set flag would be stamped into the run name while
+        # the samples are vanilla (rule 10; review 2026-10-17).
         return ("FLUX_RANDOM_INIT", "DEGRADE_TO")
     return ("FLUX_RANDOM_INIT", "FIXED_COND_T", "DEGRADE_TO")
 
@@ -481,7 +678,19 @@ def main(cfg: RunConfig) -> None:
     cfg.save_dir = os.path.join(cfg.save_dir, run_name)
 
     # Check for save_dir existence, and error if it already exists to avoid accidental overwriting.
-    if os.path.exists(cfg.save_dir):
+    # A resume (align.resume) continues an existing run directory and is the one exception.
+    if cfg.align.resume and not os.path.isdir(cfg.save_dir):
+        raise ValueError(f"align.resume given but the run directory '{cfg.save_dir}' does not exist")
+    # align.split_eval is a read-only diagnostic of a FINISHED run: it needs that run's directory.
+    if cfg.align.split_eval and not os.path.isdir(cfg.save_dir):
+        raise ValueError(f"align.split_eval given but the run directory '{cfg.save_dir}' does not exist")
+    if cfg.align.virtual_steps and not os.path.isdir(cfg.save_dir):
+        raise ValueError(f"align.virtual_steps given but the run directory '{cfg.save_dir}' does not exist")
+    if cfg.align.grad_geometry and not os.path.isdir(cfg.save_dir):
+        raise ValueError(f"align.grad_geometry given but the run directory '{cfg.save_dir}' does not exist")
+    if os.path.exists(cfg.save_dir) and not (
+        cfg.align.resume or cfg.align.split_eval or cfg.align.virtual_steps or cfg.align.grad_geometry
+    ):
         raise ValueError(
             f"Save directory '{cfg.save_dir}' already exists. Please change the config or remove the existing directory to avoid overwriting previous results."
         )
@@ -496,7 +705,7 @@ def main(cfg: RunConfig) -> None:
     # on the inversion path) would get a run directory labelled as a control while holding
     # clean outputs -- provenance lying in the opposite direction from the poisoning the
     # tags were built to prevent.
-    env_provenance(cfg, honors=_task_honors(cfg.task))
+    env_provenance(cfg, honors=_task_honors(cfg.task, cfg.model.name))
 
     wandb.init(
         entity=cfg.wandb_entity,

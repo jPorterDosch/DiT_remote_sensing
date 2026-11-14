@@ -1,0 +1,36 @@
+{
+ "classes": [
+  "no_solar_pv",
+  "solar_pv"
+ ],
+ "ignore": 255,
+ "splits": {
+  "train": {
+   "n": 3221,
+   "pixel_counts": [
+    266476616,
+    63353784,
+    0
+   ],
+   "sha256": "87dd6cdf06affacd5585dcb9182375df5b5736b437791bf7c27c9ab13c91909e"
+  },
+  "val": {
+   "n": 403,
+   "pixel_counts": [
+    33034253,
+    8232947,
+    0
+   ],
+   "sha256": "945ef4208e10c1743943264e79e47fe19af9a275227544441293f3f771d25c2d"
+  },
+  "test": {
+   "n": 403,
+   "pixel_counts": [
+    33946151,
+    7321049,
+    0
+   ],
+   "sha256": "3ee97f1081b735e0498069aea154404302235b805bd4376c7cd411720d6cbfa7"
+  }
+ }
+}

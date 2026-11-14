@@ -111,7 +111,18 @@ def test_select_end_to_end_reports_selected_cell_only(tmp_path, monkeypatch):
         test_acc_of=lambda c, Cv: 0.25 if (c, Cv) == ("concat2t", 0.1) else 1.0,
     )
     out = sweep.main(
-        ["select", "--dataset", "m_eurosat", "--arm", "flux-test", "--blocks", p, "--out-dir", str(tmp_path)]
+        [
+            "select",
+            "--dataset",
+            "m_eurosat",
+            "--arm",
+            "flux-test",
+            "--blocks",
+            p,
+            "--out-dir",
+            str(tmp_path),
+            "--skip-control",
+        ]
     )
     d = np.load(out, allow_pickle=True)
     assert abs(d["correct__test"].mean() - 0.25) < 1e-9
@@ -137,7 +148,18 @@ def test_sweep_is_dataset_agnostic(tmp_path, monkeypatch):
     a[0][1] = 0.7
     p = write_block(tmp_path / "b24.npz", 24, a, dataset="fake_task")
     out = sweep.main(
-        ["select", "--dataset", "fake_task", "--arm", "flux-test", "--blocks", p, "--out-dir", str(tmp_path)]
+        [
+            "select",
+            "--dataset",
+            "fake_task",
+            "--arm",
+            "flux-test",
+            "--blocks",
+            p,
+            "--out-dir",
+            str(tmp_path),
+            "--skip-control",
+        ]
     )
     d = np.load(out, allow_pickle=True)
     assert str(d["dataset"]) == "fake_task"
@@ -334,3 +356,230 @@ def test_banked_absolute_paths_join_the_sweep(tmp_path):
     p3 = write_block(tmp_path / "b38.npz", 38, flat(0.5), test_paths=other)
     with pytest.raises(SystemExit, match="not one sweep"):
         sweep.load_blocks([p1, p3], "m_eurosat")
+
+
+def _with_val_cache(tmp_path, path, sha_of=None, labels=None):
+    """Record a val cache (labels in subset order) in a block's config, as run_block does."""
+    from eval import wb
+
+    v = tmp_path / "val_cache.npz"
+    if not v.exists():
+        y = labels if labels is not None else np.arange(N_TEST) % 3
+        np.savez(v, labels=y, subset_indices=np.arange(len(y)))
+    ident = wb.file_identity(str(v))
+    if sha_of:
+        ident = {**ident, "sha1": sha_of}
+    d = dict(np.load(path, allow_pickle=True))
+    d.pop("config", None)
+    cfg = {
+        "features": {
+            "train": [{"path": "t.npz", "sha1": "a"}],
+            "val": [ident],
+            "test": [{"path": "x", "sha1": "b"}],
+        }
+    }
+    np.savez(path, **d, config=np.array(json.dumps(cfg)))
+    return str(v)
+
+
+def _select(tmp_path, p, *extra):
+    return sweep.main(["select", "--dataset", "m_eurosat", "--arm", "flux-test", "--blocks", p,
+                       "--out-dir", str(tmp_path), *extra])  # fmt: skip
+
+
+def test_select_control_gates_the_test_vector(tmp_path, monkeypatch):
+    """The positive control runs before the one test use and can FAIL (rule 6): a selected val
+    cell at the constant-predictor rate keeps the test sealed; a real one passes and is recorded."""
+    monkeypatch.setenv("WANDB_MODE", "disabled")
+    p = write_block(tmp_path / "b19.npz", 19, flat(0.40))  # labels balanced 1/3: skill 0.10 < 0.25
+    _with_val_cache(tmp_path, p)
+    with pytest.raises(SystemExit, match="control FAILED"):
+        _select(tmp_path, p)
+    assert not list(tmp_path.glob("sweep-select_*.npz"))  # nothing reported
+    p = write_block(tmp_path / "b19.npz", 19, flat(0.90))
+    _with_val_cache(tmp_path, p)
+    out = _select(tmp_path, p)
+    c = json.loads(str(np.load(out, allow_pickle=True)["info"]))["control"]
+    assert c["pass"] and abs(c["chance"] - 1 / 3) < 1e-9
+
+
+def test_select_control_refuses_missing_or_changed_val_cache(tmp_path, monkeypatch):
+    monkeypatch.setenv("WANDB_MODE", "disabled")
+    p = write_block(tmp_path / "b19.npz", 19, flat(0.90))
+    with pytest.raises(SystemExit, match="do not all record one val cache"):
+        _select(tmp_path, p)  # legacy block: no recorded val cache
+    _with_val_cache(tmp_path, p, sha_of="0" * 40)
+    with pytest.raises(SystemExit, match="missing or changed"):
+        _select(tmp_path, p)
+
+
+def test_blocks_from_different_extractions_refused(tmp_path):
+    """Same test set / pins / grid but different recorded input caches: not one sweep."""
+    p1 = write_block(tmp_path / "b19.npz", 19, flat(0.5))
+    p2 = write_block(tmp_path / "b33.npz", 33, flat(0.5))
+    _with_val_cache(tmp_path, p1)
+    _with_val_cache(tmp_path, p2)
+    sweep.load_blocks([p1, p2], "m_eurosat")  # same recorded inputs: one sweep
+    _with_val_cache(tmp_path, p2, sha_of="f" * 40)
+    with pytest.raises(SystemExit, match="not one sweep"):
+        sweep.load_blocks([p1, p2], "m_eurosat")
+
+
+def test_control_skill_is_imbalance_aware():
+    assert sweep.control_skill(0.9399, 0.8468) > sweep.CONTROL_MIN_SKILL  # m-pv4ger: passes on skill
+    assert 0.9399 - 0.8468 < 0.10  # ...though the old absolute rule failed it
+    assert sweep.control_skill(0.40, 1 / 3) < sweep.CONTROL_MIN_SKILL
+    assert sweep.control_skill(1.0, 1.0) == 0.0
+
+
+# ------------------------------------------------------------------ plot: per-cell best C
+def _grid():
+    # cell (28, t100) peaks at C=0.1; cell (28, t180) at C=0.01 and is the global best
+    vals = {(28, "t100"): {0.01: 0.50, 0.1: 0.60}, (28, "t180"): {0.01: 0.70, 0.1: 0.55},
+            (33, "t100"): {0.01: 0.40, 0.1: 0.45}, (33, "t180"): {0.01: 0.30, 0.1: 0.65}}  # fmt: skip
+    return [
+        {"k": k, "candidate": c, "C": C, "val_acc": v} for (k, c), d in vals.items() for C, v in d.items()
+    ]
+
+
+def test_best_over_C_shows_each_cells_own_best():
+    M, Cb = sweep.best_over_C(_grid(), [28, 33], ["t100", "t180"])
+    assert np.allclose(M, [[0.60, 0.70], [0.45, 0.65]]) and np.allclose(Cb, [[0.1, 0.01], [0.1, 0.1]])
+
+
+def test_plot_outlines_selected_cell_at_its_own_value(tmp_path):
+    best = {"k": 28, "candidate": "t180", "C": 0.01, "val_acc": 0.70}
+    out = tmp_path / "g.png"
+    sweep.plot(_grid(), best, ["t100", "t180"], "t", str(out), test_score=0.68)
+    assert out.exists() and out.stat().st_size > 0
+
+
+def test_plot_refuses_a_selection_the_grid_contradicts(tmp_path):
+    # the old grid-wide-C bug in reverse: a "selected" value that is not the cell's best-over-C
+    bad = {"k": 28, "candidate": "t180", "C": 0.1, "val_acc": 0.55}
+    with pytest.raises(RuntimeError, match="plot/select mismatch"):
+        sweep.plot(_grid(), bad, ["t100", "t180"], "t", str(tmp_path / "g.png"))
+    not_max = {"k": 28, "candidate": "t100", "C": 0.1, "val_acc": 0.60}  # a cell beats it
+    with pytest.raises(RuntimeError, match="exceeds the selected val"):
+        sweep.plot(_grid(), not_max, ["t100", "t180"], "t", str(tmp_path / "g.png"))
+
+
+# ------------------------------------------------------------------ --head tsweight blocks
+def _tsw_caches(tmp_path, monkeypatch):
+    monkeypatch.setenv("WANDB_MODE", "disabled")
+    _fake_official(monkeypatch, 6)
+    d = str(tmp_path / "caches")
+    _write_shard(d, 0, 42, n_per=6, n_shards=1, mode="ONESHOT", eps_seed=42)
+    _write_shard(d, 0, 44, n_shards=1, split="val", mode="ONESHOT", eps_seed=44)
+    _write_shard(d, 0, 43, n_shards=1, split="test", mode="ONESHOT", eps_seed=43)
+    return d, str(tmp_path / "caches" / "*" / FNAME_ONESHOT)
+
+
+def _tsw_block(tmp_path, pattern, *extra):
+    return sweep.main(["block", "--dataset", "fake", "--k", "28", "--arm", "flux-tsw", "--features", pattern,
+                       "--expect", "extraction_mode=ONESHOT", "ensemble_size=2", "--out-dir", str(tmp_path / "res"),
+                       *extra])  # fmt: skip
+
+
+def test_tsweight_block_end_to_end_and_head_guards(tmp_path, monkeypatch):
+    cache_dir, pattern = _tsw_caches(tmp_path, monkeypatch)
+    out = _tsw_block(tmp_path, pattern, "--head", "tsweight")
+    d = np.load(out, allow_pickle=True)
+    assert sweep.head_of(d) == "tsweight" and list(d["candidates"]) == ["tsweight"]
+    assert tuple(d["C_grid"]) == sweep.TSWEIGHT_GRID and "sealed__tsweight__C0.0" in d.files
+    row = json.loads(str(d["val_table"]))[0]
+    assert row["slots"] == ["t100", "t180"] and np.isclose(sum(row["slot_weights"]), 1, atol=1e-5)
+    sweep.verify_block(out, expect_head="tsweight")
+    with pytest.raises(SystemExit, match="block head 'tsweight' != expected 'lr'"):
+        sweep.verify_block(out)  # an lr caller must not accept a tsweight block (rule 6)
+    assert sweep.done_status(out, pattern, "fake", (0.01,), cache_dir, head="tsweight")[0] == 0
+    assert sweep.done_status(out, pattern, "fake", (0.01,), cache_dir, head="lr")[0] == 5
+    with pytest.raises(SystemExit, match="no C grid"):
+        _tsw_block(tmp_path, pattern, "--head", "tsweight", "--c-grid", "0.1")
+
+
+def test_lr_and_tsweight_blocks_are_not_one_sweep(tmp_path, monkeypatch):
+    _, pattern = _tsw_caches(tmp_path, monkeypatch)
+    p_t = _tsw_block(tmp_path, pattern, "--head", "tsweight")
+    p_l = _tsw_block(tmp_path / "lr", pattern)
+    d = dict(np.load(p_l, allow_pickle=True))
+    d["k"] = np.array(33)  # another block, so the protocol-identity check (not the duplicate-k check) decides
+    p_l33 = str(tmp_path / "lr33.npz")
+    np.savez(p_l33, **d)
+    with pytest.raises(SystemExit, match="not one sweep"):
+        sweep.load_blocks([p_t, p_l33], "fake")
+
+
+def test_tsweight_fusion_grid_recorded_and_enforced(tmp_path, monkeypatch):
+    cache_dir, pattern = _tsw_caches(tmp_path, monkeypatch)
+    p_reg = _tsw_block(tmp_path / "reg", pattern, "--head", "tsweight", "--fusion-grid", "reg")
+    d = np.load(p_reg, allow_pickle=True)
+    assert sweep.fusion_grid_of(d) == "reg"
+    assert sweep.done_status(p_reg, pattern, "fake", (0.01,), cache_dir, "tsweight", "reg")[0] == 0
+    assert sweep.done_status(p_reg, pattern, "fake", (0.01,), cache_dir, "tsweight", "satdifuser")[0] == 3
+    p_sd = _tsw_block(tmp_path / "sd", pattern, "--head", "tsweight")
+    dd = dict(np.load(p_sd, allow_pickle=True))
+    dd["k"] = np.array(33)
+    p_sd33 = str(tmp_path / "sd33.npz")
+    np.savez(p_sd33, **dd)
+    with pytest.raises(SystemExit, match="not one sweep"):
+        sweep.load_blocks([p_reg, p_sd33], "fake")
+    with pytest.raises(SystemExit, match="applies to --head tsweight only"):
+        _tsw_block(tmp_path / "x", pattern, "--fusion-grid", "reg")
+
+
+def _val_cache_at(tmp_path, name, labels=None):
+    v = tmp_path / name
+    y = labels if labels is not None else np.arange(N_TEST) % 3
+    np.savez(v, labels=y, subset_indices=np.arange(len(y)))
+    return str(v)
+
+
+def _record_inputs(path, train, val, test):
+    """Record one cache per split in a block's config (sweep_block.sh's per-block layout)."""
+    from eval import wb
+
+    d = dict(np.load(path, allow_pickle=True))
+    d.pop("config", None)
+    cfg = {"features": {"train": [{"path": train, "sha1": "a"}], "val": [wb.file_identity(val)],
+                        "test": [{"path": test, "sha1": "b"}]}}  # fmt: skip
+    np.savez(path, **d, config=np.array(json.dumps(cfg)))
+
+
+def test_per_block_layout_is_one_sweep(tmp_path, monkeypatch):
+    """sweep_block.sh probes block k on its own k<K>/ caches, so blocks share no input path:
+    still one sweep (same pins / test set), and the control reads every block's val cache,
+    which must all hold the same labels."""
+    monkeypatch.setenv("WANDB_MODE", "disabled")
+    p1 = write_block(tmp_path / "b19.npz", 19, flat(0.90))
+    p2 = write_block(tmp_path / "b33.npz", 33, flat(0.90))
+    _record_inputs(p1, "k19/train.npz", _val_cache_at(tmp_path, "k19_val.npz"), "k19/test.npz")
+    _record_inputs(p2, "k33/train.npz", _val_cache_at(tmp_path, "k33_val.npz"), "k33/test.npz")
+    args = [
+        "select",
+        "--dataset",
+        "m_eurosat",
+        "--arm",
+        "flux-test",
+        "--blocks",
+        p1,
+        p2,
+        "--out-dir",
+        str(tmp_path),
+    ]
+    info = json.loads(str(np.load(sweep.main(args), allow_pickle=True)["info"]))
+    assert info["control"]["pass"] and info["compute"] == {"19": {}, "33": {}}  # legacy blocks: no stamp
+    other = _val_cache_at(tmp_path, "k33_val.npz", labels=(np.arange(N_TEST) + 1) % 3)
+    _record_inputs(p2, "k33/train.npz", other, "k33/test.npz")
+    with pytest.raises(SystemExit, match="different labels"):
+        sweep.main(args)
+
+
+def test_block_compute_stamps_the_protocol_thread_count():
+    from eval import protocols as P
+
+    c = sweep.block_compute("lr", multilabel=False)
+    assert c["blas_threads"] == sweep.SWEEP_FIT_THREADS == 8 and c["ovr_n_jobs"] == 1 and c["cpus"] >= 1
+    assert sweep.block_compute("lr", multilabel=True)["blas_threads"] == P.OVR_FIT_THREADS
+    t = sweep.block_compute("tsweight", False, {"device": "cpu", "torch_threads": 4})
+    assert (t["device"], t["torch_threads"]) == ("cpu", 4)

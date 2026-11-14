@@ -1,0 +1,110 @@
+{
+  "_comment": [
+    "Phase 2 template: the Git-10M adapted arms against the frozen teacher and frozen FLUX. Two views per",
+    "FLUX arm (user decision 2026-10-14): (a) entries below = every arm at the FIXED aligned block k=28",
+    "(frozen included: its multi-block caches hold k=28, no extraction); (b) add 'flux-<arm>-best' entries",
+    "with per_dataset expect.k = the block eval.sweep select picks on THAT arm's own val split at 100 %",
+    "labels, exactly as phase1.json's frozen blocks (eurosat 38, brick-kiln 12, pv4ger 28, so2sat 28,",
+    "forestnet 56, bigearthnet 12) were picked on the frozen caches -- compare frozen-best vs adapted-best,",
+    "never adapted-at-frozen's-block. Timestep candidates (t100..t900, concat) and C are selected on val",
+    "per cell, identically for every FLUX arm. Adapted caches: experiments/isaac/git10m/extract_ckpt.sbatch",
+    "(CKPT=<run>/checkpoints/lora_last_*.pt, --array=0-5; multi-block, the frozen caches' 14 blocks); it prints",
+    "the entries; replace <NAME_fm>/<NAME_naive>/<NAME_proj> with the run-dir basenames",
+    "(git10m_flux_<hash>+<seed>+<arm>-<8hex>). A missing arm reports MISSING cells, never silently drops.",
+    "Fractions, seeds and the C grid are phase1's. Cells are keyed by model NAME under --out-dir: the",
+    "frozen k=28 entry is named flux-pretrained-k28 so it never overwrites phase1's flux-pretrained cells",
+    "(per-dataset blocks) in results/matrix; never reuse a phase-1 name with a different expect."
+  ],
+  "fractions": [
+    0.01,
+    0.05,
+    0.1,
+    0.25,
+    1.0
+  ],
+  "seeds": [
+    0,
+    1,
+    2
+  ],
+  "c_grid": [
+    1e-06,
+    1e-05,
+    0.0001,
+    0.001,
+    0.01,
+    0.1,
+    1.0,
+    10.0,
+    100.0
+  ],
+  "datasets": [
+    "m_eurosat",
+    "m_brick_kiln",
+    "m_pv4ger",
+    "m_so2sat",
+    "m_forestnet",
+    "m_bigearthnet"
+  ],
+  "models": [
+    {
+      "name": "dinov3-sat",
+      "kind": "dino",
+      "features": "models/dino_feats/dinov3_vit7b16_sat_{dataset}_{split}.npz",
+      "view": null,
+      "teacher": null
+    },
+    {
+      "name": "flux-pretrained-k28",
+      "kind": "flux",
+      "features": "models/{dataset}_multiblock_ens8/*/multistep_{split}_feats_oneshot_g1.0_k*.npz",
+      "view": null,
+      "expect": {
+        "extraction_mode": "ONESHOT",
+        "ensemble_size": 8,
+        "weights": "flux-dev",
+        "k": 28
+      },
+      "teacher": "dinov3-sat"
+    },
+    {
+      "name": "flux-fm",
+      "kind": "flux",
+      "teacher": "dinov3-sat",
+      "view": null,
+      "features": "models/git10m_eval/<NAME_fm>/{dataset}/*/multistep_{split}_feats_oneshot_g1.0_lora-fm_k*.npz",
+      "expect": {
+        "extraction_mode": "ONESHOT",
+        "ensemble_size": 8,
+        "weights": "flux-dev+lora:fm",
+        "k": 28
+      }
+    },
+    {
+      "name": "flux-naive",
+      "kind": "flux",
+      "teacher": "dinov3-sat",
+      "view": null,
+      "features": "models/git10m_eval/<NAME_naive>/{dataset}/*/multistep_{split}_feats_oneshot_g1.0_lora-naive_k*.npz",
+      "expect": {
+        "extraction_mode": "ONESHOT",
+        "ensemble_size": 8,
+        "weights": "flux-dev+lora:naive",
+        "k": 28
+      }
+    },
+    {
+      "name": "flux-proj",
+      "kind": "flux",
+      "teacher": "dinov3-sat",
+      "view": null,
+      "features": "models/git10m_eval/<NAME_proj>/{dataset}/*/multistep_{split}_feats_oneshot_g1.0_lora-proj_k*.npz",
+      "expect": {
+        "extraction_mode": "ONESHOT",
+        "ensemble_size": 8,
+        "weights": "flux-dev+lora:proj",
+        "k": 28
+      }
+    }
+  ]
+}

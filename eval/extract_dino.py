@@ -9,6 +9,10 @@ resisc45 (any CV dataset): the images are the CV identity cache's paths in cache
 -> results/eval_feats/<preset>_<dataset>_n<N>.npz
 Official datasets: every image of every official split, class-list order.
 -> results/eval_feats/<preset>_<dataset>_<split>.npz
+Segmentation (eval/features.OFFICIAL_SEG), `--tokens --img 512`: the last block's normed PATCH
+tokens of every image, (N, L, D) float16 memmap written image-batch by image-batch (L = (img/16)^2,
+row-major over the patch grid), for the per-token head of eval/seg_probe.py.
+-> <out-dir>/<preset>_<dataset>_<split>_tokens<img>.npy + _meta.json
 
 Model loading and the forward pass are dino_family_resisc45's (which generalized
 dinov2_resisc45/dinov2_m_eurosat). DINOv3 presets load a local gated checkpoint (Meta's
@@ -21,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import os
 import sys
 
@@ -67,12 +72,30 @@ PRESETS = {
     ),
     "dinov3_vit7b16_web": _dinov3("dinov3_vit7b16", "lvd1689m", "a955f4ea", IMAGENET, torch.bfloat16, 8),
     "dinov3_vit7b16_sat": _dinov3("dinov3_vit7b16", "sat493m", "a6675841", SAT493M, torch.bfloat16, 8),
+    # Weak-teacher control (2026-11-07): ViT-L/16 web weights, same family / patch size / loader as
+    # the 7B teachers so only teacher capacity and domain change (0.3 B vs 7 B, LVD-1689M).
+    "dinov3_vitl16_web": _dinov3("dinov3_vitl16", "lvd1689m", "8aa4cbdd", IMAGENET, torch.bfloat16, 32),
 }
 
 
-def load_model(preset, weights, device):
-    """Source: dino_family_resisc45.load_model."""
-    spec = PRESETS[preset]
+DTYPES = {"float32": torch.float32}  # --dtype overrides of a preset's dtype
+
+
+def resolve_dtype(preset: str, device: str, dtype: str):
+    """The torch dtype of a run. 'preset' keeps the preset's dtype (bf16 for DINOv3, chosen so the
+    7B models fit one GPU). bf16 on a CPU is refused: it is orders of magnitude slower there and
+    the caller must say that the features are float32, not get them silently."""
+    dt = PRESETS[preset]["dtype"] if dtype == "preset" else DTYPES[dtype]
+    if device == "cpu" and dt != torch.float32:
+        raise SystemExit(f"{preset} on --device cpu needs --dtype float32 (the preset dtype is {dt})")
+    return dt
+
+
+def load_model(preset, weights, device, dtype=None):
+    """Source: dino_family_resisc45.load_model. dtype: None = the preset's."""
+    spec = dict(PRESETS[preset])
+    if dtype is not None:
+        spec["dtype"] = dtype
     kwargs = {}
     if weights and not spec["weights"]:
         raise SystemExit(f"{preset} loads its hub weights; --weights would be ignored")
@@ -90,6 +113,44 @@ def load_model(preset, weights, device):
     n_par = sum(p.numel() for p in model.parameters())
     print(f"{preset}: {n_par / 1e9:.2f} B params, dtype {spec['dtype']}, batch {spec['batch']}")
     return model, spec
+
+
+@torch.no_grad()
+def extract_tokens(model, spec, paths, device, mean, std, img: int, out_path: str) -> tuple[int, int]:
+    """Last-block normed patch tokens (get_intermediate_layers(n=1, norm=True), the tensor whose
+    spatial mean is `mp` in extract()) at img x img, written straight into an (N, L, D) float16
+    .npy memmap. Returns the patch grid (h, w). Batch 0 is checked against forward_features."""
+    mean_t = torch.tensor(mean).view(1, 3, 1, 1)
+    std_t = torch.tensor(std).view(1, 3, 1, 1)
+    batch = max(1, spec["batch"] * (224 * 224) // (img * img))
+    mm, grid = None, None
+    for i in range(0, len(paths), batch):
+        imgs = []
+        for f in paths[i : i + batch]:
+            im = Image.open(f).convert("RGB").resize((img, img), Image.Resampling.BICUBIC)
+            imgs.append(torch.from_numpy(np.array(im)).permute(2, 0, 1).float() / 255.0)
+        x = ((torch.stack(imgs) - mean_t) / std_t).to(device=device, dtype=spec["dtype"])
+        ((patch, cls),) = model.get_intermediate_layers(x, n=1, return_class_token=True, norm=True)
+        if i == 0:
+            ref = model.forward_features(x)
+            if not torch.allclose(patch.float(), ref["x_norm_patchtokens"].float(), atol=1e-3, rtol=1e-3):
+                raise SystemExit("get_intermediate_layers' last block != forward_features -- refusing")
+            n_tok = patch.shape[1]
+            side = int(round(n_tok**0.5))
+            if side * side != n_tok or side != img // model.patch_size:
+                raise SystemExit(
+                    f"{n_tok} patch tokens is not the {img // model.patch_size}^2 grid of img {img}"
+                )
+            grid = (side, side)
+            mm = np.lib.format.open_memmap(
+                out_path, mode="w+", dtype=np.float16, shape=(len(paths), n_tok, patch.shape[-1])
+            )
+        mm[i : i + len(imgs)] = patch.to(torch.float16).cpu().numpy()
+        if i % (batch * 20) == 0:
+            print(f"  {i}/{len(paths)}", flush=True)
+    mm.flush()
+    del mm
+    return grid
 
 
 @torch.no_grad()
@@ -134,11 +195,32 @@ def main(argv=None) -> list[str]:
     p.add_argument("--weights", default=None, help="override the preset's checkpoint path (DINOv3)")
     p.add_argument("--max-images", type=int, default=None, help="SMOKE: strided cap per split")
     p.add_argument("--out-dir", default="results/eval_feats")
+    p.add_argument(
+        "--tokens", action="store_true", help="segmentation: per-patch tokens of an OFFICIAL_SEG dataset"
+    )
+    p.add_argument("--device", default="cuda", choices=("cuda", "cpu"))
+    p.add_argument(
+        "--dtype",
+        default="preset",
+        choices=("preset", *DTYPES),
+        help="'preset' = the preset's dtype (bf16 for DINOv3); float32 is required on --device cpu. "
+        "Recorded in the cache (dtype, device).",
+    )
+    p.add_argument(
+        "--img", type=int, default=224, help="--tokens: input side (512 -> 32 x 32 patches of ViT/16)"
+    )
     args = p.parse_args(argv)
 
     spec = PRESETS[args.preset]
     mean, std = spec["norm"]
+    dtype = resolve_dtype(args.preset, args.device, args.dtype)  # before any I/O: a bad pair fails here
 
+    if args.tokens:
+        if args.device != "cuda" or args.dtype != "preset":
+            raise SystemExit("--tokens runs at the preset dtype on cuda only (the token caches' definition)")
+        return _tokens_main(args, spec, mean, std)
+    if args.img != 224:
+        raise SystemExit("--img is for --tokens; the pooled caches are 224 px")
     if args.dataset in F.CV_IDENTITY:
         paths, y = F.load_identity(F.CV_IDENTITY[args.dataset])
         jobs = {f"n{len(paths)}": (paths, y)}
@@ -168,6 +250,8 @@ def main(argv=None) -> list[str]:
             for k, (ps, _) in jobs.items()
         },
     }
+    if (args.device, args.dtype) != ("cuda", "preset"):  # default runs keep their config (and run name)
+        config |= {"device": args.device, "dtype": str(dtype)}
     _, name = wb.init(
         "extract-dino" + ("-smoke" if args.max_images else ""),
         args.dataset,
@@ -176,8 +260,8 @@ def main(argv=None) -> list[str]:
         job_type="extract",
     )
     print(f"== {name}  normalization mean {mean} std {std}")
-    device = "cuda"
-    model, spec = load_model(args.preset, args.weights, device)
+    device = args.device
+    model, spec = load_model(args.preset, args.weights, device, dtype)
     os.makedirs(args.out_dir, exist_ok=True)
     outs = []
     for split, (paths, y) in jobs.items():
@@ -194,12 +278,65 @@ def main(argv=None) -> list[str]:
             mean=np.array(mean),
             std=np.array(std),
             preset=np.array(args.preset),
+            dtype=np.array(str(dtype)),  # caches written before 2026-11-12 lack both: preset dtype, cuda
+            device=np.array(device),
         )
         print(f"cached cls {cls_f.shape} + mp {mp_f.shape} + cls4 {cls4_f.shape} to {out}")
         wb.log_features(out)
         outs.append(out)
     if wandb.run is not None:
         wandb.finish()
+    return outs
+
+
+def _tokens_main(args, spec, mean, std) -> list[str]:
+    if args.dataset not in F.OFFICIAL_SEG:
+        raise SystemExit(
+            f"--tokens is for the OFFICIAL_SEG datasets {sorted(F.OFFICIAL_SEG)}, got {args.dataset!r}"
+        )
+    if args.img % 16 or args.img <= 0:
+        raise SystemExit(f"--img must be a positive multiple of 16, got {args.img}")
+    device = "cuda"
+    model, spec = load_model(args.preset, args.weights, device)
+    os.makedirs(args.out_dir, exist_ok=True)
+    outs = []
+    for split in F.official_seg_spec(args.dataset)["sizes"]:
+        paths, masks = F.list_official_seg_split(args.dataset, split)
+        if args.max_images:
+            keep = np.linspace(0, len(paths) - 1, args.max_images).astype(int)
+            paths, masks = [paths[i] for i in keep], [masks[i] for i in keep]
+        tag = f"_smoke{args.max_images}" if args.max_images else ""
+        base = os.path.join(args.out_dir, f"{args.preset}_{args.dataset}_{split}_tokens{args.img}{tag}")
+        if os.path.exists(base + ".npy"):
+            raise SystemExit(f"{base}.npy exists -- never overwrite a token cache")
+        print(f"{split}: {len(paths)} images at {args.img} px", flush=True)
+        grid = extract_tokens(model, spec, paths, device, mean, std, args.img, base + ".npy")
+        meta = {
+            "task": "extract_dino --tokens",
+            "dataset": args.dataset,
+            "split": split,
+            "n": len(paths),
+            "max_images": args.max_images,
+            "preset": args.preset,
+            "weights": args.weights or spec["weights"],
+            "weights_hash": spec["hash"],
+            "mean": list(mean),
+            "std": list(std),
+            "img": args.img,
+            "grid_hw": list(grid),
+            "feat_dim": int(np.load(base + ".npy", mmap_mode="r").shape[-1]),
+            "dtype": "float16",
+            "tokens": "last block, norm=True patch tokens (get_intermediate_layers)",
+            "file": os.path.basename(base + ".npy"),
+            "paths": paths,
+            "masks": masks,
+            "images_sha1": hashlib.sha1("\n".join(paths).encode()).hexdigest()[:16],
+        }
+        with open(base + "_meta.json", "w") as f:
+            json.dump(meta, f, indent=1)
+        print(f"cached tokens {np.load(base + '.npy', mmap_mode='r').shape} to {base}.npy", flush=True)
+        outs.append(base + ".npy")
+    print("DINO_TOKENS_OK", flush=True)
     return outs
 
 

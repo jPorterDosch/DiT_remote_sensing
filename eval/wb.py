@@ -16,10 +16,12 @@ WANDB_MODE=disabled turns all of it into no-ops (the reproduction gates run that
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
 import re
+import time
 
 import wandb
 
@@ -38,16 +40,90 @@ def rel(path: str) -> str:
 _SHA_CACHE: dict = {}
 
 
+def _sidecar(path: str) -> str:
+    return path + ".sha1.json"
+
+
 def file_identity(path: str) -> dict:
-    """Content identity: a re-extraction changes it, a copy (scp, cp without -p) does not."""
+    """Content identity: a re-extraction changes it, a copy (scp, cp without -p) does not.
+    The SHA1 is also cached in <path>.sha1.json keyed on (size, mtime_ns, ctime_ns): a multi-block cache is
+    tens of GB and every block task of a sweep reads it, so hashing it once per FILE instead of
+    once per PROCESS saves a full read per task. A rewritten file changes size/mtime and is
+    re-hashed; an unwritable directory just skips the sidecar. ctime is in the key because cp -p /
+    rsync -a preserve size and mtime but can never preserve ctime (review 2026-10-24): a different
+    file copied over this one with its mtime kept is re-hashed instead of trusted."""
     st = os.stat(path)
-    key = (os.path.abspath(path), st.st_size, st.st_mtime_ns)
+    key = (os.path.abspath(path), st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+
+    def unchanged() -> bool:  # the file is still the one `st` describes
+        now = os.stat(path)
+        return (now.st_size, now.st_mtime_ns, now.st_ctime_ns) == (st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+
+    def from_sidecar():
+        try:
+            with open(_sidecar(path)) as f:
+                rec = json.load(f)
+            if (
+                rec.get("bytes") == st.st_size
+                and rec.get("mtime_ns") == st.st_mtime_ns
+                and rec.get("ctime_ns") == st.st_ctime_ns
+                and rec.get("sha1")
+            ):
+                _SHA_CACHE[key] = rec["sha1"]
+        except (OSError, ValueError):
+            pass
+
     if key not in _SHA_CACHE:
-        h = hashlib.sha1()
-        with open(path, "rb") as f:
-            for block in iter(lambda: f.read(1 << 24), b""):
-                h.update(block)
-        _SHA_CACHE[key] = h.hexdigest()
+        from_sidecar()
+    if key not in _SHA_CACHE:
+        # Tasks that start together would each hash the same multi-GB file: serialize on a lock
+        # file so the first one hashes and the rest read its sidecar. No flock support (some
+        # Lustre mounts) -> hash without the lock; correctness never depends on it.
+        lock = None
+        retry = False
+        try:
+            import fcntl
+
+            lock = open(_sidecar(path) + ".lock", "w")
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            from_sidecar()  # another task may have finished while we waited
+        except OSError:
+            pass
+        try:
+            if key not in _SHA_CACHE:
+                if not unchanged():  # rewritten while we waited on the lock: retry AFTER release
+                    retry = True
+            if key not in _SHA_CACHE and not retry:
+                h = hashlib.sha1()
+                with open(path, "rb") as f:
+                    for block in iter(lambda: f.read(1 << 24), b""):
+                        h.update(block)
+                if not unchanged():  # rewritten while hashing: the digest matches neither version
+                    raise OSError(f"{path} changed while being hashed -- retry once it is stable")
+                _SHA_CACHE[key] = h.hexdigest()
+                try:  # atomic replace: a reader never sees a half-written sidecar
+                    tmp = f"{_sidecar(path)}.{os.getpid()}.tmp"
+                    with open(tmp, "w") as f:
+                        json.dump(
+                            {
+                                "bytes": st.st_size,
+                                "mtime_ns": st.st_mtime_ns,
+                                "ctime_ns": st.st_ctime_ns,
+                                "sha1": _SHA_CACHE[key],
+                            },
+                            f,
+                        )
+                    os.replace(tmp, _sidecar(path))
+                except OSError:
+                    pass
+        finally:
+            if lock is not None:
+                lock.close()  # releases the flock
+        if retry:  # the lock is released before re-entering, so this cannot self-deadlock
+            return file_identity(path)
+    if not unchanged():  # rewritten after `st` (incl. while waiting): the sha1 above is for the OLD bytes
+        _SHA_CACHE.pop(key, None)
+        return file_identity(path)
     return {"path": rel(path), "bytes": st.st_size, "sha1": _SHA_CACHE[key]}
 
 
@@ -80,19 +156,90 @@ def _artifact_name(prefix: str, path: str) -> str:
     return (prefix + "-" + re.sub(r"[^A-Za-z0-9_.-]", ".", stem))[:128]
 
 
+def _md5_b64(path: str) -> str:
+    """wandb's own reference digest (md5, base64), cached in <path>.md5.json keyed on
+    (size, mtime_ns) like the SHA1 sidecar. wandb re-hashes a checksum=True reference on every
+    add_reference, i.e. a full read of a 23-31 GB multi-block cache per probe task (review
+    2026-10-11). Same digest as wandb computes, so producer/consumer artifacts still match."""
+    from wandb.sdk.lib.hashutil import md5_file_b64
+
+    st = os.stat(path)
+    sc = path + ".md5.json"
+    try:
+        with open(sc) as f:
+            rec = json.load(f)
+        if rec.get("bytes") == st.st_size and rec.get("mtime_ns") == st.st_mtime_ns and rec.get("md5_b64"):
+            return rec["md5_b64"]
+    except (OSError, ValueError):
+        pass
+    digest = md5_file_b64(path)
+    now = os.stat(path)
+    if (now.st_size, now.st_mtime_ns) != (st.st_size, st.st_mtime_ns):
+        raise OSError(f"{path} changed while being hashed -- retry once it is stable")
+    try:  # atomic replace: a reader never sees a half-written sidecar
+        tmp = f"{sc}.{os.getpid()}.tmp"
+        with open(tmp, "w") as f:
+            json.dump({"bytes": st.st_size, "mtime_ns": st.st_mtime_ns, "md5_b64": digest}, f)
+        os.replace(tmp, sc)
+    except OSError:
+        pass
+    return digest
+
+
+@contextlib.contextmanager
+def _cached_reference_md5():
+    """Route wandb's local-reference content hash through _md5_b64 for one add_reference.
+    Private wandb hook: if it is absent (another wandb version) wandb hashes as before."""
+    try:
+        from wandb.sdk.artifacts.storage_handlers import local_file_handler as lfh
+    except ImportError:
+        lfh = None
+    orig = getattr(lfh, "_md5_content", None)
+    if orig is None:
+        yield
+        return
+    lfh._md5_content = _md5_b64
+    try:
+        yield
+    finally:
+        lfh._md5_content = orig
+
+
 def features_artifact(path: str) -> wandb.Artifact:
     art = wandb.Artifact(_artifact_name("feat", path), type="features", metadata=file_identity(path))
-    art.add_reference("file://" + os.path.abspath(path), checksum=True)
+    with _cached_reference_md5():
+        art.add_reference("file://" + os.path.abspath(path), checksum=True)
     meta = path.replace(".npz", "_meta.json")
     if os.path.exists(meta):
         art.add_reference("file://" + os.path.abspath(meta), checksum=True)
     return art
 
 
-def log_features(path: str) -> None:
-    """Producer side (an extractor): record the cache it just wrote."""
-    if wandb.run is not None:
-        wandb.run.log_artifact(features_artifact(path))
+def log_features(path: str, attempts: int = 4, settle_s: float = 10.0) -> None:
+    """Producer side (an extractor): record the cache it just wrote.
+    A multi-GB file just closed on Lustre can still move its size/mtime/ctime for a few seconds
+    while the OSTs settle, so hashing it right away can raise "changed while being hashed"
+    (eurosat shard 2 of the GeoCore campaign, job 6533086, 2026-11-03, with the cache complete).
+    That error is retried after a pause; any other error, or a file that keeps moving, raises."""
+    if wandb.run is None:
+        return
+    for attempt in range(1, attempts + 1):
+        st = os.stat(path)
+        try:
+            art = features_artifact(path)
+            break
+        except OSError as e:
+            if "changed while being hashed" not in str(e) or attempt == attempts:
+                raise
+            now = os.stat(path)
+            print(
+                f"[wb] {path} moved while being hashed (attempt {attempt}/{attempts}): "
+                f"size {st.st_size}->{now.st_size} mtime_ns {st.st_mtime_ns}->{now.st_mtime_ns} "
+                f"ctime_ns {st.st_ctime_ns}->{now.st_ctime_ns}; retrying in {settle_s:g}s",
+                flush=True,
+            )
+            time.sleep(settle_s)
+    wandb.run.log_artifact(art)
 
 
 def _use(art: wandb.Artifact) -> None:

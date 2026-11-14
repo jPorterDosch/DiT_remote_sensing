@@ -78,6 +78,80 @@ OFFICIAL = {
 }
 
 
+# Official-protocol SEGMENTATION tasks (eval/seg_probe.py, src/datasets/geobench_seg.py,
+# src/tasks/seg_tokens.py, eval/extract_dino.py --tokens). Trees written by
+# `python -m eval.export_geobench --task <task>`: <root>/<split>/images/<name>.png (RGB uint8)
+# + <root>/<split>/masks/<name>.png (uint8 class index, IGNORE = SEG_IGNORE). Sizes COUNTED from
+# the shipped default partition (rule 16; eval.export_geobench count), classes in label order
+# from the shipped task_specs; the metric is mIoU over the classes listed (ignore pixels excluded).
+SEG_IGNORE = 255
+# classes = export_geobench.dir_name of the shipped class names, ignore classes removed
+# (export_geobench.SEG_SPECS.ignore -> SEG_IGNORE pixels); keys = F.key(task).
+OFFICIAL_SEG = {
+    "m_pv4ger_seg": {  # counted 2026-10-17: default_partition.json 3221 / 403 / 403
+        "sizes": {"train": 3221, "val": 403, "test": 403},
+        "root": "data/m_pv4ger_seg",
+        "classes": ["no_solar_pv", "solar_pv"],
+        "mask_hw": (320, 320),
+    },
+    "m_chesapeake_landcover": {  # counted 2026-10-17: default_partition.json 3000 / 1000 / 1000; class 0 (no-data) ignored
+        "sizes": {"train": 3000, "val": 1000, "test": 1000},
+        "root": "data/m_chesapeake_landcover",
+        "classes": [
+            "water",
+            "tree_canopy_forest",
+            "low_vegetation_field",
+            "barren_land",
+            "impervious_other",
+            "impervious_roads",
+        ],
+        "mask_hw": (256, 256),
+    },
+    "m_SA_crop_type": {  # counted 2026-10-19 (job 6439355): default_partition.json 3000 / 1000 / 1000; n_classes 10, index 0 "No Data" ignored
+        "sizes": {"train": 3000, "val": 1000, "test": 1000},
+        "root": "data/m_SA_crop_type",
+        "classes": [
+            "Lucerne_Medics",
+            "Planted_pastures_perennial",
+            "Fallow",
+            "Wine_grapes",
+            "Weeds",
+            "Small_grain_grazing",
+            "Wheat",
+            "Canola",
+            "Rooibos",
+        ],
+        "mask_hw": (256, 256),
+    },
+}
+
+
+def official_seg_spec(dataset: str) -> dict:
+    if dataset not in OFFICIAL_SEG:
+        raise SystemExit(
+            f"{dataset}: not registered in eval/features.OFFICIAL_SEG (count the shipped partition "
+            f"first, rule 16). Registered: {sorted(OFFICIAL_SEG)}"
+        )
+    return OFFICIAL_SEG[dataset]
+
+
+def list_official_seg_split(dataset: str, split: str, root: str | None = None) -> tuple[list[str], list[str]]:
+    """(image files, mask files) of one official segmentation split, sorted by name; every
+    image must have its mask and the count must be the registered one."""
+    spec = official_seg_spec(dataset)
+    root = root or spec["root"]
+    images = sorted(glob.glob(os.path.join(root, split, "images", "*.png")))
+    masks = [os.path.join(root, split, "masks", os.path.basename(f)) for f in images]
+    if len(images) != spec["sizes"][split]:
+        raise SystemExit(
+            f"{dataset} {split}: {len(images)} images under {root}, expected {spec['sizes'][split]}"
+        )
+    missing = [m for m in masks if not os.path.exists(m)]
+    if missing:
+        raise SystemExit(f"{dataset} {split}: {len(missing)} masks missing, e.g. {missing[:2]}")
+    return images, masks
+
+
 def path_key(p: str) -> str:
     """An image's identity independent of where the tree lives: its last 3 path components
     (<tree>/<split>/<file> or <split>/<class>/<file>). Absolute vs relative --dataset.path
@@ -103,10 +177,12 @@ def official_classes(dataset: str) -> list[str]:
     return list(official_spec(dataset)["classes"]())
 
 
-def ditf(f, m):
-    """Offline DiTF normalization. Source: _absorption_harness.ditf (verbatim)."""
+def ditf(f, m, discard=DISCARD):
+    """Offline DiTF normalization. Source: _absorption_harness.ditf (verbatim). `discard` = the
+    massive-activation channels zeroed first: FLUX's [154, 1446] by default; another backbone's
+    caches carry their own list in meta ("discard_channels", meta_discard_channels)."""
     x = f.astype(np.float64).copy()
-    x[:, :, DISCARD] = 0.0
+    x[:, :, list(discard)] = 0.0
     mu = x.mean(-1, keepdims=True)
     v = x.var(-1, keepdims=True)
     x = (x - mu) / np.sqrt(v + 1e-6)
@@ -226,19 +302,147 @@ def check_pins(meta: dict, pins: dict, src: str) -> None:
 # ------------------------------------------------------------ official-split loading
 
 
-def _load_flux_one(path: str, pins: dict, split: str):
-    """Source: m_eurosat_probe._load_one."""
+def npz_member_memmap(path: str, name: str) -> np.ndarray:
+    """Read-only memmap of one array inside an UNCOMPRESSED .npz (np.savez stores members
+    ZIP_STORED). np.load reads a member whole -- 31 GB for a multi-block m-bigearthnet train
+    cache -- while a block slice needs ~1/B of it."""
+    import struct
+    import zipfile
+
+    with zipfile.ZipFile(path) as zf:
+        info = zf.getinfo(name + ".npy")
+    if info.compress_type != zipfile.ZIP_STORED:
+        raise SystemExit(f"{path}:{name} is compressed -- cannot memmap; use np.load")
+    with open(path, "rb") as f:
+        f.seek(info.header_offset)
+        local = f.read(30)
+        if local[:4] != b"PK\x03\x04":
+            raise SystemExit(f"{path}:{name}: bad zip local header")
+        fn_len, ex_len = struct.unpack("<HH", local[26:30])
+        f.seek(info.header_offset + 30 + fn_len + ex_len)
+        version = np.lib.format.read_magic(f)
+        shape, fortran, dtype = np.lib.format._read_array_header(f, version)
+        offset = f.tell()
+    return np.memmap(path, dtype=dtype, mode="r", shape=shape, offset=offset, order="F" if fortran else "C")
+
+
+# Double-stream block feature definition: one source of truth in src/config_types.py (the
+# extractors stamp it via double_block_stamp; every double-block load here requires it).
+from config_types import DOUBLE_BLOCK_FEATURE, NUM_DOUBLE_BLOCKS  # noqa: E402
+
+
+DOUBLE_BLOCK_RECORD = "double_block_verification.json"  # experiments/isaac/sweep/verify_double_block.py
+
+
+def is_flux_meta(meta: dict) -> bool:
+    """FLUX.1-dev caches (frozen, random_init or +lora) vs another backbone's (weights tag
+    such as "geocore-9b"). Absent `weights` = a historical FLUX cache."""
+    w = meta.get("weights", "flux-dev") or "flux-dev"
+    return w.startswith("flux-dev") or w == "random_init"
+
+
+def meta_num_double_blocks(meta: dict, src: str) -> int:
+    """Double-block count the cache was extracted with: FLUX's constant for FLUX caches, the
+    stamped `num_double_blocks` for any other backbone (missing -> refuse, never guess)."""
+    if is_flux_meta(meta):
+        return NUM_DOUBLE_BLOCKS
+    n = meta.get("num_double_blocks")
+    if not isinstance(n, int):
+        raise SystemExit(
+            f"{src}: weights={meta.get('weights')!r} cache has no num_double_blocks in meta -- re-extract"
+        )
+    return n
+
+
+def meta_discard_channels(meta: dict, src: str) -> list[int]:
+    """DiTF discard channels for a cache: FLUX's constant, else the stamped list (eval/discard_channels.py)."""
+    if is_flux_meta(meta):
+        return list(DISCARD)
+    d = meta.get("discard_channels")
+    if not isinstance(d, list):
+        raise SystemExit(
+            f"{src}: weights={meta.get('weights')!r} cache has no discard_channels in meta -- the DiTF view is undefined for it"
+        )
+    return [int(c) for c in d]
+
+
+def check_double_block_stamp(meta: dict, k: int, src: str) -> None:
+    if k >= meta_num_double_blocks(meta, src):
+        return
+    if meta.get("double_block_feature") != DOUBLE_BLOCK_FEATURE:
+        raise SystemExit(
+            f"{src}: double-stream block k={k} but meta double_block_feature="
+            f"{meta.get('double_block_feature')!r} != {DOUBLE_BLOCK_FEATURE!r} -- extracted before the "
+            "2026-10-05 fix (different feature definition) or unstamped; re-extract"
+        )
+    if "double_block_feature_note" in meta:
+        # A hand-backfilled stamp (2026-10-08) is a claim, not evidence (rules 6/10): it counts only
+        # when verify_double_block.py's PASS record vouches for this exact file (sha1).
+        from eval import wb
+
+        rec_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(src))), DOUBLE_BLOCK_RECORD)
+        try:
+            with open(rec_path) as f:
+                rec = json.load(f)
+        except (OSError, ValueError):
+            rec = None
+        real = os.path.realpath(src)  # models/ is a symlink: compare resolved paths
+        entry = next((e for r, e in (rec or {}).get("caches", {}).items()
+                      if os.path.realpath(r if os.path.isabs(r) else os.path.join(wb.REPO_ROOT, r)) == real), None)  # fmt: skip
+        if not (rec and rec.get("pass") and rec.get("feature") == DOUBLE_BLOCK_FEATURE and entry
+                and entry.get("sha1") == wb.file_identity(src)["sha1"]):  # fmt: skip
+            raise SystemExit(
+                f"{src}: backfilled double_block_feature stamp without a passing verification record for this "
+                f"file in {rec_path} -- run experiments/isaac/sweep/verify_double_block.py on its cache root"
+            )
+
+
+def _block_slice(path: str, meta: dict, pins: dict) -> dict:
+    """One block of a multi-block cache (layout N,K,B,C) as a single-block cache dict: feats
+    (N, K, C), mods (K, 3, C). The pinned k must be one of the cache's recorded blocks; every
+    other pin is still checked by the caller."""
+    blocks = meta.get("k")
+    if not isinstance(blocks, list) or pins.get("k") not in blocks:
+        raise SystemExit(f"{path}: pinned k={pins.get('k')!r} not among the cache's blocks {blocks}")
+    j = blocks.index(pins["k"])
+    check_double_block_stamp(meta, pins["k"], path)
+    feats = npz_member_memmap(path, "feats")
+    if feats.ndim != 4 or feats.shape[2] != len(blocks):
+        raise SystemExit(f"{path}: feats {feats.shape} do not match layout N,K,B,C with {len(blocks)} blocks")
     d = np.load(path)
+    out = {f: d[f] for f in ("labels", "subset_indices", "paths", "timesteps")}
+    out["feats"] = np.ascontiguousarray(feats[:, :, j, :])
+    out["mods"] = d["mods"][:, j]
+    return out
+
+
+def _load_flux_one(path: str, pins: dict, split: str):
+    """Source: m_eurosat_probe._load_one. A multi-block cache (meta layout "N,K,B,C") is
+    served as the single-block slice at the pinned k, so every single-block consumer (eval.sweep
+    block, eval.probe official) reads it unchanged."""
     meta = cache_meta(path)
     if meta.get("split", "train") != split:
         raise SystemExit(f"{path}: meta split={meta.get('split')!r} != {split!r}")
+    if meta.get("layout") == "N,K,B,C":
+        # meta-only checks first: a wrong cache is refused before the ~1/B strided read of feats
+        check_pins({**meta, "k": pins["k"]}, pins, path)
+        d = _block_slice(path, meta, pins)
+        return d, {**meta, "k": pins["k"], "multiblock_k": meta["k"]}
+    d = np.load(path)
     check_pins(meta, pins, path)
+    if isinstance(pins.get("k"), int):
+        check_double_block_stamp(meta, pins["k"], path)
     return d, meta
 
 
-def load_flux_split(pattern: str, pins: dict, split: str, n_expect: int, smoke: bool = False):
+def load_flux_split(
+    pattern: str, pins: dict, split: str, n_expect: int, smoke: bool = False, with_mods: bool = False
+):
     """One split of a FLUX run.py cache, merging shards. Source: m_eurosat_probe.load_split
-    (per-arm pins passed in via flux_pins). Returns feats in DATASET order."""
+    (per-arm pins passed in via flux_pins). Returns feats in DATASET order. with_mods=True adds
+    the block's adaLN modulation (T, 3, C) under meta["mods"] (identical across shards, checked)
+    for the DiTF transform of probe.official_flux; off by default so meta stays JSON-serialisable
+    for every other consumer."""
     hits = sorted(glob.glob(pattern.format(split=split)))
     if not hits:
         raise SystemExit(f"no caches for {pattern.format(split=split)}")
@@ -247,6 +451,7 @@ def load_flux_split(pattern: str, pins: dict, split: str, n_expect: int, smoke: 
         d, meta = parts[0]
         feats, labels, idx, paths = d["feats"], d["labels"], d["subset_indices"], d["paths"]
         meta = {**meta, "shard_seeds": [(meta.get("seed"), meta.get("eps_seed"))]}
+        mods_parts = [d]
     else:
         unsharded = [h for h, (_, m) in zip(hits, parts) if m.get("num_shards", 1) in (1, None)]
         if unsharded:
@@ -284,6 +489,21 @@ def load_flux_split(pattern: str, pins: dict, split: str, n_expect: int, smoke: 
         # Every shard's (seed, eps_seed), not just shard 0's: the cross-split seed guard in
         # probe.official_flux must see shard >= 1 too (a 42+IDX shard collides with test=43).
         meta = {**parts[0][1], "shard_seeds": shard_seeds}
+        mods_parts = [p[0] for p in parts]
+    if with_mods:  # only the DiTF transform needs the mods; synthetic / legacy caches may lack them
+        for pd, h in zip(mods_parts, hits):
+            keys = pd.files if hasattr(pd, "files") else pd.keys()  # NpzFile or a _block_slice dict
+            if "mods" not in keys:
+                raise SystemExit(
+                    f"{split}: {h} has no 'mods' array; the DiTF transform needs the block's adaLN mods"
+                )
+        mods = mods_parts[0]["mods"]
+        for h, pd in zip(hits[1:], mods_parts[1:]):
+            if pd["mods"].shape != mods.shape or not np.allclose(pd["mods"], mods, rtol=1e-5, atol=1e-6):
+                raise SystemExit(f"{split}: shard {h} carries different adaLN mods than shard 0")
+        if mods.ndim != 3 or mods.shape[0] != feats.shape[1] or mods.shape[2] != feats.shape[2]:
+            raise SystemExit(f"{split}: mods {mods.shape} do not match feats {feats.shape} as (T, 3, C)")
+        meta = {**meta, "mods": np.asarray(mods)}
     if feats.shape[0] != n_expect:
         raise SystemExit(f"{split}: N={feats.shape[0]}, expected {n_expect}")
     order = np.argsort(idx)

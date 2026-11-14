@@ -1,0 +1,37 @@
+{
+  "_comment": [
+    "Segmentation label-efficiency, phase 1 (eval/seg_probe.py): frozen FLUX.1-dev tokens (512 px, 32 x 32,",
+    "blocks 12 / 28 / 38, t 100 / 260 / 420, ens 2, DiTF per token) vs DINOv3-sat patch tokens (512 px), linear",
+    "per-token head, (t, k, lr) selected on the official val split per cell, mIoU, five label fractions of the",
+    "train IMAGES, seeds 0 1 2, image-bootstrap CI at 100 %. Adapted arms are added as further flux entries",
+    "with tag ..._lora-<arm>_ens2_img512 and blocks [28] once their token caches exist (phase2). Token caches:",
+    "experiments/isaac/seg/extract_flux.sbatch / extract_dino.sbatch -> models/seg_tokens/<dataset>/<name>/."
+  ],
+  "fractions": [0.01, 0.05, 0.1, 0.25, 1.0],
+  "seeds": [0, 1, 2],
+  "lr_grid": [0.001, 0.01, 0.1],
+  "steps": 2000,
+  "batch_images": 16,
+  "datasets": ["m_pv4ger_seg", "m_chesapeake_landcover", "m_SA_crop_type"],
+  "models": [
+    {
+      "name": "dinov3-sat",
+      "kind": "dino",
+      "tokens": "models/seg_tokens/{dataset}/dinov3_vit7b16_sat",
+      "preset": "dinov3_vit7b16_sat",
+      "img": 512,
+      "expect": {"preset": "dinov3_vit7b16_sat", "weights_hash": "a6675841"},
+      "teacher": null
+    },
+    {
+      "name": "flux-pretrained",
+      "kind": "flux",
+      "tokens": "models/seg_tokens/{dataset}/flux-pretrained",
+      "tag": "oneshot_g1.0_ens2_img512",
+      "timesteps": [100, 260, 420],
+      "blocks": [12, 28, 38],
+      "expect": {"weights": "flux-dev", "ensemble_size": 2, "guidance_scale": 1.0, "img_size": [512, 512], "extraction_mode": "ONESHOT"},
+      "teacher": "dinov3-sat"
+    }
+  ]
+}

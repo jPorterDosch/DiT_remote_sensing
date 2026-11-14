@@ -35,6 +35,8 @@ Every stage logs to one W&B project (`eval/wb.py`), as `{exp}_{dataset}_{arm}_{h
 
 **Protocols** (`eval/protocols.py`): `cv` = 3 seeds × 5-fold, LR C=0.1 on the dataset's paired identity set (RESISC45: the 5,000-image section-13 subset); `budget` = 10/25/50/100 labels per class; `mlp` = matched MLP head on 1,000-image holdouts; `official` = select (candidate × C) on the official val split, then one test evaluation. Nothing reported is selected on the data that scores it.
 
+**Heads** (official protocol, `--head`): `lr` (default) = logistic regression per candidate × C, selected on val; `tsweight` (`eval/fusion.py`) = SatDiFuser-style learned softmax weights over slots (FLUX: the cached timesteps at one block; DINO: last-4-block CLS + patch mean) + a linear head, AdamW 40 epochs (5 warmup, cosine), (lr, wd, epoch) selected on val, one test evaluation. Pooled features, so it matches SatDiFuser's weighting and recipe, not its pre-pooling architecture. `--fusion-grid satdifuser|reg` picks its hyperparameter grid. The full protocol, every constant included, is in `eval/PROTOCOL.md`. `eval.probe --head tsweight` for one arm; `eval.sweep block --head tsweight` (own `--arm`) or `HEAD=tsweight` in `submit_probe_multiblock.sh` / `dino_probe.sbatch` for the sweeps.
+
 **Views** (`eval/features.py`): FLUX `sec13:<t-idx>` (DiTF, PCA-protected best-t + other timesteps raw), `t:<idx>`, `concat`; DINO `cls`, `mp`, `clsmp`; VAE `full`, `pool8`, `pool4`, `pool2`, `pool1` (`poolN` = N×N grid × 16 channels; the Q1 arm labelled "pool 4x4 (256d)" is `pool8`, 1024-d).
 
 Example, the headline RESISC45 comparison:

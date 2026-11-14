@@ -4,8 +4,22 @@ import torch
 
 
 class LoRALinear(torch.nn.Module):
-    def __init__(self, base: torch.nn.Linear, rank: int, alpha: float, dropout: float = 0.0):
-        """Frozen base layer + trainable low-rank (A,B)."""
+    def __init__(
+        self,
+        base: torch.nn.Linear,
+        rank: int,
+        alpha: float,
+        dropout: float = 0.0,
+        param_dtype: torch.dtype | None = None,
+    ):
+        """Frozen base layer + trainable low-rank (A,B).
+
+        param_dtype: dtype of the trainable A/B (default: the base layer's). With a bf16 base,
+        float32 keeps the optimizer state, gradient accumulation and any gradient combination in
+        fp32 while the forward casts A/B to the activation dtype, so the compute is unchanged
+        (mixed precision without separate master copies; grad_conflict measured the semantic
+        gradient at 0.5-3 % of the flow one, below bf16's ~0.4 % relative resolution).
+        """
         super().__init__()
 
         if not isinstance(base, torch.nn.Linear):
@@ -38,8 +52,9 @@ class LoRALinear(torch.nn.Module):
         self.drop = torch.nn.Dropout(dropout) if dropout > 0 else torch.nn.Identity()
 
         # A: down projection, B: up projection.
-        self.A = torch.nn.Parameter(torch.empty(rank, self.in_features, device=device, dtype=dtype))
-        self.B = torch.nn.Parameter(torch.empty(self.out_features, rank, device=device, dtype=dtype))
+        pdt = param_dtype or dtype
+        self.A = torch.nn.Parameter(torch.empty(rank, self.in_features, device=device, dtype=pdt))
+        self.B = torch.nn.Parameter(torch.empty(self.out_features, rank, device=device, dtype=pdt))
 
         torch.nn.init.kaiming_uniform_(self.A, a=math.sqrt(5))
         torch.nn.init.zeros_(self.B)
@@ -47,9 +62,11 @@ class LoRALinear(torch.nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # Same as linear(x, weight, bias), but with LoRA delta added.
         base_out = torch.nn.functional.linear(x, self.weight, self.bias)
+        A = self.A if self.A.dtype == x.dtype else self.A.to(x.dtype)
+        B = self.B if self.B.dtype == x.dtype else self.B.to(x.dtype)
         lora_out = torch.nn.functional.linear(
-            torch.nn.functional.linear(self.drop(x), self.A),
-            self.B,
+            torch.nn.functional.linear(self.drop(x), A),
+            B,
         )
         return base_out + self.scaling * lora_out
 
@@ -78,6 +95,7 @@ def lora_wrap_flux(
     alpha: float,
     dropout: float,
     wrap_o: bool = False,
+    param_dtype: torch.dtype | None = None,
 ):
     """
     Wrap selected BFL FLUX projections with LoRA.
@@ -101,6 +119,7 @@ def lora_wrap_flux(
         alpha: The LoRA scaling factor.
         dropout: The LoRA dropout rate.
         wrap_o: If True, also wrap img_attn.proj for double blocks and linear2 for single blocks.
+        param_dtype: dtype of the trainable LoRA tensors (see LoRALinear); default = base dtype.
     """
     if not hasattr(model, "double_blocks") or not hasattr(model, "single_blocks"):
         raise ValueError("Model must have double_blocks and single_blocks attributes.")
@@ -121,10 +140,10 @@ def lora_wrap_flux(
             raise ValueError(f"double_blocks[{i}].img_attn missing qkv/proj: {type(block.img_attn)}")
 
         if i in block_indices:
-            block.img_attn.qkv = LoRALinear(block.img_attn.qkv, rank, alpha, dropout)
+            block.img_attn.qkv = LoRALinear(block.img_attn.qkv, rank, alpha, dropout, param_dtype)
 
             if wrap_o:
-                block.img_attn.proj = LoRALinear(block.img_attn.proj, rank, alpha, dropout)
+                block.img_attn.proj = LoRALinear(block.img_attn.proj, rank, alpha, dropout, param_dtype)
 
             wrapped += 1
 
@@ -132,10 +151,10 @@ def lora_wrap_flux(
         if not hasattr(block, "linear1") or not hasattr(block, "linear2"):
             raise ValueError(f"Expected block to have linear1 and linear2 attributes, but got {type(block)}")
         if (n_double + i) in block_indices:
-            block.linear1 = LoRALinear(block.linear1, rank, alpha, dropout)
+            block.linear1 = LoRALinear(block.linear1, rank, alpha, dropout, param_dtype)
 
             if wrap_o:
-                block.linear2 = LoRALinear(block.linear2, rank, alpha, dropout)
+                block.linear2 = LoRALinear(block.linear2, rank, alpha, dropout, param_dtype)
 
             wrapped += 1
 

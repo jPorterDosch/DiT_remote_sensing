@@ -6,6 +6,9 @@
 
     single-label: <out>/{train,val,test}/<ClassDir>/<sample_name>.png
     multi-label:  <out>/{train,val,test}/<sample_name>.png + <out>/<split>/labels.npz (names, y)
+    segmentation: <out>/{train,val,test}/images/<sample_name>.png + masks/<sample_name>.png
+                  (uint8 class index in eval/features.OFFICIAL_SEG class order, SEG_IGNORE = 255
+                  for the task's ignore classes; SEG_SPECS)
 
 Every TaskSpec value is read from the SHIPPED artifact (default_partition.json counts,
 band names, dtype range, sample shapes) or a reference loader's source -- never from a
@@ -117,6 +120,78 @@ SPECS: dict[str, TaskSpec] = {
 }
 
 
+@dataclass(frozen=True)
+class SegSpec:
+    zenodo: int  # GEO-Bench v1.0 record (the one shipping default_partition.json)
+    rgb_bands: tuple
+    scale: float  # divide raw band values by this, then clip to [0,1]
+    img_hw: tuple  # checked on EVERY sample
+    classes: tuple  # the shipped label_type.class_names, in order; the mask index = position
+    ignore: tuple = ()  # class names mapped to SEG_IGNORE (excluded from the metric)
+    verified: str = ""
+
+
+# Segmentation tasks (eval/features.OFFICIAL_SEG). Mask values: the shipped Band label data,
+# uint8 class index into label_type.class_names; `ignore` classes become SEG_IGNORE.
+SEG_SPECS: dict[str, SegSpec] = {
+    "m-pv4ger-seg": SegSpec(
+        zenodo=8277054,
+        rgb_bands=("Red", "Green", "Blue"),
+        scale=255.0,
+        img_hw=(320, 320),
+        classes=("no solar pv", "solar pv"),
+        verified="2026-10-17, default_partition.json 3221/403/403, task_specs SegmentationClasses, band_stats uint8 max 255, samples 320x320 uint8",
+    ),
+    "m-chesapeake-landcover": SegSpec(
+        zenodo=8276993,
+        rgb_bands=("Red", "Green", "Blue"),
+        scale=1.0,  # SatDiFuser datasets/m_chesapeake.py: clip(image, 0, 1), no division (float bands)
+        img_hw=(256, 256),
+        # The shipped task_specs carries n_classes=7 and NO class names (SegmentationClasses(...,
+        # class_names=None)); GEO-Bench's converter (make_benchmark/dataset_converters/
+        # chesapeake_land_cover.py) lists the names with "no-data" LAST but never attaches them,
+        # and the masks come from torchgeo's ChesapeakeCVPR class_set=7, whose index 0 is no-data
+        # and 1..6 water .. impervious-roads. The shipped label_stats.json agrees: class 0 occurs
+        # in 4.4 % of samples (3.1 % of pixels, tile borders), class 6 in most (2.9 %, roads).
+        # SatDiFuser's configs/tasks/mchesapeake.yaml copies the converter's (wrong) order.
+        classes=(
+            "no-data",
+            "water",
+            "tree-canopy-forest",
+            "low-vegetation-field",
+            "barren-land",
+            "impervious-other",
+            "impervious-roads",
+        ),
+        ignore=("no-data",),
+        verified="2026-10-17, default_partition.json 3000/1000/1000, task_specs n_classes 7 (no names), band_stats float 0..1, label_stats.json class frequencies, converter + torchgeo class_set=7",
+    ),
+    "m-SA-crop-type": SegSpec(
+        zenodo=8277134,
+        rgb_bands=("04", "03", "02"),
+        scale=255.0,  # shipped band_stats: every band uint8-range (max 255; p99 R/G/B 87/63/45), NOT S2 DN
+        img_hw=(256, 256),
+        # Converter make_benchmark/dataset_converters/crop_type_south_africa.py crop_labels (index =
+        # position; the mask IS the competition label raster); shipped label_stats.json: class 0
+        # ("No Data") covers 48 % of the pixels and occurs in every sample -> ignored.
+        classes=(
+            "No Data",
+            "Lucerne/Medics",
+            "Planted pastures (perennial)",
+            "Fallow",
+            "Wine grapes",
+            "Weeds",
+            "Small grain grazing",
+            "Wheat",
+            "Canola",
+            "Rooibos",
+        ),
+        ignore=("No Data",),
+        verified="2026-10-19, export_geobench --count (job 6439355): 3000/1000/1000, n_classes 10, bands max 255 / p99 45-145 (scale 4095 fired the clip guard: 17.8 % of blue at 0); converter crop_labels + label_stats.json 2026-10-17",
+    ),
+}
+
+
 def dir_name(cls: str) -> str:
     return re.sub(r"[^A-Za-z0-9]+", "_", cls).strip("_")
 
@@ -214,6 +289,137 @@ def export(task: str, dataset_dir: str, out: str) -> dict:
     return tree_manifest(ds_key, out, classes)
 
 
+def count_seg(task: str, dataset_dir: str) -> dict:
+    """What the SHIPPED artifact says (rule 16): partition sizes, label type + class names, bands,
+    patch size, band stats, one sample's dtype / range / mask values. Printed for the
+    OFFICIAL_SEG / SEG_SPECS entries; never typed from a paper."""
+    import geobench
+
+    with open(os.path.join(dataset_dir, "default_partition.json")) as f:
+        part = json.load(f)
+    ts = geobench.load_task_specs(dataset_dir)
+    lt = ts.label_type
+    out = {
+        "sizes": {OUT_SPLIT[k]: len(v) for k, v in part.items()},
+        "label_type": type(lt).__name__,
+        "classes": list(getattr(lt, "class_names", None) or []),
+        "n_classes": getattr(lt, "n_classes", None),
+        "bands": [b.name for b in ts.bands_info],
+        "patch_size": list(ts.patch_size),
+    }
+    bs_path = os.path.join(dataset_dir, "band_stats.json")
+    if os.path.exists(bs_path):
+        with open(bs_path) as f:
+            out["band_stats"] = {
+                k: {s: v.get(s) for s in ("min", "max", "percentile_99")} for k, v in json.load(f).items()
+            }
+    ds = geobench.GeobenchDataset(dataset_dir, split="train", partition_name="default")
+    s = ds[0]
+    spec = SEG_SPECS.get(task)
+    bands = spec.rgb_bands if spec else tuple(out["bands"][:3])
+    img, _ = s.pack_to_3d(band_names=bands)
+    out["sample"] = {"name": s.sample_name, "shape": list(img.shape), "dtype": str(img.dtype), "min": float(img.min()),
+                     "max": float(img.max()), "mask_shape": list(s.label.data.shape), "mask_dtype": str(s.label.data.dtype),
+                     "mask_values": np.unique(s.label.data).tolist()}  # fmt: skip
+    print(json.dumps(out, indent=1))
+    return out
+
+
+def export_seg(task: str, dataset_dir: str, out: str) -> dict:
+    """Write images/ + masks/ per split, then return seg_tree_manifest() of what landed."""
+    import geobench
+
+    spec, ds_key = SEG_SPECS[task], F.key(task)
+    reg = F.official_seg_spec(ds_key)
+    lt = geobench.load_task_specs(dataset_dir).label_type
+    if type(lt).__name__ != "SegmentationClasses":
+        raise SystemExit(f"{task}: shipped label type {type(lt).__name__} is not SegmentationClasses")
+    shipped = tuple(lt.class_names) if lt.class_names else None
+    if shipped is not None and shipped != spec.classes:
+        raise SystemExit(f"{task}: shipped class names {shipped} != SEG_SPECS {spec.classes}")
+    if lt.n_classes != len(spec.classes):
+        raise SystemExit(f"{task}: shipped n_classes {lt.n_classes} != SEG_SPECS {len(spec.classes)} classes")
+    kept = [c for c in spec.classes if c not in spec.ignore]
+    if [dir_name(c).lower() for c in kept] != [dir_name(c).lower() for c in reg["classes"]]:
+        raise SystemExit(
+            f"{task}: kept classes {kept} != OFFICIAL_SEG classes {reg['classes']} (dir_name, case-insensitive)"
+        )
+    # shipped index -> our index (kept classes in order), ignore -> SEG_IGNORE
+    lut = np.full(256, F.SEG_IGNORE, np.uint8)
+    for i, c in enumerate(spec.classes):
+        if c not in spec.ignore:
+            lut[i] = kept.index(c)
+    for split, out_split in OUT_SPLIT.items():
+        ds = geobench.GeobenchDataset(dataset_dir, split=split, partition_name="default")
+        if len(ds) != reg["sizes"][out_split]:
+            raise SystemExit(
+                f"{split}: got {len(ds)} samples, expected {reg['sizes'][out_split]} -- count the partition (OFFICIAL_SEG)"
+            )
+        clipped = np.zeros(3)
+        os.makedirs(os.path.join(out, out_split, "images"), exist_ok=True)
+        os.makedirs(os.path.join(out, out_split, "masks"), exist_ok=True)
+        for i in range(len(ds)):
+            sample = ds[i]
+            image, _ = sample.pack_to_3d(band_names=spec.rgb_bands)
+            if image.shape != (*spec.img_hw, 3):
+                raise SystemExit(f"{split}[{i}] has shape {image.shape}, expected {(*spec.img_hw, 3)}")
+            px = (np.clip(image.astype(np.float32) / spec.scale, 0.0, 1.0) * 255.0).round().astype(np.uint8)
+            clipped += ((px == 0) | (px == 255)).mean((0, 1))
+            mask = np.asarray(sample.label.data)
+            if mask.shape != tuple(reg["mask_hw"]) or mask.max() >= len(spec.classes):
+                raise SystemExit(
+                    f"{split}[{i}] mask {mask.shape} max {mask.max()}: expected {reg['mask_hw']} with < {len(spec.classes)} classes"
+                )
+            Image.fromarray(px).save(os.path.join(out, out_split, "images", f"{sample.sample_name}.png"))
+            Image.fromarray(lut[mask.astype(np.int64)]).save(
+                os.path.join(out, out_split, "masks", f"{sample.sample_name}.png")
+            )
+            if i % 1000 == 0:
+                print(f"  {split} {i}/{len(ds)}", flush=True)
+        frac = clipped / len(ds)
+        if (frac > MAX_CLIPPED).any():
+            raise SystemExit(
+                f"{split}: {np.round(frac, 3).tolist()} of R/G/B pixels clip at 0/255 (> {MAX_CLIPPED}) -- scale {spec.scale} is wrong"
+            )
+    return seg_tree_manifest(ds_key, out)
+
+
+def seg_tree_manifest(ds_key: str, root: str) -> dict:
+    """Manifest of an exported segmentation tree, read back from disk: per split n, pixel counts
+    per class (+ ignore) and one sha256 over every (name, image shape + pixels, mask pixels)."""
+    reg = F.official_seg_spec(ds_key)
+    n_cls = len(reg["classes"])
+    out = {"classes": list(reg["classes"]), "ignore": F.SEG_IGNORE, "splits": {}}
+    for split in reg["sizes"]:
+        images, masks = F.list_official_seg_split(ds_key, split, root)
+        on_disk = glob.glob(os.path.join(root, split, "**", "*.png"), recursive=True)
+        if sorted(on_disk) != sorted(images + masks):
+            raise SystemExit(
+                f"{root}/{split}: {len(on_disk)} PNGs on disk, {len(images) + len(masks)} listed -- stray/misplaced"
+            )
+        digest, counts = hashlib.sha256(), np.zeros(n_cls + 1, np.int64)
+        for f, m in zip(images, masks, strict=True):
+            px, mk = np.asarray(Image.open(f)), np.asarray(Image.open(m))
+            if px.dtype != np.uint8 or px.ndim != 3 or px.shape[2] != 3:
+                raise SystemExit(f"{f}: {px.dtype} {px.shape}, expected uint8 RGB")
+            if mk.dtype != np.uint8 or mk.ndim != 2 or mk.shape != px.shape[:2]:
+                raise SystemExit(f"{m}: {mk.dtype} {mk.shape}, expected a uint8 mask of {px.shape[:2]}")
+            vals = np.bincount(mk.ravel(), minlength=256)
+            if vals[n_cls : F.SEG_IGNORE].any():
+                raise SystemExit(f"{m}: mask values outside the {n_cls} classes + ignore")
+            counts[:n_cls] += vals[:n_cls]
+            counts[n_cls] += vals[F.SEG_IGNORE]
+            for part in (os.path.basename(f).encode(), str(px.shape).encode(), px.tobytes(), mk.tobytes()):
+                digest.update(part)
+        out["splits"][split] = {
+            "n": len(images),
+            "pixel_counts": counts.tolist(),
+            "sha256": digest.hexdigest(),
+        }
+        print(f"{split}: {len(images)} images; pixels per class (+ignore): {counts.tolist()}", flush=True)
+    return out
+
+
 def tree_manifest(ds_key: str, root: str, classes: list[str] | None = None) -> dict:
     """Manifest of an exported tree, READ BACK FROM DISK in the pipeline's own listing order
     (features.list_official_split, which also checks split sizes): per split, the per-class
@@ -276,7 +482,12 @@ def remove_raw(dataset_dir: str) -> None:
 
 def main(argv=None) -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--task", required=True, choices=sorted(SPECS))
+    p.add_argument("--task", required=True, choices=sorted(SPECS) + sorted(SEG_SPECS))
+    p.add_argument(
+        "--count",
+        action="store_true",
+        help="segmentation: print what the shipped artifact says, write nothing",
+    )
     p.add_argument(
         "--out", required=True, help="the RGB tree (written, or verified if --dataset-dir is omitted)"
     )
@@ -289,6 +500,23 @@ def main(argv=None) -> None:
     )
     p.add_argument("--write-manifest", action="store_true", help="workstation only: (re)create the manifest")
     args = p.parse_args(argv)
+    if args.task in SEG_SPECS:
+        if args.download and args.dataset_dir:
+            download(SEG_SPECS[args.task].zenodo, args.dataset_dir)
+        if args.count:
+            if not args.dataset_dir:
+                raise SystemExit("--count needs --dataset-dir")
+            count_seg(args.task, args.dataset_dir)
+            return
+        manifest = (
+            seg_tree_manifest(F.key(args.task), args.out)
+            if args.dataset_dir is None
+            else export_seg(args.task, args.dataset_dir, args.out)
+        )
+        check_manifest(args.task, manifest, write=args.write_manifest)
+        if args.rm_raw:
+            remove_raw(args.dataset_dir)
+        return
     if args.dataset_dir is None:
         if args.download or args.rm_raw:
             raise SystemExit("--download/--rm-raw need --dataset-dir")

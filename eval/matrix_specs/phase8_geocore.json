@@ -1,0 +1,281 @@
+{
+ "_comment": [
+  "Phase 8 (2026-11-02): GeoCore-9B (KAIST, arXiv 2608.01896) as a frozen comparator row in Table A under the",
+  "unchanged harness (raw pooled block-input tokens, StandardScaler + LR, val-selected t/C). Same datasets /",
+  "fractions / seeds / c_grid as phase2.json. dinov3-sat, flux-pretrained-k28 and flux-proj cells are cached from",
+  "phases 1-2 (identical cell_config -> reused). GeoCore k pins come from eval.sweep select on val",
+  "(experiments/isaac/geocore/select.sbatch) and are filled into per_dataset before the cells run; the k=8 default",
+  "below is a placeholder and MUST be overridden for every dataset (DRAFT marker removed when filled).",
+  "geocore-9b-256 = 256 px check (m_eurosat, m_so2sat only). geocore-9b-ditf = DiTF view with the model's own",
+  "discard channels from meta (supplement); only valid if the FLUX discard gate printed DISCARD_OK.",
+  "Task index = 6 * model + dataset."
+ ],
+ "_status": "DRAFT: per_dataset k filled for m_eurosat (k=8, select 6537480), m_brick_kiln (k=8, select 6543541), m_pv4ger (k=8, select 6549227), m_so2sat (k=8, select 6555022), m_forestnet (k=8, select 6556521), m_bigearthnet (k=8, select 6561157). All six pinned; cells run.",
+ "_k_sources": {
+  "m_eurosat": "results/eval/sweep_mb/sweep-select_m_eurosat_geocore-9b_32179826.npz: SELECTED on val k=8 t420 C=1.0 (val 0.9950), select job 6537480, probes 6537475 (2026-11-03)",
+  "m_brick_kiln": "results/eval/sweep_mb/sweep-select_m_brick_kiln_geocore-9b_3a7fb9d2.npz: SELECTED on val k=8 t100 C=0.01 (val 0.9810), select job 6543541, probes 6543540 (2026-11-04)",
+  "m_pv4ger": "results/eval/sweep_mb/sweep-select_m_pv4ger_geocore-9b_0a0fea2b.npz: SELECTED on val k=8 t740 C=0.001 (val 0.9389), select job 6549227, probes 6549226 (2026-11-05)",
+  "m_so2sat": "results/eval/sweep_mb/sweep-select_m_so2sat_geocore-9b_40d02c54.npz: SELECTED on val k=8 t580 C=0.0001 (val 0.6156), select job 6555022, probes 6555021 (2026-11-06)",
+  "m_forestnet": "results/eval/sweep_mb/sweep-select_m_forestnet_geocore-9b_a1685449.npz: SELECTED on val k=8 t260 C=0.0001 (val 0.5945), select job 6556521, probes 6556520 (2026-11-06)",
+  "m_bigearthnet": "results/eval/sweep_mb/sweep-select_m_bigearthnet_geocore-9b_da17ba1c.npz: SELECTED on val k=8 concat9t C=0.001 (val 0.6684), select job 6561157, probes 6561156 (2026-11-08)",
+  "m_eurosat@256": "results/eval/sweep_mb/sweep-select_m_eurosat_geocore-9b-img256_026c41b5.npz: SELECTED on val k=8 t100 C=0.1 (val 0.9930), select job 6569239, probes 6569238 (2026-11-09); geocore-9b-256 row"
+ },
+ "fractions": [
+  0.01,
+  0.05,
+  0.1,
+  0.25,
+  1.0
+ ],
+ "seeds": [
+  0,
+  1,
+  2
+ ],
+ "c_grid": [
+  1e-06,
+  1e-05,
+  0.0001,
+  0.001,
+  0.01,
+  0.1,
+  1.0,
+  10.0,
+  100.0
+ ],
+ "datasets": [
+  "m_eurosat",
+  "m_brick_kiln",
+  "m_pv4ger",
+  "m_so2sat",
+  "m_forestnet",
+  "m_bigearthnet"
+ ],
+ "models": [
+  {
+   "name": "dinov3-sat",
+   "kind": "dino",
+   "features": "models/dino_feats/dinov3_vit7b16_sat_{dataset}_{split}.npz",
+   "view": null,
+   "teacher": null
+  },
+  {
+   "name": "flux-pretrained-k28",
+   "kind": "flux",
+   "features": "models/{dataset}_multiblock_ens8/*/multistep_{split}_feats_oneshot_g1.0_k*.npz",
+   "view": null,
+   "expect": {
+    "extraction_mode": "ONESHOT",
+    "ensemble_size": 8,
+    "weights": "flux-dev",
+    "k": 28
+   },
+   "teacher": "dinov3-sat"
+  },
+  {
+   "name": "flux-proj",
+   "kind": "flux",
+   "teacher": "dinov3-sat",
+   "view": null,
+   "features": "models/git10m_eval/git10m_flux_ca8e6ce7+42+proj-ffcd7963/{dataset}/*/multistep_{split}_feats_oneshot_g1.0_lora-proj_k*.npz",
+   "expect": {
+    "extraction_mode": "ONESHOT",
+    "ensemble_size": 8,
+    "weights": "flux-dev+lora:proj",
+    "k": 28
+   }
+  },
+  {
+   "name": "geocore-9b",
+   "kind": "flux",
+   "teacher": "dinov3-sat",
+   "view": null,
+   "features": "models/geocore_eval/{dataset}/*/multistep_{split}_feats_oneshot_g0.0_k*.npz",
+   "expect": {
+    "extraction_mode": "ONESHOT",
+    "ensemble_size": 8,
+    "weights": "geocore-9b",
+    "guidance_scale": 0.0,
+    "hidden_size": 4096,
+    "k": 8
+   },
+   "per_dataset": {
+    "m_eurosat": {
+     "expect": {
+      "extraction_mode": "ONESHOT",
+      "ensemble_size": 8,
+      "weights": "geocore-9b",
+      "guidance_scale": 0.0,
+      "hidden_size": 4096,
+      "k": 8
+     }
+    },
+    "m_brick_kiln": {
+     "expect": {
+      "extraction_mode": "ONESHOT",
+      "ensemble_size": 8,
+      "weights": "geocore-9b",
+      "guidance_scale": 0.0,
+      "hidden_size": 4096,
+      "k": 8
+     }
+    },
+    "m_pv4ger": {
+     "expect": {
+      "extraction_mode": "ONESHOT",
+      "ensemble_size": 8,
+      "weights": "geocore-9b",
+      "guidance_scale": 0.0,
+      "hidden_size": 4096,
+      "k": 8
+     }
+    },
+    "m_so2sat": {
+     "expect": {
+      "extraction_mode": "ONESHOT",
+      "ensemble_size": 8,
+      "weights": "geocore-9b",
+      "guidance_scale": 0.0,
+      "hidden_size": 4096,
+      "k": 8
+     }
+    },
+    "m_forestnet": {
+     "expect": {
+      "extraction_mode": "ONESHOT",
+      "ensemble_size": 8,
+      "weights": "geocore-9b",
+      "guidance_scale": 0.0,
+      "hidden_size": 4096,
+      "k": 8
+     }
+    },
+    "m_bigearthnet": {
+     "expect": {
+      "extraction_mode": "ONESHOT",
+      "ensemble_size": 8,
+      "weights": "geocore-9b",
+      "guidance_scale": 0.0,
+      "hidden_size": 4096,
+      "k": 8
+     }
+    }
+   }
+  },
+  {
+   "name": "geocore-9b-256",
+   "kind": "flux",
+   "teacher": "dinov3-sat",
+   "view": null,
+   "features": "models/geocore_eval_img256/{dataset}/*/multistep_{split}_feats_oneshot_g0.0_k*.npz",
+   "expect": {
+    "extraction_mode": "ONESHOT",
+    "ensemble_size": 8,
+    "weights": "geocore-9b",
+    "guidance_scale": 0.0,
+    "hidden_size": 4096,
+    "k": 8
+   },
+   "per_dataset": {
+    "m_eurosat": {
+     "expect": {
+      "extraction_mode": "ONESHOT",
+      "ensemble_size": 8,
+      "weights": "geocore-9b",
+      "guidance_scale": 0.0,
+      "hidden_size": 4096,
+      "k": 8
+     }
+    },
+    "m_so2sat": {
+     "expect": {
+      "extraction_mode": "ONESHOT",
+      "ensemble_size": 8,
+      "weights": "geocore-9b",
+      "guidance_scale": 0.0,
+      "hidden_size": 4096,
+      "k": 8
+     }
+    }
+   }
+  },
+  {
+   "name": "geocore-9b-ditf",
+   "kind": "flux",
+   "teacher": "dinov3-sat",
+   "view": null,
+   "transform": "ditf",
+   "features": "models/geocore_eval/{dataset}/*/multistep_{split}_feats_oneshot_g0.0_k*.npz",
+   "expect": {
+    "extraction_mode": "ONESHOT",
+    "ensemble_size": 8,
+    "weights": "geocore-9b",
+    "guidance_scale": 0.0,
+    "hidden_size": 4096,
+    "k": 8
+   },
+   "per_dataset": {
+    "m_eurosat": {
+     "expect": {
+      "extraction_mode": "ONESHOT",
+      "ensemble_size": 8,
+      "weights": "geocore-9b",
+      "guidance_scale": 0.0,
+      "hidden_size": 4096,
+      "k": 8
+     }
+    },
+    "m_brick_kiln": {
+     "expect": {
+      "extraction_mode": "ONESHOT",
+      "ensemble_size": 8,
+      "weights": "geocore-9b",
+      "guidance_scale": 0.0,
+      "hidden_size": 4096,
+      "k": 8
+     }
+    },
+    "m_pv4ger": {
+     "expect": {
+      "extraction_mode": "ONESHOT",
+      "ensemble_size": 8,
+      "weights": "geocore-9b",
+      "guidance_scale": 0.0,
+      "hidden_size": 4096,
+      "k": 8
+     }
+    },
+    "m_so2sat": {
+     "expect": {
+      "extraction_mode": "ONESHOT",
+      "ensemble_size": 8,
+      "weights": "geocore-9b",
+      "guidance_scale": 0.0,
+      "hidden_size": 4096,
+      "k": 8
+     }
+    },
+    "m_forestnet": {
+     "expect": {
+      "extraction_mode": "ONESHOT",
+      "ensemble_size": 8,
+      "weights": "geocore-9b",
+      "guidance_scale": 0.0,
+      "hidden_size": 4096,
+      "k": 8
+     }
+    },
+    "m_bigearthnet": {
+     "expect": {
+      "extraction_mode": "ONESHOT",
+      "ensemble_size": 8,
+      "weights": "geocore-9b",
+      "guidance_scale": 0.0,
+      "hidden_size": 4096,
+      "k": 8
+     }
+    }
+   }
+  }
+ ]
+}

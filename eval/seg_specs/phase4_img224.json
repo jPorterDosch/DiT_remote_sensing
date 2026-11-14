@@ -1,0 +1,136 @@
+{
+  "_comment": [
+    "Phase 4 resolution check (2026-10-28): the same probe as phase3_lr but on tokens extracted at 224 px, the",
+    "resolution the alignment was trained at (14 x 14 tokens on a 256 px mask), for the two multi-class tasks where the",
+    "teacher gap is large. Question: does proj recover more of the frozen->teacher gap at the aligned resolution than at",
+    "512 px (chesapeake 29 %, SA_crop_type 12 % of the AULC gap)? Frozen = block 28 only (it equals the 3-block frozen",
+    "row at 100 % on all three tasks in phase3_lr). Tokens under models/seg_tokens_img224/, cells under",
+    "results/seg/phase4_img224/. Never quoted as the main seg table."
+  ],
+  "fractions": [
+    0.01,
+    0.05,
+    0.1,
+    0.25,
+    1.0
+  ],
+  "seeds": [
+    0,
+    1,
+    2
+  ],
+  "lr_grid": [
+    0.0001,
+    0.0003,
+    0.001,
+    0.01,
+    0.1
+  ],
+  "steps": 2000,
+  "batch_images": 16,
+  "datasets": [
+    "m_chesapeake_landcover",
+    "m_SA_crop_type"
+  ],
+  "models": [
+    {
+      "name": "dinov3-sat",
+      "kind": "dino",
+      "tokens": "models/seg_tokens_img224/{dataset}/dinov3_vit7b16_sat",
+      "preset": "dinov3_vit7b16_sat",
+      "img": 224,
+      "expect": {
+        "preset": "dinov3_vit7b16_sat",
+        "weights_hash": "a6675841"
+      },
+      "teacher": null
+    },
+    {
+      "name": "dinov3-web",
+      "kind": "dino",
+      "tokens": "models/seg_tokens_img224/{dataset}/dinov3_vit7b16_web",
+      "preset": "dinov3_vit7b16_web",
+      "img": 224,
+      "expect": {
+        "preset": "dinov3_vit7b16_web",
+        "weights_hash": "a955f4ea"
+      },
+      "teacher": null
+    },
+    {
+      "name": "flux-pretrained-k28",
+      "kind": "flux",
+      "tokens": "models/seg_tokens_img224/{dataset}/flux-pretrained",
+      "tag": "oneshot_g1.0_ens2_img224",
+      "timesteps": [
+        100,
+        260,
+        420
+      ],
+      "blocks": [
+        28
+      ],
+      "expect": {
+        "weights": "flux-dev",
+        "ensemble_size": 2,
+        "guidance_scale": 1.0,
+        "img_size": [
+          224,
+          224
+        ],
+        "extraction_mode": "ONESHOT"
+      },
+      "teacher": "dinov3-sat"
+    },
+    {
+      "name": "flux-proj",
+      "kind": "flux",
+      "tokens": "models/seg_tokens_img224/{dataset}/git10m_flux_ca8e6ce7+42+proj-ffcd7963",
+      "tag": "oneshot_g1.0_lora-proj_ens2_img224",
+      "timesteps": [
+        100,
+        260,
+        420
+      ],
+      "blocks": [
+        28
+      ],
+      "expect": {
+        "weights": "flux-dev+lora:proj",
+        "ensemble_size": 2,
+        "guidance_scale": 1.0,
+        "img_size": [
+          224,
+          224
+        ],
+        "extraction_mode": "ONESHOT"
+      },
+      "teacher": "dinov3-sat"
+    },
+    {
+      "name": "flux-naive",
+      "kind": "flux",
+      "tokens": "models/seg_tokens_img224/{dataset}/git10m_flux_ca8e6ce7+42+naive-11e56b1e",
+      "tag": "oneshot_g1.0_lora-naive_ens2_img224",
+      "timesteps": [
+        100,
+        260,
+        420
+      ],
+      "blocks": [
+        28
+      ],
+      "expect": {
+        "weights": "flux-dev+lora:naive",
+        "ensemble_size": 2,
+        "guidance_scale": 1.0,
+        "img_size": [
+          224,
+          224
+        ],
+        "extraction_mode": "ONESHOT"
+      },
+      "teacher": "dinov3-sat"
+    }
+  ]
+}

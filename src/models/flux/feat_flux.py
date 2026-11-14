@@ -181,6 +181,21 @@ class Featurizer4Eval(Featurizer):
         noise_used = []
 
         block_indices = [block_idx] if isinstance(block_idx, int) else block_idx
+        # MULTI-BLOCK (block_idx a list): one early-exiting pass caches every listed block,
+        # costing about as much as the deepest one alone. Every block contributes
+        # [feat, mod] to up_ft (double blocks since 2026-10-05), so double and single blocks
+        # mix freely; strictly increasing because the trunk appends in traversal order.
+        # The int path below is left byte-identical (eval gates demand bit-identical vectors).
+        multi_block = not isinstance(block_idx, int)
+        if multi_block:
+            block_indices = list(block_indices)
+            n_total = len(self.model.double_blocks) + len(self.model.single_blocks)
+            bad = [b for b in block_indices if not 0 <= b < n_total]
+            if not block_indices or bad or any(a >= b for a, b in zip(block_indices, block_indices[1:])):
+                raise ValueError(
+                    f"multi-block extraction needs a strictly increasing list of blocks in "
+                    f"[0, {n_total - 1}], got {block_indices}"
+                )
 
         # Sequential to avoid OOM.
         for i in range(ensemble_size):
@@ -236,6 +251,35 @@ class Featurizer4Eval(Featurizer):
                 guidance=guidance_vec,
             )
 
+            if multi_block:
+                if len(model_output) != 2 * len(block_indices):
+                    raise RuntimeError(
+                        f"expected [feat, mod] for each of {len(block_indices)} blocks, got "
+                        f"{len(model_output)} outputs"
+                    )
+                # Per member: (B, c, h, w) and (B, 3, C), block order = block_indices.
+                dit_feat = torch.cat(
+                    [
+                        rearrange(model_output[2 * j], "b (h w) c -> b c h w", h=h // 2, w=w // 2)
+                        for j in range(len(block_indices))
+                    ],
+                    dim=0,
+                )
+                mod = torch.cat(
+                    [
+                        torch.cat([m.shift, m.scale, m.gate], dim=1)
+                        for m in (model_output[2 * j + 1] for j in range(len(block_indices)))
+                    ],
+                    dim=0,
+                )
+                dit_feats.append(dit_feat)
+                mods.append(mod)
+                latents_used.append(latents_i)
+                noise_used.append(noise_i)
+                del latents_noisy, img, img_ids, t_vec, guidance_vec, model_output, mod, dit_feat
+                torch.cuda.empty_cache()
+                continue
+
             mod = model_output[1]
             dit_feat = model_output[0]
             dit_feat = rearrange(dit_feat, "b (h w) c -> b h w c", h=h // 2, w=w // 2)
@@ -260,6 +304,12 @@ class Featurizer4Eval(Featurizer):
                 dit_feat,
             )
             torch.cuda.empty_cache()
+
+        if multi_block:
+            # Ensemble mean per block: (E, B, ...) -> (B, ...).
+            dit_feat = torch.stack(dit_feats, dim=0).mean(0)  # B, c, h, w
+            mod = torch.stack(mods, dim=0).mean(0)  # B, 3, C
+            return dit_feat, mod, torch.cat(latents_used, dim=0), torch.cat(noise_used, dim=0)
 
         dit_feat = torch.cat(dit_feats, dim=0).mean(0, keepdim=True)  # 1, c, h, w
         mod = torch.cat(mods, dim=0).mean(0, keepdim=True)  # 1, c, h, w
@@ -428,7 +478,9 @@ class Featurizer4Eval(Featurizer):
 
         txt, txt_ids, vec = self._null_text_inputs(device)
 
-        latents_clean = (latents if latents is not None else self.ae.encode(img_tensor)).to(device).to(torch.bfloat16)
+        latents_clean = (
+            (latents if latents is not None else self.ae.encode(img_tensor)).to(device).to(torch.bfloat16)
+        )
         _, c, h, w = latents_clean.shape
         x, img_ids = prepare(img=latents_clean)
 

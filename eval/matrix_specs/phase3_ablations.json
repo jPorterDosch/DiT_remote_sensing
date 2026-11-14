@@ -1,0 +1,36 @@
+{
+  "_comment": [
+    "Phase 3 (2026-10-21): proj ablations and the seed-43 repeats, every arm at the fixed aligned block",
+    "k=28, same datasets / fractions / seeds / c_grid as phase2.json. dinov3-sat is listed first so the",
+    "report can compute teacher deltas; its cells already exist (phase2) and are read as cached.",
+    "Task index = 6 * model + dataset (six datasets): models shuffle 1, cd0 2, raw 3, ln 4, fm-s43 5,",
+    "proj-s43 6. Run dirs from each run's meta.json align block: shuffle = target_shuffle=batch (tag",
+    "proj-shufbatch); cd0 = discard_channels=[] on data hash 1cd484e5; raw = feat=raw; ln = feat=ln;",
+    "the seed-43 repeats share the seed-42 align configs (ffcd7963 / fm c0aa0eab)."
+  ],
+  "fractions": [0.01, 0.05, 0.1, 0.25, 1.0],
+  "seeds": [0, 1, 2],
+  "c_grid": [1e-06, 1e-05, 0.0001, 0.001, 0.01, 0.1, 1.0, 10.0, 100.0],
+  "datasets": ["m_eurosat", "m_brick_kiln", "m_pv4ger", "m_so2sat", "m_forestnet", "m_bigearthnet"],
+  "models": [
+    {"name": "dinov3-sat", "kind": "dino", "features": "models/dino_feats/dinov3_vit7b16_sat_{dataset}_{split}.npz", "view": null, "teacher": null},
+    {"name": "flux-proj-shufbatch", "kind": "flux", "teacher": "dinov3-sat", "view": null,
+     "features": "models/git10m_eval/git10m_flux_ca8e6ce7+42+proj-375a32d4/{dataset}/*/multistep_{split}_feats_oneshot_g1.0_lora-proj-shufbatch_k*.npz",
+     "expect": {"extraction_mode": "ONESHOT", "ensemble_size": 8, "weights": "flux-dev+lora:proj-shufbatch", "k": 28}},
+    {"name": "flux-proj-cd0", "kind": "flux", "teacher": "dinov3-sat", "view": null,
+     "features": "models/git10m_eval/git10m_flux_1cd484e5+42+proj-ffcd7963/{dataset}/*/multistep_{split}_feats_oneshot_g1.0_lora-proj_k*.npz",
+     "expect": {"extraction_mode": "ONESHOT", "ensemble_size": 8, "weights": "flux-dev+lora:proj", "k": 28}},
+    {"name": "flux-proj-raw", "kind": "flux", "teacher": "dinov3-sat", "view": null,
+     "features": "models/git10m_eval/git10m_flux_ca8e6ce7+42+proj-efbacf07/{dataset}/*/multistep_{split}_feats_oneshot_g1.0_lora-proj_k*.npz",
+     "expect": {"extraction_mode": "ONESHOT", "ensemble_size": 8, "weights": "flux-dev+lora:proj", "k": 28}},
+    {"name": "flux-proj-ln", "kind": "flux", "teacher": "dinov3-sat", "view": null,
+     "features": "models/git10m_eval/git10m_flux_ca8e6ce7+42+proj-75e7c7cc/{dataset}/*/multistep_{split}_feats_oneshot_g1.0_lora-proj_k*.npz",
+     "expect": {"extraction_mode": "ONESHOT", "ensemble_size": 8, "weights": "flux-dev+lora:proj", "k": 28}},
+    {"name": "flux-fm-s43", "kind": "flux", "teacher": "dinov3-sat", "view": null,
+     "features": "models/git10m_eval/git10m_flux_ca8e6ce7+43+fm-c0aa0eab/{dataset}/*/multistep_{split}_feats_oneshot_g1.0_lora-fm_k*.npz",
+     "expect": {"extraction_mode": "ONESHOT", "ensemble_size": 8, "weights": "flux-dev+lora:fm", "k": 28}},
+    {"name": "flux-proj-s43", "kind": "flux", "teacher": "dinov3-sat", "view": null,
+     "features": "models/git10m_eval/git10m_flux_ca8e6ce7+43+proj-ffcd7963/{dataset}/*/multistep_{split}_feats_oneshot_g1.0_lora-proj_k*.npz",
+     "expect": {"extraction_mode": "ONESHOT", "ensemble_size": 8, "weights": "flux-dev+lora:proj", "k": 28}}
+  ]
+}

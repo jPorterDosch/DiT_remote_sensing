@@ -1,0 +1,52 @@
+{
+ "classes": [
+  "water",
+  "tree_canopy_forest",
+  "low_vegetation_field",
+  "barren_land",
+  "impervious_other",
+  "impervious_roads"
+ ],
+ "ignore": 255,
+ "splits": {
+  "train": {
+   "n": 3000,
+   "pixel_counts": [
+    27165215,
+    69660931,
+    62171903,
+    9017083,
+    14483804,
+    5851528,
+    8257536
+   ],
+   "sha256": "adc6d1bd8c756f24f88cdcd8c98a40f168e911d8268de82d2aadc877bef9f7e8"
+  },
+  "val": {
+   "n": 1000,
+   "pixel_counts": [
+    6658681,
+    25329488,
+    24997614,
+    1041119,
+    4325365,
+    1873013,
+    1310720
+   ],
+   "sha256": "66b317b7c84e40e1d89846ed83afa81eafbbddd925183b8e67a1e862727282e2"
+  },
+  "test": {
+   "n": 1000,
+   "pixel_counts": [
+    9781239,
+    23930850,
+    23607811,
+    1666420,
+    4225528,
+    1818552,
+    505600
+   ],
+   "sha256": "4f89d6ccf34b8aebed13aed3a49b4b767096c6f0cc677ddbafee26552f6f36e1"
+  }
+ }
+}

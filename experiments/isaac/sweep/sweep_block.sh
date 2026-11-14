@@ -23,7 +23,10 @@
 #
 # Env: DATASET (required), ENS (8), DELETE_CACHE (1), SWEEP_ROOT
 #      (models/${DATASET}_sweep_ens$ENS), DATA (registry root), OUT_DIR (results/eval/sweep),
-#      REUSE_K / REUSE_DIR (optional), SUBSET_ARGS + SMOKE_SIZES (smoke only).
+#      REUSE_K / REUSE_DIR (optional), SUBSET_ARGS + SMOKE_SIZES (smoke only),
+#      FREE_ONLY (1 = run only step 3's delete rules for k -- caller verified the block),
+#      EXTRACT_ONLY (0; 1 = stop after step 1 and KEEP the caches -- for banking features,
+#      e.g. submit_cached.sh; probing runs on CPU later via probe_cpu.sbatch if wanted).
 # Smoke:  DATASET=m_eurosat ENS=2 SUBSET_ARGS="--subset-size 20" SMOKE_SIZES=20,20,20 \
 #         SWEEP_ROOT=models/smoke_sweep OUT_DIR=results/eval/smoke_sweep \
 #         bash experiments/isaac/sweep/sweep_block.sh 33
@@ -50,6 +53,29 @@ s = official_spec(sys.argv[1])
 print(s['root'], ','.join(s['sizes']))" "$DATASET")
 DATA="${DATA:-$REG_ROOT}"
 IFS=',' read -r -a SPLIT_LIST <<<"$SPLITS"
+# Step 3's delete rules, the ONE place they live (probe_cpu.sbatch calls FREE_ONLY=1 for a
+# verified block whose caches a killed task left behind): never REUSE/banked dirs, never a dir
+# with .keep_caches, only with DELETE_CACHE=1; npz + wb sidecars go, *_meta.json stays.
+free_caches() {
+    if [ "$REUSE" = "1" ] || [ "$DELETE_CACHE" != "1" ] || [ -e "$DIR/.keep_caches" ]; then
+        echo "k=$K: caches kept ($([ "$REUSE" = 1 ] && echo banked || { [ -e "$DIR/.keep_caches" ] && echo ".keep_caches marker" || echo DELETE_CACHE=$DELETE_CACHE; }))"
+    else
+        for split in "${SPLIT_LIST[@]}"; do
+            for f in "$DIR"/*/multistep_"$split"_feats_oneshot_g1.0.npz; do
+                [ -f "$f" ] && rm -v -- "$f" && rm -f -- "$f.sha1.json" "$f.sha1.json.lock" "$f.md5.json"  # + wb sidecars
+            done
+        done
+        echo "k=$K: feature caches deleted; *_meta.json kept as provenance"
+    fi
+}
+
+if [ "${FREE_ONLY:-0}" = 1 ]; then  # caller already verified the block (eval.sweep done-status 0)
+    REUSE=0
+    DIR="$SWEEP_ROOT/k$K"
+    if [ -n "$REUSE_K" ] && [ "$K" = "$REUSE_K" ]; then REUSE=1; DIR="$REUSE_DIR"; fi
+    free_caches
+    exit 0
+fi
 [ -d "$DATA/${SPLIT_LIST[0]}" ] || { echo "FATAL: $DATA missing -- export $DATASET first (eval.export_geobench)" >&2; exit 1; }
 # The images must be the committed manifest's (eval/manifests/): same pixels/labels/partition
 # as the workstation gates saw. ~1 min; refuses on any mismatch.
@@ -109,6 +135,19 @@ else
     done
 fi
 
+if [ "${EXTRACT_ONLY:-0}" = 1 ]; then
+    # KEEP_CACHES=1 (submit_cached.sh's banking) marks the dir at the source: step 3 then never
+    # deletes it, whatever DELETE_CACHE a later probe inherits. Plain EXTRACT_ONLY (extract on GPU,
+    # probe on CPU later) leaves no marker, so that later probe still frees scratch as asked.
+    if [ "${KEEP_CACHES:-0}" = 1 ]; then
+        touch "$DIR/.keep_caches"
+        echo "k=$K: EXTRACT_ONLY=1 -- caches kept in $DIR (marked .keep_caches: banked), no probe"
+    else
+        echo "k=$K: EXTRACT_ONLY=1 -- caches kept in $DIR for a later probe, no probe"
+    fi
+    exit 0
+fi
+
 echo "=== $DATASET k=$K probe $(date -Is)"
 SMOKE_FLAG=()
 [ -n "$SMOKE_SIZES" ] && SMOKE_FLAG=(--smoke-sizes "$SMOKE_SIZES")
@@ -121,14 +160,5 @@ rm -f "$LOG"
 [ -n "$RESULT" ] && [ -f "$RESULT" ] || { echo "FATAL: no verified block result; caches kept" >&2; exit 1; }
 python3 -c "import sys; from eval.sweep import verify_block; verify_block(sys.argv[1])" "$RESULT"
 
-if [ "$REUSE" = "1" ] || [ "$DELETE_CACHE" != "1" ]; then
-    echo "k=$K: caches kept ($([ "$REUSE" = 1 ] && echo banked || echo DELETE_CACHE=$DELETE_CACHE))"
-else
-    for split in "${SPLIT_LIST[@]}"; do
-        for f in "$DIR"/*/multistep_"$split"_feats_oneshot_g1.0.npz; do
-            [ -f "$f" ] && rm -v "$f"
-        done
-    done
-    echo "k=$K: feature caches deleted; *_meta.json kept as provenance"
-fi
+free_caches
 echo "k=$K done -> $RESULT"
