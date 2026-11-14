@@ -1,18 +1,44 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 
 import numpy as np
+import torch
 import wandb
 from torch.utils.data import DataLoader, Subset
 
-from config_types import ExtractionMode
+from config_types import NUM_DOUBLE_BLOCKS, ExtractionMode, double_block_stamp
 from eval.wb import log_features
 from registry import register_task
 from utils import env_int, env_value, seed_worker
 
 from .utils import extract_features
+
+
+def lora_tag(al: dict | None) -> str:
+    """The adapter's name in an adapted cache's filename and `weights` pin: the arm, plus
+    `-shuf<mode>` for a shuffled-teacher control (AlignConfig.target_shuffle), so a control's
+    cache can never pass a matrix spec's expect.weights for the arm it controls (review
+    2026-10-17). `finetune` for pre-alignment checkpoints without an `align` block."""
+    if not al:
+        return "finetune"
+    shuf = al.get("target_shuffle") or ""
+    tag = f"{al['arm']}-shuf{shuf}" if shuf else al["arm"]
+    # Alignment on/off branch (AlignConfig.stop_step, 2026-10-24): its own tag, so a branched run's
+    # cache never passes a spec's expect.weights for the full arm. Absent / 0 = unchanged tag.
+    stop = int(al.get("stop_step") or 0)
+    return f"{tag}-stop{stop}" if stop else tag
+
+
+def _file_sha1(path: str) -> str:
+    h = hashlib.sha1()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
 
 POOLING = "spatial_mean"  # global average pool over the feature map, pre-normalization
 
@@ -130,6 +156,65 @@ def _stratified_indices(labels: np.ndarray, subset_size: int, seed: int) -> np.n
     return np.sort(np.concatenate(selected))
 
 
+def lora_provenance(cfg) -> tuple[str, dict]:
+    """ADAPTED-WEIGHT PROVENANCE, shared by every extractor that loads cfg.lora_checkpoint
+    (tasks/extraction.py, tasks/seg_tokens.py): ("", {}) for the frozen model, else the cache
+    tag suffix `_lora-<tag>` and the meta fields (weights `+lora:<tag>`, checkpoint path + sha1,
+    global step, the checkpoint's align block minus the projector weights)."""
+    if not cfg.lora_checkpoint:
+        return "", {}
+    ck = torch.load(cfg.lora_checkpoint, map_location="cpu", weights_only=False)
+    al = ck.get("align")
+    arm = lora_tag(al)
+    return f"_lora-{arm}", {
+        "lora_tag": arm,
+        "lora_checkpoint": os.path.abspath(cfg.lora_checkpoint),
+        # Content identity: a retrained run at the same path is a different adapter
+        # (extract_ckpt.sbatch's reuse check compares it).
+        "lora_checkpoint_sha1": _file_sha1(cfg.lora_checkpoint),
+        "lora_global_step": ck.get("global_step"),
+        "lora_align": {k: v for k, v in al.items() if k != "projector_state_dict"} if al else None,
+    }
+
+
+def model_provenance(model, cfg) -> tuple[str, dict]:
+    """(cache-tag suffix, meta) for the weights that produced a cache -- ONE place for every
+    extractor (rule 10). FLUX (weights_tag "flux-dev", the default for adapters that predate the
+    attribute): the control-env provenance plus, with cfg.lora_checkpoint, the adapted-weight
+    provenance (lora_provenance), byte-identical to the pre-2026-11-02 inline code. Any other
+    backbone (GeoCore-9B): honors no control flag (a set flag raises), refuses LoRA, stamps its
+    own `weights` tag and the model's `provenance_meta()` (hidden width, block counts, pinned
+    conditioning, checkpoint digests) plus `discard_channels` when the model carries them."""
+    tag = getattr(model, "weights_tag", "flux-dev")
+    if tag == "flux-dev":
+        prov_suffix, prov_meta, _ = env_provenance(cfg)
+        if cfg.lora_checkpoint:
+            # ADAPTED-WEIGHT PROVENANCE: the adapter loaded cfg.lora_checkpoint into the model, so
+            # "weights" must say so or an adapted cache is indistinguishable by pin from a frozen
+            # one (eval.features.check_pins). finetune-diffusion alignment runs record their arm
+            # (tasks/train_diffusion._align_ckpt_fields); older finetunes have no "align" field.
+            # Into the FILENAME too (like _randinit): a frozen `*_oneshot_g1.0.npz` glob can never
+            # pick an adapted cache up, whatever save_dir it lands in.
+            lora_suffix, lora_meta = lora_provenance(cfg)
+            prov_suffix += lora_suffix
+            prov_meta = {**prov_meta, "weights": f"{prov_meta['weights']}+lora:{lora_meta['lora_tag']}",
+                         **{k: v for k, v in lora_meta.items() if k != "lora_tag"}}  # fmt: skip
+        return prov_suffix, prov_meta
+    if getattr(cfg, "lora_checkpoint", ""):
+        raise ValueError(f"{tag}: lora_checkpoint is not supported (frozen weights only)")
+    prov_suffix, prov_meta, _ = env_provenance(cfg, honors=())
+    prov_meta = {**prov_meta, "weights": tag, **model.provenance_meta()}
+    discard = getattr(model, "discard_channels", None)
+    if discard is not None:
+        prov_meta["discard_channels"] = [int(c) for c in discard]
+    return prov_suffix, prov_meta
+
+
+def block_stamp_for(model, k) -> dict:
+    """double_block_stamp against the MODEL's double-block count (FLUX 19, GeoCore 8)."""
+    return double_block_stamp(k, num_double=getattr(model, "num_double_blocks", NUM_DOUBLE_BLOCKS))
+
+
 @register_task("extract")
 class ExtractionTask:
     """Multi-timestep feature extraction only — no probe training.
@@ -158,6 +243,18 @@ class ExtractionTask:
             raise ValueError("task='extract' selects its own subset; run with label_fraction=1.0")
 
         inversion = cfg.extraction_mode == ExtractionMode.INVERSION
+        # MULTI-BLOCK (cfg.k a list): one-shot only -- one early-exiting pass caches every
+        # listed block, so the cache is (N, K, B, C) and mods (K, B, 3, C). The block list
+        # goes into the filename (below), so no existing `*_oneshot_g1.0.npz` consumer --
+        # all of which expect (N, K, C) at one block -- can ever pick a multi-block cache up.
+        multi_block = isinstance(cfg.k, list)
+        if multi_block:
+            if inversion:
+                raise ValueError(
+                    "multi-block extraction is one-shot only (the inversion chain caches one block)"
+                )
+            if any(a >= b for a, b in zip(cfg.k, cfg.k[1:])):
+                raise ValueError(f"multi-block k must be strictly increasing, got {cfg.k}")
         # e.g. inversion_g1.0_n50 / oneshot_g1.0 / oneshot_g3.5 — collision-proof cache tag.
         # RANDOM-WEIGHT PROVENANCE. FLUX_RANDOM_INIT builds the architecture WITHOUT
         # loading the checkpoint (see flux/util.load_flow_model), which changes the
@@ -166,10 +263,12 @@ class ExtractionTask:
         # run. Every downstream sweep locates caches by GLOB, so an untrained cache
         # sitting at the expected path would be probed as if it were FLUX. Mark it in the
         # filename, where a `*_oneshot_g1.0.npz` glob cannot reach it.
-        prov_suffix, prov_meta, _ = env_provenance(cfg)
+        prov_suffix, prov_meta = model_provenance(model, cfg)  # weights / control / LoRA provenance
         cache_tag = f"{cfg.extraction_mode.value.lower()}_g{cfg.guidance_scale}" + prov_suffix
         if inversion:
             cache_tag += f"_n{cfg.num_inversion_steps}"
+        if multi_block:
+            cache_tag += "_k" + "-".join(str(b) for b in cfg.k)
 
         # cfg.extract_split is "train" for every historical cache; "test" extracts the
         # official test split for full-split probe evaluation. The split is stamped into
@@ -232,8 +331,11 @@ class ExtractionTask:
 
         feats, labels, mods = extract_features(cfg, model, loader, f"{cfg.extract_split}_subset")
 
-        expected_shape = (len(indices), num_timesteps, feats.shape[-1])
-        if feats.ndim != 3 or feats.shape != expected_shape:
+        if multi_block:
+            expected_shape = (len(indices), num_timesteps, len(cfg.k), feats.shape[-1])
+        else:
+            expected_shape = (len(indices), num_timesteps, feats.shape[-1])
+        if feats.ndim != len(expected_shape) or feats.shape != expected_shape:
             raise RuntimeError(f"expected features of shape {expected_shape}, got {feats.shape}")
         if not np.array_equal(labels, all_labels[indices]):
             raise RuntimeError(
@@ -245,12 +347,16 @@ class ExtractionTask:
             if inversion
             else {"eps_seed": np.array(eps_seed), "ensemble_size": np.array(cfg.model.ensemble_size)}
         )
+        # Multi-block only, so single-block caches stay key-for-key as before.
+        layout_extra = {"layout": "N,K,B,C"} if multi_block else {}
+        # Double-stream blocks changed definition on 2026-10-05 (config_types.DOUBLE_BLOCK_FEATURE)
+        layout_extra.update(block_stamp_for(model, cfg.k))
         out_path = os.path.join(cfg.save_dir, f"multistep_{cfg.extract_split}_feats_{cache_tag}.npz")
         np.savez(
             out_path,
-            feats=feats,  # N, K, C — pooled, pre-normalization
+            feats=feats,  # N, K, C (multi-block: N, K, B, C) — pooled, pre-normalization
             labels=labels,  # N (multi-label: N x L multi-hot)
-            mods=mods,  # K, 3, C — adaLN [shift, scale, gate] per timestep, for offline DiTF norm
+            mods=mods,  # K, 3, C (K, B, 3, C) — adaLN [shift, scale, gate], for offline DiTF norm
             timesteps=np.array(cfg.t),
             subset_indices=indices,  # into cfg.extract_split's split
             paths=np.array([extract_ds_full.samples[i][0] for i in indices]),
@@ -264,6 +370,7 @@ class ExtractionTask:
             degrade_to=np.array(prov_meta["degrade_to"] if prov_meta["degrade_to"] else -1),
             fixed_cond_t=np.array(prov_meta["fixed_cond_t"] if prov_meta["fixed_cond_t"] else -1),
             **mode_extra,
+            **{k: np.array(v) for k, v in layout_extra.items() if k == "layout"},
         )
         consistency = "chain state" if inversion else "eps-consistency assertion passed"
         print(f"cached {feats.shape} features ({consistency}) to {out_path}")
@@ -290,6 +397,7 @@ class ExtractionTask:
             # "random_init" = untrained control, NOT FLUX weights. Recorded here as well as
             # in the filename so provenance survives a rename or a copy.
             **prov_meta,
+            **layout_extra,
         }
         meta_path = os.path.join(cfg.save_dir, f"multistep_{cfg.extract_split}_feats_{cache_tag}_meta.json")
         with open(meta_path, "w") as f:

@@ -1,0 +1,98 @@
+{
+ "_comment": [
+  "Phase 9 (2026-11-03): reviewer objection -- the matrix selects the candidate view and C on the FULL",
+  "official val split at every budget, so the 1-25 % rows are not a uniformly label-constrained pipeline.",
+  "This spec reruns the phase-2 core arms (entries verbatim; dinov3-web from phase 5) with",
+  "\"selection\": \"val-budget\": the val split is subsampled for the selection with the same nested per-class",
+  "draw as the probe-training labels (same fraction, same seed). The 100 % cells are the same computation",
+  "as the full-val ones and are copied from results/matrix/cells (their config is bit-identical, matrix.collect",
+  "re-validates). Report: results/matrix/phase9_valbudget. Runs on short (PART=low), CPU only."
+ ],
+ "selection": "val-budget",
+ "fractions": [
+  0.01,
+  0.05,
+  0.1,
+  0.25,
+  1.0
+ ],
+ "seeds": [
+  0,
+  1,
+  2
+ ],
+ "c_grid": [
+  1e-06,
+  1e-05,
+  0.0001,
+  0.001,
+  0.01,
+  0.1,
+  1.0,
+  10.0,
+  100.0
+ ],
+ "datasets": [
+  "m_eurosat",
+  "m_brick_kiln",
+  "m_pv4ger",
+  "m_so2sat",
+  "m_forestnet",
+  "m_bigearthnet"
+ ],
+ "models": [
+  {
+   "name": "dinov3-sat",
+   "kind": "dino",
+   "features": "models/dino_feats/dinov3_vit7b16_sat_{dataset}_{split}.npz",
+   "view": null,
+   "teacher": null
+  },
+  {
+   "name": "dinov3-web",
+   "kind": "dino",
+   "features": "models/dino_feats/dinov3_vit7b16_web_{dataset}_{split}.npz",
+   "view": null,
+   "teacher": null
+  },
+  {
+   "name": "flux-pretrained-k28",
+   "kind": "flux",
+   "features": "models/{dataset}_multiblock_ens8/*/multistep_{split}_feats_oneshot_g1.0_k*.npz",
+   "view": null,
+   "expect": {
+    "extraction_mode": "ONESHOT",
+    "ensemble_size": 8,
+    "weights": "flux-dev",
+    "k": 28
+   },
+   "teacher": "dinov3-sat"
+  },
+  {
+   "name": "flux-naive",
+   "kind": "flux",
+   "teacher": "dinov3-sat",
+   "view": null,
+   "features": "models/git10m_eval/git10m_flux_ca8e6ce7+42+naive-11e56b1e/{dataset}/*/multistep_{split}_feats_oneshot_g1.0_lora-naive_k*.npz",
+   "expect": {
+    "extraction_mode": "ONESHOT",
+    "ensemble_size": 8,
+    "weights": "flux-dev+lora:naive",
+    "k": 28
+   }
+  },
+  {
+   "name": "flux-proj",
+   "kind": "flux",
+   "teacher": "dinov3-sat",
+   "view": null,
+   "features": "models/git10m_eval/git10m_flux_ca8e6ce7+42+proj-ffcd7963/{dataset}/*/multistep_{split}_feats_oneshot_g1.0_lora-proj_k*.npz",
+   "expect": {
+    "extraction_mode": "ONESHOT",
+    "ensemble_size": 8,
+    "weights": "flux-dev+lora:proj",
+    "k": 28
+   }
+  }
+ ]
+}

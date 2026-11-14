@@ -31,6 +31,7 @@ if __package__ in (None, ""):
 import wandb  # noqa: E402
 
 from eval import features as F  # noqa: E402
+from eval import fusion as FU  # noqa: E402
 from eval import protocols as P  # noqa: E402
 from eval import wb  # noqa: E402
 
@@ -64,6 +65,25 @@ def _parser() -> argparse.ArgumentParser:
         default=None,
         metavar="TRAIN,VAL,TEST",
         help="SMOKE ONLY (official): expected split sizes of a --subset-size smoke extraction; not quotable",
+    )
+    p.add_argument(
+        "--c-grid",
+        default=None,
+        metavar="C1,C2,...",
+        help="official only: LR C values (default protocols.C_GRID); recorded in the run config",
+    )
+    p.add_argument(
+        "--head",
+        choices=["lr", "tsweight"],
+        default="lr",
+        help="official only: lr = per-candidate logistic regression x C (default); tsweight = learned "
+        "softmax weights over slots (FLUX timesteps / DINO last-4 CLS + mp) + linear head (eval/fusion.py)",
+    )
+    p.add_argument(
+        "--fusion-grid",
+        choices=["satdifuser", "reg"],
+        default="satdifuser",
+        help="--head tsweight only: hyperparameter grid (eval/fusion.py FUSION_GRIDS); recorded in the config",
     )
     p.add_argument("--n-jobs", type=int, default=7)
     p.add_argument("--out-dir", default="results/eval")
@@ -149,12 +169,32 @@ def official_flux(args):
     spec = F.official_spec(args.dataset)
     sizes = getattr(args, "sizes", None) or spec["sizes"]
     smoke = sizes != spec["sizes"]
-    loaded = {s: F.load_flux_split(args.features, args.pins, s, n, smoke=smoke) for s, n in sizes.items()}
+    transform = getattr(args, "transform", None) or None
+    if transform not in (None, "ditf"):
+        raise SystemExit(f"official_flux: transform must be null or 'ditf', got {transform!r}")
+    loaded = {
+        s: F.load_flux_split(args.features, args.pins, s, n, smoke=smoke, with_mods=transform == "ditf")
+        for s, n in sizes.items()
+    }
     (Xtr, ytr, ts, m_tr, _, h_tr), (Xva, yva, ts_v, m_va, _, h_va), (Xte, yte, ts_t, m_te, p_te, h_te) = (
         loaded["train"],
         loaded["val"],
         loaded["test"],
     )
+    if transform == "ditf":
+        # The DiTF view (features.ditf, verbatim from the absorption harness): massive channels
+        # zeroed, per-image LayerNorm over channels, the block's adaLN (1 + scale) x + shift, L2.
+        # Applied per split with that split's own cached mods, BEFORE the candidate slices, so
+        # every candidate (single t, concat) and the tsweight slots see the same view.
+        discard = F.meta_discard_channels(
+            m_tr, args.features
+        )  # FLUX constant, or the cache's own stamped list
+        Xtr, Xva, Xte = (
+            F.ditf(X, m.pop("mods"), discard) for X, m in ((Xtr, m_tr), (Xva, m_va), (Xte, m_te))
+        )
+        print(
+            f"official_flux: transform=ditf (discard {discard}) applied to train {Xtr.shape} val {Xva.shape} test {Xte.shape}"
+        )
     if not (ts == ts_v == ts_t):
         raise SystemExit(f"timestep mismatch across splits: {ts} {ts_v} {ts_t}")
     for key in (
@@ -164,6 +204,9 @@ def official_flux(args):
         "num_inversion_steps",
         "pooling",
         "degrade_to",
+        # adapted caches: all three splits must come from ONE checkpoint (review 2026-10-15)
+        "weights",
+        "lora_checkpoint",
     ):
         if len({json.dumps(m.get(key)) for m in (m_tr, m_va, m_te)}) != 1:
             raise SystemExit(f"meta mismatch across splits on {key}")
@@ -191,7 +234,9 @@ def official_flux(args):
         names = [n for n in names if n[0] in want]
     cands = {n: (make(Xtr, i), make(Xva, i), make(Xte, i)) for n, i in names}
     inputs = h_tr + h_va + h_te
-    return cands, ytr, yva, yte, p_te, inputs, {"timesteps": ts, "meta_train": m_tr}
+    # (N, T, C) per split for --head tsweight (slots = timesteps); views, no copy
+    slots = {"X3": (Xtr, Xva, Xte), "slots": FU.flux_slots(Xtr, ts)[1]}
+    return cands, ytr, yva, yte, p_te, inputs, {"timesteps": ts, "meta_train": m_tr, **slots}
 
 
 def official_dino(args):
@@ -200,10 +245,22 @@ def official_dino(args):
         path = args.features.format(split=s)
         d = F.load(path)
         files, y = F.list_official_split(args.dataset, s)
+        n = (args.sizes or {}).get(s, len(files))
+        if n != len(files):
+            # SMOKE (--smoke-sizes): the exact strided subset extract_dino --max-images keeps,
+            # so identity is still verified image-by-image, just on the subset. Not quotable.
+            keep = np.linspace(0, len(files) - 1, n).astype(int)
+            files, y = [files[i] for i in keep], y[keep]
         F.check_identity(d, files, path)
         data[s] = (d, y, files, path)
-    names = (args.view or F.DINO_OFFICIAL_VIEWS).split(",")
-    cands = {n: tuple(F.view("dino", data[s][0], n)[1] for s in ("train", "val", "test")) for n in names}
+    if getattr(args, "head", "lr") == "tsweight":
+        # slots = last-4-block CLS + last-block patch mean, (N, 5, D); the LR views are not built
+        sl = [FU.dino_slots(data[s][0]) for s in ("train", "val", "test")]
+        cands, extra = {}, {"X3": tuple(x for x, _ in sl), "slots": sl[0][1]}
+    else:
+        names = (args.view or F.DINO_OFFICIAL_VIEWS).split(",")
+        cands = {n: tuple(F.view("dino", data[s][0], n)[1] for s in ("train", "val", "test")) for n in names}
+        extra = {}
     return (
         cands,
         data["train"][1],
@@ -211,7 +268,71 @@ def official_dino(args):
         data["test"][1],
         data["test"][2],
         [data[s][3] for s in data],
-        {},
+        extra,
+    )
+
+
+def official_satdifuser(args):
+    """SatDiFuser (DiffusionSat) pooled caches (eval.satdifuser dump): one file per split, images
+    in list_official_split order. The arm's "block" is the pyramid scale, pinned per dataset
+    through args.expect["scale"] (eval.satdifuser select, val at 100 %), its candidates the
+    per-timestep slices + their concat, exactly the FLUX arms' candidate set."""
+    from eval import satdifuser as SD
+
+    expect = dict(getattr(args, "expect", None) or {})
+    scale = expect.pop("scale", None)
+    if not scale:
+        raise SystemExit(
+            "satdifuser arms need expect.scale (s32 | s16 | s8 | s4 | all: eval.satdifuser select)"
+        )
+    pins = {"dataset": args.dataset, "weights": SD.WEIGHTS, "pooling": SD.POOLING, **expect}
+    data = {}
+    for s in F.official_spec(args.dataset)["sizes"]:
+        path = args.features.format(split=s)
+        d, meta = SD.load_split(path)
+        F.check_pins(meta, pins, path)
+        if meta.get("split") != s:
+            raise SystemExit(f"{path}: meta split={meta.get('split')!r} != {s!r}")
+        if meta.get("max_images"):
+            raise SystemExit(f"{path}: a --max-images smoke cache, never quotable")
+        files, y = F.list_official_split(args.dataset, s)
+        F.check_identity(d, files, path)
+        if not np.array_equal(d["labels"], y):
+            raise SystemExit(f"{path}: labels differ from the official split's")
+        data[s] = (d, meta, y, files, path)
+    metas = [m for _, m, _, _, _ in data.values()]
+    for key in SD.PIN_KEYS + (
+        "model_root",
+        "unet_config_sha1",
+        "repo_commit",
+        "extractor_yaml_sha1",
+        "source",
+    ):
+        if len({json.dumps(m.get(key)) for m in metas}) != 1:
+            raise SystemExit(f"meta mismatch across splits on {key}: {[m.get(key) for m in metas]}")
+    seeds = [m.get("vae_seed") for m in metas]
+    if len(set(seeds)) != len(seeds):
+        raise SystemExit(f"vae_seed shared between splits: {seeds} (position-paired VAE noise, audit F1)")
+    ts = [int(t) for t in data["train"][0]["timesteps"]]
+    for s in ("val", "test"):
+        if [int(t) for t in data[s][0]["timesteps"]] != ts:
+            raise SystemExit(
+                f"timestep mismatch across splits: {ts} vs {data[s][0]['timesteps'].tolist()} ({s})"
+            )
+    per_split = {s: SD.candidates(data[s][0], scale, ts) for s in ("train", "val", "test")}
+    names = list(per_split["train"])
+    if args.view and args.view != "all":
+        want = args.view.split(",")
+        names = [n for n in names if n in want]
+    cands = {n: tuple(per_split[s][n] for s in ("train", "val", "test")) for n in names}
+    return (
+        cands,
+        data["train"][2],
+        data["val"][2],
+        data["test"][2],
+        data["test"][3],
+        [data[s][4] for s in data],
+        {"timesteps": ts, "scale": scale, "meta_train": data["train"][1]},
     )
 
 
@@ -237,7 +358,27 @@ def run_official(args):
     cands, ytr, yva, yte, test_paths, inputs, extra = loader(args)
     for p in inputs:
         wb.use_features(p)
-    correct, pred, sel, table = P.run_official(cands, ytr, yva, yte)
+    X3, slots = extra.pop("X3", None), extra.pop("slots", None)
+    if args.head == "tsweight":
+        Xtr3, Xva3, Xte3 = X3
+        correct, pred, sel, table = FU.run_tsweight(
+            Xtr3, ytr, Xva3, yva, Xte3, yte, FU.n_outputs(args.dataset, ytr), slots, grid=args.fusion_grid
+        )
+        for r in table:
+            print(
+                f"  val tsweight lr={r['lr']:<6g} wd={r['wd']:<6g} best epoch {r['epoch']:>2} score={r['val_acc']:.4f}"
+            )
+        _, sel_line, extra_metrics = report_test(args.dataset, yte, pred, correct)
+        w = ", ".join(f"{s}={a:.3f}" for s, a in zip(sel["slots"], sel["slot_weights"]))
+        print(
+            f"  SELECTED on val: tsweight lr={sel['lr']} wd={sel['wd']} epoch={sel['epoch']} (val {sel['val_acc']:.4f})"
+        )
+        print(f"  slot weights: {w}")
+        print(f"  TEST: {sel_line}")
+        wb.log_table("val_selection", [{k: v for k, v in r.items() if k != "curve"} for r in table])
+        info = {"selected": sel, **extra_metrics, "conv_warnings": 0, "val_table": table, **extra}
+        return {"test": (correct, np.arange(len(yte)))}, info, test_paths, yte
+    correct, pred, sel, table = P.run_official(cands, ytr, yva, yte, c_grid=args.c_grid_t)
     for r in table:
         print(
             f"  val {r['candidate']:>9} C={r['C']:<5} score={r['val_acc']:.4f}"
@@ -249,6 +390,19 @@ def run_official(args):
     wb.log_table("val_selection", table)
     info = {"selected": sel, **extra_metrics, "conv_warnings": sel["test_warn"], **extra}
     return {"test": (correct, np.arange(len(yte)))}, info, test_paths, yte
+
+
+def parse_c_grid(spec: str | None) -> tuple:
+    """--c-grid "0.0001,0.001,..." -> ascending tuple (selection is first max in C order, so
+    the order is part of the protocol); None -> protocols.C_GRID."""
+    if spec is None:
+        return P.C_GRID
+    if spec.strip() == "wide":  # alias: the scripts never hand-copy the grid (rule 8)
+        return P.C_GRID_WIDE
+    grid = tuple(sorted({float(x) for x in spec.split(",") if x.strip()}))
+    if not grid or any(c <= 0 for c in grid):
+        raise SystemExit(f"--c-grid must be positive values, got {spec!r}")
+    return grid
 
 
 def parse_smoke_sizes(spec: str | None) -> dict | None:
@@ -279,8 +433,19 @@ def main(argv=None) -> str:
         raise SystemExit("--view is required for cv/budget/mlp (see eval/features.py)")
     args.pins = F.flux_pins(args.dataset, F.parse_expect(args.expect)) if args.kind == "flux" else None
     args.sizes = parse_smoke_sizes(args.smoke_sizes)
-    if args.sizes and args.kind != "flux":
-        raise SystemExit("--smoke-sizes applies to FLUX official caches only")
+    args.c_grid_t = parse_c_grid(args.c_grid)
+    if args.c_grid and args.protocol != "official":
+        raise SystemExit("--c-grid applies to --protocol official only")
+    if args.head != "lr" and args.protocol != "official":
+        raise SystemExit("--head applies to --protocol official only")
+    if args.fusion_grid != "satdifuser" and args.head != "tsweight":
+        raise SystemExit("--fusion-grid applies to --head tsweight only")
+    if args.head == "tsweight" and (args.c_grid or args.view):
+        raise SystemExit(
+            "--head tsweight has no C grid or views (it selects lr/wd/epoch on val over all slots)"
+        )
+    if args.sizes and args.kind not in ("flux", "dino"):
+        raise SystemExit("--smoke-sizes applies to FLUX and DINO official caches only")
     if args.kind != "flux" and args.expect:
         raise SystemExit("--expect pins FLUX caches only")
     # Content identity of every file actually read (rule 11): a re-extraction or re-shard
@@ -306,7 +471,15 @@ def main(argv=None) -> str:
         ident = wb.file_identity(ident) if ident and os.path.exists(ident) else ident
     config = {
         "protocol": args.protocol,
-        "protocol_constants": PROTOCOL_CONSTANTS[args.protocol],
+        "protocol_constants": {
+            **PROTOCOL_CONSTANTS[args.protocol],
+            **({"C_grid": args.c_grid_t} if args.protocol == "official" and args.head == "lr" else {}),
+            **(
+                {"head": "tsweight", "fusion": FU.fusion_constants(args.fusion_grid)}
+                if args.head == "tsweight"
+                else {}
+            ),
+        },
         "kind": args.kind,
         "view": args.view,
         "features": feat_ids,

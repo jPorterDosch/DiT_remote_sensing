@@ -28,7 +28,23 @@ export PIP_CACHE_DIR="$STORE/cache/pip"
 export WANDB_DIR="$STORE"
 export WANDB_CACHE_DIR="$STORE/cache/wandb"
 export WANDB_DATA_DIR="$STORE/cache/wandb-data"
-export TMPDIR="$STORE/tmp"
+# TMPDIR: node-local inside Slurm jobs. wandb-core polls a port file it writes under TMPDIR;
+# on Lustre, metadata stalls under load missed the 30 s default (10 sweep tasks killed,
+# 2026-10-01) and then a 60 s wait (multiblock pv4ger val, 2026-10-06), always as
+# ServicePollForTokenError. Nothing in the repo puts bulky data in TMPDIR (only small mktemp
+# logs), so a per-job dir on the node's /tmp is safe; Lustre stays the fallback and the
+# login-node default. The wait is a backstop. Neither is part of any config hash.
+export WANDB__SERVICE_WAIT="${WANDB__SERVICE_WAIT:-300}"
+if [ -n "${SLURM_JOB_ID:-}" ] && [ -n "${USER:-}" ] && [ -d /tmp ] && [ -w /tmp ]; then
+    export TMPDIR="/tmp/${USER}_${SLURM_JOB_ID}${SLURM_ARRAY_TASK_ID:+_$SLURM_ARRAY_TASK_ID}"
+    # Remove this job's private dir when the job shell exits. The trap is armed only for a path
+    # of exactly this shape, so it can never point anywhere else.
+    case "$TMPDIR" in
+        /tmp/"${USER}"_[0-9]*) trap 'rm -rf -- "/tmp/${USER}_${SLURM_JOB_ID}${SLURM_ARRAY_TASK_ID:+_$SLURM_ARRAY_TASK_ID}"' EXIT ;;
+    esac
+else
+    export TMPDIR="$STORE/tmp"
+fi
 # FLUX weights live in the store; util.py's fallback matches, but exporting here keeps every
 # ISAAC job pinned to $STORE even if STORE is overridden. Not part of config_hash.
 export FLUX_DEV="${FLUX_DEV:-$STORE/FLUX.1-dev/flux1-dev.safetensors}"

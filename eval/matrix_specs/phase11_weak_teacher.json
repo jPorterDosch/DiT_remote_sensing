@@ -1,0 +1,70 @@
+{
+ "_comment": [
+  "Phase 11 (2026-11-12, review item 6): the weak-teacher control's OWN teacher as a feature row.",
+  "The weak arm (arm_full.sh TAG=weak) aligns to DINOv3 ViT-L/16 web (eval/extract_dino.py preset",
+  "dinov3_vitl16_web, 0.3 B parameters, LVD-1689M); until this row existed its cells were scored against",
+  "dinov3-web (ViT-7B/16), a teacher it never saw. Same datasets / fractions / seeds / c_grid as",
+  "phase5_web_sweep.json; dinov3-web first (cells cached from phase 1 / 2) so the report prints the two",
+  "web teachers side by side. Task index = 6 * model + dataset: dinov3-vitl16-web = tasks 6-11.",
+  "Features: experiments/isaac/geobench/dino.sbatch with PRESET=dinov3_vitl16_web DEVICE=cpu (same extractor,",
+  "pooling and normalization as the 7B rows, but float32 on a CPU node: the 7B rows are bf16 on an H100; no",
+  "GPU slot was free before the supplemental deadline). Each cache records its dtype and device.",
+  "Gated by dino_probe.sbatch GATE_ONLY=1 before any cell runs: ENFORCED by requires_gate below",
+  "(matrix.sbatch calls eval.gate_marker require; the marker records the size + mtime of the feature files",
+  "the gate judged, so a re-extraction needs a new gate). dinov3-web is not listed: its cells already exist",
+  "from phase 1 / 2 and its gate ran before markers existed (2026-10)."
+ ],
+ "requires_gate": {
+  "dinov3-vitl16-web": {
+   "gate": "dino_control",
+   "preset": "dinov3_vitl16_web"
+  }
+ },
+ "fractions": [
+  0.01,
+  0.05,
+  0.1,
+  0.25,
+  1.0
+ ],
+ "seeds": [
+  0,
+  1,
+  2
+ ],
+ "c_grid": [
+  1e-06,
+  1e-05,
+  0.0001,
+  0.001,
+  0.01,
+  0.1,
+  1.0,
+  10.0,
+  100.0
+ ],
+ "datasets": [
+  "m_eurosat",
+  "m_brick_kiln",
+  "m_pv4ger",
+  "m_so2sat",
+  "m_forestnet",
+  "m_bigearthnet"
+ ],
+ "models": [
+  {
+   "name": "dinov3-web",
+   "kind": "dino",
+   "features": "models/dino_feats/dinov3_vit7b16_web_{dataset}_{split}.npz",
+   "view": null,
+   "teacher": null
+  },
+  {
+   "name": "dinov3-vitl16-web",
+   "kind": "dino",
+   "features": "models/dino_feats/dinov3_vitl16_web_{dataset}_{split}.npz",
+   "view": null,
+   "teacher": null
+  }
+ ]
+}

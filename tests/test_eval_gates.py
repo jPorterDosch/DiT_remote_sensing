@@ -344,11 +344,33 @@ def test_dino_control_geobench(out_dir, key, preset):
     exceed the majority-class rate by more than 0.05 (a null above chance = leakage).
     Catches a broken export, label map, split, or checkpoint/normalization mismatch. Runs on
     ISAAC (experiments/isaac/geobench/dino.sbatch): the gated checkpoints live on scratch."""
-    need(F.OFFICIAL[key]["root"], extract_dino.PRESETS[preset]["weights"])
-    extract_dino.main(["--preset", preset, "--dataset", key, "--out-dir", out_dir])
-    pat = os.path.join(out_dir, f"{preset}_{key}_{{split}}.npz")
+    # DINO_GATE_FEATURES=<pattern with {split}>: gate already-extracted features instead of
+    # extracting again (dino.sbatch extracts on the GPU node; dino_probe.sbatch gates + probes on
+    # CPU). The pattern must name THIS key/preset's caches; same assertions either way.
+    # DINO_GATE_SMOKE_SIZES=TRAIN,VAL,TEST passes a --max-images smoke cache's sizes through.
+    pat = os.environ.get("DINO_GATE_FEATURES")
+    if pat:
+        if f"{preset}_{key}_" not in os.path.basename(pat):
+            pytest.fail(f"DINO_GATE_FEATURES={pat} does not name {preset}_{key}")
+        need(*(pat.format(split=s) for s in F.official_spec(key)["sizes"]))
+        # The filename is not identity (rule 6): each cache must RECORD this preset and its
+        # normalization (the checkpoint itself is pinned at extraction by the filename-hash guard
+        # in extract_dino.load_model), so renamed or wrong-preset features fail here.
+        mean, std = extract_dino.PRESETS[preset]["norm"]
+        for s in F.official_spec(key)["sizes"]:
+            c = np.load(pat.format(split=s))
+            if str(c["preset"]) != preset:
+                pytest.fail(f"{pat.format(split=s)}: recorded preset {c['preset']} != {preset}")
+            if not (np.allclose(c["mean"], mean) and np.allclose(c["std"], std)):
+                pytest.fail(f"{pat.format(split=s)}: recorded normalization != {preset}'s {mean}/{std}")
+    else:
+        need(F.OFFICIAL[key]["root"], extract_dino.PRESETS[preset]["weights"])
+        extract_dino.main(["--preset", preset, "--dataset", key, "--out-dir", out_dir])
+        pat = os.path.join(out_dir, f"{preset}_{key}_{{split}}.npz")
+    smoke = os.environ.get("DINO_GATE_SMOKE_SIZES")
     r = run_probe(out_dir, "--protocol", "official", "--dataset", key, "--arm", preset, "--kind", "dino",
-                  "--features", pat, "--view", "clsmp")  # fmt: skip
+                  "--features", pat, "--view", "clsmp",
+                  *(["--smoke-sizes", smoke] if smoke else []))  # fmt: skip
     score = P.metric(r["test"][0])
     d = {s: np.load(pat.format(split=s)) for s in ("train", "val", "test")}
     X = {s: F.view("dino", d[s], "clsmp")[1] for s in d}

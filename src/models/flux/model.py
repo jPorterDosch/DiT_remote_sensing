@@ -99,8 +99,9 @@ class Flux(nn.Module):
         velocities — one trunk enforces that instead of hand-synced copies.
 
         ft_indices: block indices to cache hidden states from (None/empty = none).
-        up_ft convention: [feat] per double block, [feat, mod] per single block,
-        in ft_indices order. early_exit=True stops after max(ft_indices) and skips
+        up_ft convention: [feat, mod] per block (feat = image-token block INPUT, mod = the
+        block's first adaLN triple; double blocks gained the mod 2026-10-05), in ascending
+        block order. early_exit=True stops after max(ft_indices) and skips
         the final layer; the returned pred is then None.
 
         Returns (pred, up_ft).
@@ -134,11 +135,12 @@ class Flux(nn.Module):
             n_single = min(n_single, max(0, max_ft + 1 - len(self.double_blocks)))
 
         for i in range(n_double):
-            img, txt, img_feat = self.double_blocks[i].forward_feat(
+            img, txt, img_feat, mod = self.double_blocks[i].forward_feat(
                 img=img, txt=txt, vec=vec, pe=pe, return_feat=i in ft_indices
             )
             if i in ft_indices:
                 up_ft.append(img_feat.clone().detach() if detach_features else img_feat)
+                up_ft.append(mod)
 
         if n_single > 0:
             img = torch.cat((txt, img), 1)
@@ -214,8 +216,8 @@ class Flux(nn.Module):
         step the reverse ODE AND cache features from the same forward pass.
 
         Returns (pred, up_ft): pred is (N, T, in_channels) packed-latent velocity;
-        up_ft matches forward_feat's convention ([feat] for double blocks,
-        [feat, mod] for single blocks, in ft_indices order).
+        up_ft matches forward_feat's convention: [feat, mod] per block (double blocks too,
+        since 2026-10-05; feat = image-token block input), in ascending block order.
         """
         return self._forward_trunk(
             img,

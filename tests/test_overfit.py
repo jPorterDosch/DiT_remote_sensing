@@ -25,6 +25,7 @@ import matplotlib
 
 matplotlib.use("Agg")  # non-interactive backend — safe for headless SLURM nodes
 import matplotlib.pyplot as plt
+import pytest
 import torch
 import torch.nn.functional as F
 
@@ -92,6 +93,7 @@ def _random_masking(
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.gpu  # loads the real FLUX.1-dev weights onto cuda (Featurizer4Eval default device)
 def test_overfit(
     block_idx_global: int = 28,
     lora_rank: int = 4,

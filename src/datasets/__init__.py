@@ -1,1 +1,1 @@
-from . import spair, eurosat, m_eurosat, resisc45, geobench  # noqa: F401
+from . import spair, eurosat, m_eurosat, resisc45, geobench, geobench_seg, git10m  # noqa: F401

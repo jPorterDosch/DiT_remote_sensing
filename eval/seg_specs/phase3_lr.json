@@ -1,0 +1,163 @@
+{
+  "_comment": [
+    "Phase 3 lr extension, all three seg datasets (2026-10-27): phase3_lr_chesapeake.json with datasets widened to",
+    "m_pv4ger_seg and m_SA_crop_type after the chesapeake run selected lr 1e-4 / 3e-4 at 100 % in every row (the old",
+    "grid {1e-3,1e-2,1e-1} sat on its lower edge). Same models, lr_grid, steps, batch; chesapeake cells are the",
+    "ones already in results/seg/phase3_lr (same spec fields, so they are reused, not recomputed).",
+    "Cells go to results/seg/phase3_lr/ (OUT=results/seg/phase3_lr), never into results/seg/."
+  ],
+  "fractions": [
+    0.01,
+    0.05,
+    0.1,
+    0.25,
+    1.0
+  ],
+  "seeds": [
+    0,
+    1,
+    2
+  ],
+  "lr_grid": [
+    0.0001,
+    0.0003,
+    0.001,
+    0.01,
+    0.1
+  ],
+  "steps": 2000,
+  "batch_images": 16,
+  "datasets": [
+    "m_pv4ger_seg",
+    "m_chesapeake_landcover",
+    "m_SA_crop_type"
+  ],
+  "models": [
+    {
+      "name": "dinov3-sat",
+      "kind": "dino",
+      "tokens": "models/seg_tokens/{dataset}/dinov3_vit7b16_sat",
+      "preset": "dinov3_vit7b16_sat",
+      "img": 512,
+      "expect": {
+        "preset": "dinov3_vit7b16_sat",
+        "weights_hash": "a6675841"
+      },
+      "teacher": null
+    },
+    {
+      "name": "dinov3-web",
+      "kind": "dino",
+      "tokens": "models/seg_tokens/{dataset}/dinov3_vit7b16_web",
+      "preset": "dinov3_vit7b16_web",
+      "img": 512,
+      "expect": {
+        "preset": "dinov3_vit7b16_web",
+        "weights_hash": "a955f4ea"
+      },
+      "teacher": null
+    },
+    {
+      "name": "flux-pretrained",
+      "kind": "flux",
+      "tokens": "models/seg_tokens/{dataset}/flux-pretrained",
+      "tag": "oneshot_g1.0_ens2_img512",
+      "timesteps": [
+        100,
+        260,
+        420
+      ],
+      "blocks": [
+        12,
+        28,
+        38
+      ],
+      "expect": {
+        "weights": "flux-dev",
+        "ensemble_size": 2,
+        "guidance_scale": 1.0,
+        "img_size": [
+          512,
+          512
+        ],
+        "extraction_mode": "ONESHOT"
+      },
+      "teacher": "dinov3-sat"
+    },
+    {
+      "name": "flux-pretrained-k28",
+      "kind": "flux",
+      "tokens": "models/seg_tokens/{dataset}/flux-pretrained",
+      "tag": "oneshot_g1.0_ens2_img512",
+      "timesteps": [
+        100,
+        260,
+        420
+      ],
+      "blocks": [
+        28
+      ],
+      "expect": {
+        "weights": "flux-dev",
+        "ensemble_size": 2,
+        "guidance_scale": 1.0,
+        "img_size": [
+          512,
+          512
+        ],
+        "extraction_mode": "ONESHOT"
+      },
+      "teacher": "dinov3-sat"
+    },
+    {
+      "name": "flux-proj",
+      "kind": "flux",
+      "tokens": "models/seg_tokens/{dataset}/git10m_flux_ca8e6ce7+42+proj-ffcd7963",
+      "tag": "oneshot_g1.0_lora-proj_ens2_img512",
+      "timesteps": [
+        100,
+        260,
+        420
+      ],
+      "blocks": [
+        28
+      ],
+      "expect": {
+        "weights": "flux-dev+lora:proj",
+        "ensemble_size": 2,
+        "guidance_scale": 1.0,
+        "img_size": [
+          512,
+          512
+        ],
+        "extraction_mode": "ONESHOT"
+      },
+      "teacher": "dinov3-sat"
+    },
+    {
+      "name": "flux-naive",
+      "kind": "flux",
+      "tokens": "models/seg_tokens/{dataset}/git10m_flux_ca8e6ce7+42+naive-11e56b1e",
+      "tag": "oneshot_g1.0_lora-naive_ens2_img512",
+      "timesteps": [
+        100,
+        260,
+        420
+      ],
+      "blocks": [
+        28
+      ],
+      "expect": {
+        "weights": "flux-dev+lora:naive",
+        "ensemble_size": 2,
+        "guidance_scale": 1.0,
+        "img_size": [
+          512,
+          512
+        ],
+        "extraction_mode": "ONESHOT"
+      },
+      "teacher": "dinov3-sat"
+    }
+  ]
+}

@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 from einops import rearrange
 
+from config_types import double_block_stamp
 from registry import register_model
 
 from .feat_flux import Featurizer4Eval, prepare
@@ -12,6 +13,21 @@ from models.lora import LORA_SCOPE, lora_block_indices, lora_wrap_flux
 
 @register_model("flux")
 class FluxModel:
+    # Backbone identity read by tasks/extraction.model_provenance / block_stamp_for and the probes
+    # (eval/features.py). "flux-dev" is the historical `weights` pin of every FLUX cache.
+    weights_tag = "flux-dev"
+    hidden_size = 3072
+    num_double_blocks = 19
+    num_blocks = 57
+    discard_channels = None  # FLUX's DiTF massive channels stay the eval-side constant [154, 1446]
+
+    def eval(self) -> "FluxModel":
+        self._inner.model.eval()
+        return self
+
+    def provenance_meta(self) -> dict:
+        return {}
+
     def __init__(self, cfg, category_list: list[str]) -> None:
         self._cd = cfg.cd
         self._discard_channels = list(cfg.discard_channels)
@@ -49,7 +65,17 @@ class FluxModel:
                     "whose adapter cannot reach the probed features (block k's INPUT); retrain."
                 )
             tcfg = ckpt.get("cfg", {}) or {}
-            for field in ("lora_alpha", "lora_rank", "k", "wrap_output", "lora_dropout"):
+            want = double_block_stamp(tcfg.get("k", cfg.k))
+            if want and ckpt.get("double_block_feature") != want["double_block_feature"]:
+                raise ValueError(
+                    f"{cfg.lora_checkpoint} was trained at double-stream block k={tcfg.get('k')} without "
+                    f"the {want['double_block_feature']!r} stamp: its probe features predate the "
+                    "2026-10-05 double-block fix (different definition); retrain."
+                )
+            # k is NOT compared: LORA_SCOPE covers every block, so the trained adapter is valid at
+            # any probed block (the matrix re-sweeps adapted models over blocks, 2026-10-14); the
+            # training k (the aligned block) is recorded in the checkpoint's cfg and lora_align.
+            for field in ("lora_alpha", "lora_rank", "wrap_output", "lora_dropout"):
                 if field in tcfg and getattr(cfg, field) != tcfg[field]:
                     raise ValueError(
                         f"LoRA checkpoint was trained with {field}={tcfg[field]!r} but this "
@@ -228,6 +254,9 @@ class FluxModel:
         category: str = "image",
         guidance: float = 3.5,
     ) -> torch.Tensor:
+        if isinstance(block_idx, bool) or not isinstance(block_idx, int):
+            # A list makes Featurizer4Eval return (B, C, H, W) with block 0's mod applied to all.
+            raise TypeError(f"FluxModel.extract takes one block index, got {block_idx!r}")
         # Featurizer4Eval.forward returns (feat, mod, latents, noise); the trailing
         # latents/noise are only needed by the multi-timestep eps-constancy checks.
         feat_raw, ada, _latents, _noise = self._inner.forward(

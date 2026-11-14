@@ -1,0 +1,108 @@
+{
+ "_comment": [
+  "Phase 4 (2026-10-21): the DiTF VIEW of the pooled tokens under the official protocol (model",
+  "'transform': 'ditf' = eval/features.ditf: massive channels 154/1446 zeroed, per-image LayerNorm, the",
+  "block's adaLN (1 + scale) x + shift from the cached mods, L2; then the usual candidates x C on val).",
+  "Same arms, caches, datasets, fractions, seeds and C grid as phase2.json; model names carry -ditf so",
+  "the phase-2 cells are never touched. dinov3-sat first (cached) for the teacher deltas. Task index =",
+  "6 * model + dataset: models frozen-k28 1, fm 2, naive 3, proj 4; forestnet = dataset 4 -> tasks 10, 16, 22, 28.",
+  "Question (user, 2026-10-21): the alignment loss reads DiTF tokens while the probes read raw pooled",
+  "tokens; does the DiTF view change the probe numbers?"
+ ],
+ "fractions": [
+  0.01,
+  0.05,
+  0.1,
+  0.25,
+  1.0
+ ],
+ "seeds": [
+  0,
+  1,
+  2
+ ],
+ "c_grid": [
+  1e-06,
+  1e-05,
+  0.0001,
+  0.001,
+  0.01,
+  0.1,
+  1.0,
+  10.0,
+  100.0
+ ],
+ "datasets": [
+  "m_eurosat",
+  "m_brick_kiln",
+  "m_pv4ger",
+  "m_so2sat",
+  "m_forestnet",
+  "m_bigearthnet"
+ ],
+ "models": [
+  {
+   "name": "dinov3-sat",
+   "kind": "dino",
+   "features": "models/dino_feats/dinov3_vit7b16_sat_{dataset}_{split}.npz",
+   "view": null,
+   "teacher": null
+  },
+  {
+   "name": "flux-pretrained-k28-ditf",
+   "kind": "flux",
+   "features": "models/{dataset}_multiblock_ens8/*/multistep_{split}_feats_oneshot_g1.0_k*.npz",
+   "view": null,
+   "expect": {
+    "extraction_mode": "ONESHOT",
+    "ensemble_size": 8,
+    "weights": "flux-dev",
+    "k": 28
+   },
+   "teacher": "dinov3-sat",
+   "transform": "ditf"
+  },
+  {
+   "name": "flux-fm-ditf",
+   "kind": "flux",
+   "teacher": "dinov3-sat",
+   "view": null,
+   "features": "models/git10m_eval/git10m_flux_ca8e6ce7+42+fm-8c098506/{dataset}/*/multistep_{split}_feats_oneshot_g1.0_lora-fm_k*.npz",
+   "expect": {
+    "extraction_mode": "ONESHOT",
+    "ensemble_size": 8,
+    "weights": "flux-dev+lora:fm",
+    "k": 28
+   },
+   "transform": "ditf"
+  },
+  {
+   "name": "flux-naive-ditf",
+   "kind": "flux",
+   "teacher": "dinov3-sat",
+   "view": null,
+   "features": "models/git10m_eval/git10m_flux_ca8e6ce7+42+naive-11e56b1e/{dataset}/*/multistep_{split}_feats_oneshot_g1.0_lora-naive_k*.npz",
+   "expect": {
+    "extraction_mode": "ONESHOT",
+    "ensemble_size": 8,
+    "weights": "flux-dev+lora:naive",
+    "k": 28
+   },
+   "transform": "ditf"
+  },
+  {
+   "name": "flux-proj-ditf",
+   "kind": "flux",
+   "teacher": "dinov3-sat",
+   "view": null,
+   "features": "models/git10m_eval/git10m_flux_ca8e6ce7+42+proj-ffcd7963/{dataset}/*/multistep_{split}_feats_oneshot_g1.0_lora-proj_k*.npz",
+   "expect": {
+    "extraction_mode": "ONESHOT",
+    "ensemble_size": 8,
+    "weights": "flux-dev+lora:proj",
+    "k": 28
+   },
+   "transform": "ditf"
+  }
+ ]
+}

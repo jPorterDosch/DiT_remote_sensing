@@ -1,0 +1,212 @@
+{
+ "_doc": "Declared differences of every Git-10M training run from the reference (the seed-42 joint run). Checked by check_arm_cfg.py: a run may differ from the reference in these keys only, and must hold these values. Add a run here when it finishes; an unlisted run directory fails the gate. Keys: cfg.* and train_data.* of meta.json, resolved.* = its resolved align block.",
+ "reference": "git10m_flux_ca8e6ce7+42+proj-ffcd7963",
+ "runs": {
+  "git10m_flux_ca8e6ce7+43+proj-ffcd7963": {
+   "role": "joint, seed 43",
+   "differs": {
+    "cfg.seed": 43,
+    "train_data.flip_seed": 43
+   }
+  },
+  "git10m_flux_ca8e6ce7+42+fm-8c098506": {
+   "role": "flow-matching only, seed 42 (also scored FID at step 0)",
+   "differs": {
+    "cfg.align.arm": "fm",
+    "cfg.align.fid_step0": true
+   }
+  },
+  "git10m_flux_ca8e6ce7+43+fm-c0aa0eab": {
+   "role": "flow-matching only, seed 43",
+   "differs": {
+    "cfg.align.arm": "fm",
+    "cfg.seed": 43,
+    "train_data.flip_seed": 43
+   }
+  },
+  "git10m_flux_ca8e6ce7+44+fm-c0aa0eab": {
+   "role": "flow-matching only, seed 44",
+   "differs": {
+    "cfg.align.arm": "fm",
+    "cfg.seed": 44,
+    "train_data.flip_seed": 44
+   }
+  },
+  "git10m_flux_ca8e6ce7+42+sem-55ae3c4c": {
+   "role": "semantic only, seed 42",
+   "differs": {
+    "cfg.align.arm": "sem"
+   }
+  },
+  "git10m_flux_ca8e6ce7+43+sem-55ae3c4c": {
+   "role": "semantic only, seed 43",
+   "differs": {
+    "cfg.align.arm": "sem",
+    "cfg.seed": 43,
+    "train_data.flip_seed": 43
+   }
+  },
+  "git10m_flux_ca8e6ce7+42+naive-11e56b1e": {
+   "role": "naive sum (no projection), seed 42",
+   "differs": {
+    "cfg.align.arm": "naive"
+   }
+  },
+  "git10m_flux_ca8e6ce7+43+naive-11e56b1e": {
+   "role": "naive sum (no projection), seed 43",
+   "differs": {
+    "cfg.align.arm": "naive",
+    "cfg.seed": 43,
+    "train_data.flip_seed": 43
+   }
+  },
+  "git10m_flux_ca8e6ce7+42+naive-2932fbbd": {
+   "role": "naive sum, web teacher",
+   "differs": {
+    "cfg.align.arm": "naive",
+    "cfg.align.target": "dinov3_vit7b16_web",
+    "resolved.target.name": "dinov3_vit7b16_web",
+    "resolved.target.preset": "dinov3_vit7b16_web",
+    "resolved.target.norm": [
+     [
+      0.485,
+      0.456,
+      0.406
+     ],
+     [
+      0.229,
+      0.224,
+      0.225
+     ]
+    ]
+   }
+  },
+  "git10m_flux_ca8e6ce7+42+proj-eed4023a": {
+   "role": "joint, web teacher (ViT-7B web)",
+   "differs": {
+    "cfg.align.target": "dinov3_vit7b16_web",
+    "resolved.target.name": "dinov3_vit7b16_web",
+    "resolved.target.preset": "dinov3_vit7b16_web",
+    "resolved.target.norm": [
+     [
+      0.485,
+      0.456,
+      0.406
+     ],
+     [
+      0.229,
+      0.224,
+      0.225
+     ]
+    ]
+   }
+  },
+  "git10m_flux_ca8e6ce7+42+proj-0f0ef65b": {
+   "role": "joint, semt-lo: semantic loss on grid timesteps 0-1 only",
+   "differs": {
+    "cfg.align.sem_t_weights": [
+     1.0,
+     1.0,
+     0.0,
+     0.0,
+     0.0,
+     0.0,
+     0.0,
+     0.0,
+     0.0
+    ]
+   }
+  },
+  "git10m_flux_ca8e6ce7+42+proj-2d4482ff": {
+   "role": "joint, semt-hi: semantic loss on grid timesteps 6-8 only",
+   "differs": {
+    "cfg.align.sem_t_weights": [
+     0.0,
+     0.0,
+     0.0,
+     0.0,
+     0.0,
+     0.0,
+     1.0,
+     1.0,
+     1.0
+    ]
+   }
+  },
+  "git10m_flux_ca8e6ce7+42+proj-375a32d4": {
+   "role": "joint, teacher targets shuffled within the batch (control)",
+   "differs": {
+    "cfg.align.target_shuffle": "batch"
+   }
+  },
+  "git10m_flux_ca8e6ce7+42+proj-421cd60b": {
+   "role": "joint, semantic weight 2.0",
+   "differs": {
+    "cfg.align.weight": 2.0
+   }
+  },
+  "git10m_flux_ca8e6ce7+42+proj-796ed0c3": {
+   "role": "joint, semantic weight 4.0",
+   "differs": {
+    "cfg.align.weight": 4.0
+   }
+  },
+  "git10m_flux_ca8e6ce7+42+proj-71cb1e2d": {
+   "role": "joint, semantic loss stopped at step 5000",
+   "differs": {
+    "cfg.align.stop_step": 5000
+   }
+  },
+  "git10m_flux_ca8e6ce7+42+proj-ffa00808": {
+   "role": "joint, semantic loss stopped at step 10000",
+   "differs": {
+    "cfg.align.stop_step": 10000
+   }
+  },
+  "git10m_flux_ca8e6ce7+42+proj-75e7c7cc": {
+   "role": "joint, aligned feature = LayerNorm view",
+   "differs": {
+    "cfg.align.feat": "ln"
+   }
+  },
+  "git10m_flux_ca8e6ce7+42+proj-efbacf07": {
+   "role": "joint, aligned feature = raw view (no channels discarded)",
+   "differs": {
+    "cfg.align.feat": "raw",
+    "resolved.discard_channels": []
+   }
+  },
+  "git10m_flux_1cd484e5+42+proj-ffcd7963": {
+   "role": "joint, channel discard off",
+   "differs": {
+    "cfg.cd": false,
+    "cfg.hash": "1cd484e5",
+    "resolved.discard_channels": []
+   }
+  },
+  "git10m_flux_21fa84fc+42+proj-ffcd7963": {
+   "role": "joint, block k=56",
+   "differs": {
+    "cfg.k": 56,
+    "cfg.hash": "21fa84fc"
+   }
+  },
+  "git10m_flux_21fa84fc+42+fm-c0aa0eab": {
+   "role": "flow-matching only, block k=56",
+   "differs": {
+    "cfg.align.arm": "fm",
+    "cfg.k": 56,
+    "cfg.hash": "21fa84fc"
+   }
+  },
+  "git10m_flux_4abfea87+42+proj-ffcd7963": {
+   "role": "joint, LoRA rank 16 / alpha 64",
+   "differs": {
+    "cfg.lora_rank": 16,
+    "cfg.lora_alpha": 64.0,
+    "cfg.hash": "4abfea87",
+    "resolved.lora_params": 31752192
+   }
+  }
+ }
+}

@@ -191,14 +191,24 @@ class DoubleStreamBlock(nn.Module):
         return img, txt
 
     def forward_feat(self, img: Tensor, txt: Tensor, vec: Tensor, pe: Tensor, return_feat=False):
+        """forward() plus, when return_feat, the image-stream block INPUT and img_mod1.
+
+        Same feature definition as SingleStreamBlock.forward_feat: the hidden state entering
+        the block, pre-normalization, with the adaLN triple of the first modulated op applied
+        to it (img_norm1 -> (1 + scale) * x + shift), so offline DiTF normalization means the
+        same thing for every block. Until 2026-10-05 this returned a mid-block, post-attention,
+        already-modulated activation and no mod, so double blocks were neither comparable to
+        single blocks nor usable by any consumer reading up_ft[1]. img/txt propagation is
+        unchanged (tests/test_multistep_extraction.py checks it against forward()).
+        """
         img_mod1, img_mod2 = self.img_mod(vec)
         txt_mod1, txt_mod2 = self.txt_mod(vec)
+
+        x_feat = img.clone() if return_feat else None
 
         # prepare image for attention
         img_modulated = self.img_norm1(img)
         img_modulated = (1 + img_mod1.scale) * img_modulated + img_mod1.shift
-
-        # x_feat = img_modulated.clone()
 
         img_qkv = self.img_attn.qkv(img_modulated)
         img_q, img_k, img_v = rearrange(img_qkv, "B L (K H D) -> K B H L D", K=3, H=self.num_heads)
@@ -221,16 +231,12 @@ class DoubleStreamBlock(nn.Module):
 
         # calculate the img bloks
         img = img + img_mod1.gate * self.img_attn.proj(img_attn)
-        x_feat = None
-        if return_feat:
-            x_feat = (1 + img_mod2.scale) * self.img_norm2(img) + img_mod2.shift
-
         img = img + img_mod2.gate * self.img_mlp((1 + img_mod2.scale) * self.img_norm2(img) + img_mod2.shift)
 
         # calculate the txt bloks
         txt = txt + txt_mod1.gate * self.txt_attn.proj(txt_attn)
         txt = txt + txt_mod2.gate * self.txt_mlp((1 + txt_mod2.scale) * self.txt_norm2(txt) + txt_mod2.shift)
-        return img, txt, x_feat
+        return img, txt, x_feat, img_mod1
 
 
 class SingleStreamBlock(nn.Module):

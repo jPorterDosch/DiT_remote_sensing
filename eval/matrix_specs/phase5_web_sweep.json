@@ -1,0 +1,111 @@
+{
+ "_comment": [
+  "Phase 5 (2026-10-24): second teacher and align-weight sweep, every arm at k=28, same datasets /",
+  "fractions / seeds / c_grid as phase2.json. dinov3-sat and dinov3-web are listed first (their cells",
+  "exist from phase 1 / 2 and are read as cached) so the report can compute teacher deltas: the",
+  "web-teacher arms are scored against dinov3-web, the weight-sweep arms against dinov3-sat. Task",
+  "index = 6 * model + dataset: proj-web 2, naive-web 3, proj-w2 4, proj-w4 5. Run dirs from each",
+  "run's meta.json align block: proj-web = target dinov3_vit7b16_web (eed4023a), naive-web = web",
+  "(2932fbbd), w2 = weight 2.0 (421cd60b), w4 = weight 4.0 (796ed0c3). naive-web, w2 and w4 are",
+  "extracted on so2sat and bigearthnet only (dataset indices 3 and 5)."
+ ],
+ "fractions": [
+  0.01,
+  0.05,
+  0.1,
+  0.25,
+  1.0
+ ],
+ "seeds": [
+  0,
+  1,
+  2
+ ],
+ "c_grid": [
+  1e-06,
+  1e-05,
+  0.0001,
+  0.001,
+  0.01,
+  0.1,
+  1.0,
+  10.0,
+  100.0
+ ],
+ "datasets": [
+  "m_eurosat",
+  "m_brick_kiln",
+  "m_pv4ger",
+  "m_so2sat",
+  "m_forestnet",
+  "m_bigearthnet"
+ ],
+ "models": [
+  {
+   "name": "dinov3-sat",
+   "kind": "dino",
+   "features": "models/dino_feats/dinov3_vit7b16_sat_{dataset}_{split}.npz",
+   "view": null,
+   "teacher": null
+  },
+  {
+   "name": "dinov3-web",
+   "kind": "dino",
+   "features": "models/dino_feats/dinov3_vit7b16_web_{dataset}_{split}.npz",
+   "view": null,
+   "teacher": null
+  },
+  {
+   "name": "flux-proj-web",
+   "kind": "flux",
+   "teacher": "dinov3-web",
+   "view": null,
+   "features": "models/git10m_eval/git10m_flux_ca8e6ce7+42+proj-eed4023a/{dataset}/*/multistep_{split}_feats_oneshot_g1.0_lora-proj_k*.npz",
+   "expect": {
+    "extraction_mode": "ONESHOT",
+    "ensemble_size": 8,
+    "weights": "flux-dev+lora:proj",
+    "k": 28
+   }
+  },
+  {
+   "name": "flux-naive-web",
+   "kind": "flux",
+   "teacher": "dinov3-web",
+   "view": null,
+   "features": "models/git10m_eval/git10m_flux_ca8e6ce7+42+naive-2932fbbd/{dataset}/*/multistep_{split}_feats_oneshot_g1.0_lora-naive_k*.npz",
+   "expect": {
+    "extraction_mode": "ONESHOT",
+    "ensemble_size": 8,
+    "weights": "flux-dev+lora:naive",
+    "k": 28
+   }
+  },
+  {
+   "name": "flux-proj-w2",
+   "kind": "flux",
+   "teacher": "dinov3-sat",
+   "view": null,
+   "features": "models/git10m_eval/git10m_flux_ca8e6ce7+42+proj-421cd60b/{dataset}/*/multistep_{split}_feats_oneshot_g1.0_lora-proj_k*.npz",
+   "expect": {
+    "extraction_mode": "ONESHOT",
+    "ensemble_size": 8,
+    "weights": "flux-dev+lora:proj",
+    "k": 28
+   }
+  },
+  {
+   "name": "flux-proj-w4",
+   "kind": "flux",
+   "teacher": "dinov3-sat",
+   "view": null,
+   "features": "models/git10m_eval/git10m_flux_ca8e6ce7+42+proj-796ed0c3/{dataset}/*/multistep_{split}_feats_oneshot_g1.0_lora-proj_k*.npz",
+   "expect": {
+    "extraction_mode": "ONESHOT",
+    "ensemble_size": 8,
+    "weights": "flux-dev+lora:proj",
+    "k": 28
+   }
+  }
+ ]
+}

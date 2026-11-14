@@ -1,0 +1,43 @@
+{
+  "_comment": [
+    "Phase 3: SatDiFuser's frozen DiffusionSat features (eval/satdifuser.py, their LDMExtractor verbatim,",
+    "mean-pooled per pyramid scale) under OUR protocol, beside the phase-1 teacher and frozen FLUX entries",
+    "(identical to phase1.json, so their results/matrix cells are reused, never recomputed). The SatDiFuser",
+    "arm's block is the pyramid scale, pinned per dataset at the value eval.satdifuser select picks on the",
+    "official val split at 100 % labels (experiments/isaac/satdifuser/select.sbatch -> results/satdifuser_select/",
+    "<dataset>/select.json); fill per_dataset below from its printed block before `run`. Candidates (t47, t45,",
+    "t40 = their save_timesteps, + concat3t) and C are selected on val per cell, as for every FLUX arm.",
+    "Their Table 2 (trained fuser + linear head, 100 % labels, their augmentation) is quoted separately,",
+    "never in these columns. Gate first: experiments/isaac/satdifuser/gate_eurosat.sbatch must reproduce",
+    "their m-eurosat gw number with their unmodified code."
+  ],
+  "fractions": [0.01, 0.05, 0.1, 0.25, 1.0],
+  "seeds": [0, 1, 2],
+  "c_grid": [1e-06, 1e-05, 0.0001, 0.001, 0.01, 0.1, 1.0, 10.0, 100.0],
+  "datasets": ["m_eurosat", "m_brick_kiln", "m_pv4ger", "m_so2sat", "m_forestnet", "m_bigearthnet"],
+  "models": [
+    {
+      "name": "dinov3-sat",
+      "kind": "dino",
+      "features": "models/dino_feats/dinov3_vit7b16_sat_{dataset}_{split}.npz",
+      "view": null,
+      "teacher": null
+    },
+    {
+      "name": "satdifuser-256",
+      "kind": "satdifuser",
+      "features": "models/satdifuser_feats/satdifuser_{dataset}_{split}.npz",
+      "view": null,
+      "expect": {"scale": "<FILL from results/satdifuser_select/<dataset>/select.json>"},
+      "teacher": "dinov3-sat",
+      "per_dataset": {
+        "m_eurosat": {"expect": {"scale": "<FILL>"}},
+        "m_brick_kiln": {"expect": {"scale": "<FILL>"}},
+        "m_pv4ger": {"expect": {"scale": "<FILL>"}},
+        "m_so2sat": {"expect": {"scale": "<FILL>"}},
+        "m_forestnet": {"expect": {"scale": "<FILL>"}},
+        "m_bigearthnet": {"expect": {"scale": "<FILL>"}}
+      }
+    }
+  ]
+}

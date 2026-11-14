@@ -41,7 +41,7 @@ declare -A params
 params=(
 	[exp_name]="$SCRIPT_NAME"
     [dataset]="spair"
-    [dataset_path]="/lustre/isaac24/scratch/jdosch1/DeepLearning/datasets/SPair-71k"
+    [dataset_path]="/lustre/isaac24/scratch/jdosch1/DiT_remote_sensing/datasets/SPair-71k"
     [save_path]="$SAVE_DIR"
     [dit_model]="flux"
     [t]="260"

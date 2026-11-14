@@ -8,7 +8,7 @@ import torch
 import wandb
 from torch.utils.data import DataLoader, Subset
 
-from config_types import ExtractionMode
+from config_types import ExtractionMode, double_block_stamp
 from registry import register_task
 from utils import seed_worker
 
@@ -284,6 +284,7 @@ class TokenExtractionTask:
 
         meta = {
             **prov_meta,
+            **double_block_stamp(cfg.k),  # double-stream block definition (config_types)
             "extraction_mode": cfg.extraction_mode.value,
             "guidance_scale": cfg.guidance_scale,
             "t": list(cfg.t),

@@ -1,0 +1,124 @@
+{
+  "_comment": [
+    "Phase 1 label-efficiency matrix (eval/matrix.py). Teacher = DINOv3-SAT (frozen, cls/clsmp/cls4/cls4mp",
+    "views selected on val). flux-pretrained = frozen FLUX.1-dev, ens8 oneshot multi-block caches, block k",
+    "fixed per dataset at the value eval.sweep selected on the official val split at 100 % labels over the",
+    "14-block multi-block caches (results/eval/sweep_mb/sweep-select_*_flux-oneshot-ens8-mb_*.npz, 2026-10-10/11,",
+    "RESEARCH_NOTES_isaac_2026-10-12 'FLUX (multi-block caches)'): eurosat 38, brick-kiln 12, pv4ger 28,",
+    "so2sat 28, forestnet 56, bigearthnet 12. (Until 2026-10-13 the spec carried the older single-block",
+    "sweep's blocks 24/38/54/54 for brick-kiln/pv4ger/forestnet/bigearthnet; those FLUX cells were moved to",
+    "results/matrix/stale/ and recomputed.) Timestep candidates (t100..t900, concat) and C",
+    "are selected on val per cell. Fractions are of the official train split; val/test are the full",
+    "official splits. Metrics: top-1, micro-F1 for m_bigearthnet; never averaged across datasets.",
+    "C grid 2026-10-13b: 1e-6..1 extended to 10 and 100 after 40/216 cells (18.5 %) selected the C=1 edge (all m_bigearthnet 1 % cells; dinov3-sat m_bigearthnet f0.01 s0 val 0.487 at C=1 vs 0.521 at C=10). The matrix 100 % DINO cells therefore use a 9-value grid, the banked official wide probe a 7-value one: the matrix number can only be >= on val, and is the one to quote for the matrix."
+  ],
+  "fractions": [
+    0.01,
+    0.05,
+    0.1,
+    0.25,
+    1.0
+  ],
+  "seeds": [
+    0,
+    1,
+    2
+  ],
+  "c_grid": [
+    1e-06,
+    1e-05,
+    0.0001,
+    0.001,
+    0.01,
+    0.1,
+    1.0,
+    10.0,
+    100.0
+  ],
+  "datasets": [
+    "m_eurosat",
+    "m_brick_kiln",
+    "m_pv4ger",
+    "m_so2sat",
+    "m_forestnet",
+    "m_bigearthnet"
+  ],
+  "models": [
+    {
+      "name": "dinov3-sat",
+      "kind": "dino",
+      "features": "models/dino_feats/dinov3_vit7b16_sat_{dataset}_{split}.npz",
+      "view": null,
+      "teacher": null
+    },
+    {
+      "name": "dinov3-web",
+      "kind": "dino",
+      "features": "models/dino_feats/dinov3_vit7b16_web_{dataset}_{split}.npz",
+      "view": null,
+      "teacher": null
+    },
+    {
+      "name": "flux-pretrained",
+      "kind": "flux",
+      "features": "models/{dataset}_multiblock_ens8/*/multistep_{split}_feats_oneshot_g1.0_k*.npz",
+      "view": null,
+      "expect": {
+        "extraction_mode": "ONESHOT",
+        "ensemble_size": 8,
+        "weights": "flux-dev"
+      },
+      "teacher": "dinov3-sat",
+      "per_dataset": {
+        "m_eurosat": {
+          "expect": {
+            "extraction_mode": "ONESHOT",
+            "ensemble_size": 8,
+            "weights": "flux-dev",
+            "k": 38
+          }
+        },
+        "m_brick_kiln": {
+          "expect": {
+            "extraction_mode": "ONESHOT",
+            "ensemble_size": 8,
+            "weights": "flux-dev",
+            "k": 12
+          }
+        },
+        "m_pv4ger": {
+          "expect": {
+            "extraction_mode": "ONESHOT",
+            "ensemble_size": 8,
+            "weights": "flux-dev",
+            "k": 28
+          }
+        },
+        "m_so2sat": {
+          "expect": {
+            "extraction_mode": "ONESHOT",
+            "ensemble_size": 8,
+            "weights": "flux-dev",
+            "k": 28
+          }
+        },
+        "m_forestnet": {
+          "expect": {
+            "extraction_mode": "ONESHOT",
+            "ensemble_size": 8,
+            "weights": "flux-dev",
+            "k": 56
+          }
+        },
+        "m_bigearthnet": {
+          "expect": {
+            "extraction_mode": "ONESHOT",
+            "ensemble_size": 8,
+            "weights": "flux-dev",
+            "k": 12
+          }
+        }
+      }
+    }
+  ]
+}

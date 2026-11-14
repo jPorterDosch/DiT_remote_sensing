@@ -102,12 +102,14 @@ def extract_features(
     """
     # TODO: change call sites to pass in underlying Flux model directly instead of wrapper,
     # which adds extra unnecessary calls to access underlying model.
-    model._inner.model.eval()
+    model.eval()  # adapter-level: FLUX unwraps to its Flux module, GeoCore to Flux2 + VAE
     all_feats: list[torch.Tensor] = []
     all_labels: list[torch.Tensor] = []
     device = torch.device(cfg.device)
 
     multi_timestep = isinstance(cfg.t, list)
+    if not multi_timestep and not isinstance(cfg.k, int):  # before any GPU work (review 2026-10-11)
+        raise ValueError(f"single-timestep extraction reads one block, got k={cfg.k}")
     inversion = getattr(cfg, "extraction_mode", ExtractionMode.ONESHOT) == ExtractionMode.INVERSION
     if inversion and not multi_timestep:
         raise ValueError("extraction_mode=inversion requires a list of timesteps (cfg.t)")
@@ -151,6 +153,11 @@ def extract_features(
                 latents = None
                 noise = None
                 per_t_feats: list[torch.Tensor] = []
+                # cfg.k a list = multi-block: extract_raw returns (B, C, H, W) / (B, 3, C)
+                # and the cache becomes (N, K, B, C) / mods (K, B, 3, C).
+                multi_block = not isinstance(cfg.k, int)
+                if multi_block and token_sink is not None:
+                    raise ValueError("per-token caching is single-block only; pass an int k")
                 # Pre-pool tokens for this image, gathered across timesteps and sunk ONCE
                 # after the loop so the oneshot arm yields (1, S, L, C) per image — the
                 # same layout the inversion arm produces in a single call.
@@ -190,15 +197,19 @@ def extract_features(
                         per_t_tokens.append(feat_raw.detach().clone())  # 1, C, h, w
                     per_t_feats.append(
                         feat_raw.mean(dim=[2, 3])
-                    )  # 1, C — global average pool, pre-normalization
+                    )  # 1, C (B, C multi-block) — global average pool, pre-normalization
                     if len(mods) < len(cfg.t):
-                        mods.append(ada[0].unsqueeze(0).cpu())  # 1, 3, C — image-independent
+                        # image-independent: 1, 3, C (multi-block: 1, B, 3, C)
+                        mods.append((ada if multi_block else ada[0]).unsqueeze(0).cpu())
                 if token_sink is not None and per_t_tokens:
                     # cat over the wanted timesteps -> (S, C, h, w), matching the layout
                     # _sink_tokens expects from the inversion arm.
                     wanted = [t for t in cfg.t if t in token_sink["timesteps"]]
                     _sink_tokens(token_sink, wanted, torch.cat(per_t_tokens, dim=0))
-                all_feats.append(torch.cat(per_t_feats, dim=0).unsqueeze(0).cpu())  # 1, K, C
+                if multi_block:
+                    all_feats.append(torch.stack(per_t_feats, dim=0).unsqueeze(0).cpu())  # 1, K, B, C
+                else:
+                    all_feats.append(torch.cat(per_t_feats, dim=0).unsqueeze(0).cpu())  # 1, K, C
             else:
                 feat = model.extract(
                     single_img,
@@ -217,7 +228,7 @@ def extract_features(
     feats = torch.cat(all_feats, dim=0).float().numpy()  # N, C or N, K, C
     labels = torch.stack(all_labels, dim=0).numpy()  # N
     if multi_timestep:
-        return feats, labels, torch.cat(mods, dim=0).float().numpy()  # mods: K, 3, C
+        return feats, labels, torch.cat(mods, dim=0).float().numpy()  # mods: K, 3, C (K, B, 3, C)
     return feats, labels
 
 
