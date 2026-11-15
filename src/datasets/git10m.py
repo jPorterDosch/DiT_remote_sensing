@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import io
 import json
 import os
 import sys
@@ -34,12 +33,11 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.ipc as ipc
 import torch
-from PIL import Image
 from registry import register_dataset
-from torch.utils.data import DataLoader, Dataset
-from torchvision.transforms import PILToTensor
+from torch.utils.data import DataLoader
 from utils import seed_worker
 
+from .arrow_corpus import BATCH_ROWS, ArrowCorpus
 from .utils import _strided_indices
 
 if __name__ == "__main__":
@@ -52,7 +50,6 @@ if __name__ == "__main__":
 
 HF_REPO = "lcybuaa/Git-10M"  # == eval.geo_dedup.HF_REPO (asserted in tests)
 N_SHARDS = 787  # == eval.geo_dedup.N_SHARDS
-BATCH_ROWS = 64
 KEEP_COLS = ["img_name", "caption", "resolution", "Google_location", "img_quality_score"]
 SCHEMA = pa.schema(
     [
@@ -275,7 +272,7 @@ def holdout_mask(shard: np.ndarray, row: np.ndarray, holdout_every: int) -> np.n
     return (shard.astype(np.int64) * ROW_ID_STRIDE + row.astype(np.int64)) % holdout_every == 0
 
 
-class Git10MDataset(Dataset):
+class Git10MDataset(ArrowCorpus):
     """Rows of an index npz, read from the converted arrow shards.
 
     which: "train" = every row except the holdout, "val" = the holdout rows of the RETAINED
@@ -296,6 +293,9 @@ class Git10MDataset(Dataset):
     RNG, so a resumed run and every arm flip the same images; a run covers < 1 pass over the
     corpus, so a per-row flip is a per-draw flip.
     """
+
+    n_shards = N_SHARDS
+    shard_name = staticmethod(shard_name)
 
     def __init__(
         self,
@@ -346,69 +346,11 @@ class Git10MDataset(Dataset):
             val = here
             self.val_ref = os.path.abspath(val_ref_npz)
         keep = {"train": ~hold, "val": val, "all": np.ones_like(hold)}[which]
-        self.shard, self.row = shard[keep], row[keep]
-        self.index_pos = pos[keep]
-        self.arrow_dir = arrow_dir
-        self.img_size = img_size
-        self.hflip = bool(hflip)
-        self.flip_seed = int(flip_seed)
+        self._set_rows(shard[keep], row[keep], pos[keep], arrow_dir, img_size, hflip, flip_seed)
         self.which = which
         self.holdout_every = holdout_every
         self.index_npz = index_npz
-        self._readers: dict[int, ipc.RecordBatchFileReader] = {}
         self._check_shards()
-
-    def _check_shards(self):
-        """Every shard the index addresses exists and holds its highest addressed row."""
-        need = {}
-        for s, r in zip(self.shard, self.row):
-            if r > need.get(s, -1):
-                need[int(s)] = int(r)
-        missing, short = [], []
-        for s, rmax in sorted(need.items()):
-            p = os.path.join(self.arrow_dir, shard_name(s))
-            if not os.path.exists(p):
-                missing.append(s)
-                continue
-            with pa.memory_map(p) as src:
-                rd = ipc.open_file(src)
-                nb = rd.num_record_batches
-                n = (nb - 1) * BATCH_ROWS + rd.get_batch(nb - 1).num_rows if nb else 0
-                if nb > 1 and rd.get_batch(0).num_rows != BATCH_ROWS:
-                    raise ValueError(f"{p}: batch 0 has {rd.get_batch(0).num_rows} rows, not {BATCH_ROWS}")
-            if rmax >= n:
-                short.append((s, n, rmax))
-        if missing or short:
-            raise FileNotFoundError(
-                f"{self.arrow_dir}: {len(missing)} shards missing {missing[:5]}, "
-                f"{len(short)} too short {short[:3]} (python -m datasets.git10m convert ...)"
-            )
-        self.n_shards = len(need)
-
-    def _reader(self, s: int) -> ipc.RecordBatchFileReader:
-        rd = self._readers.get(s)
-        if rd is None:
-            rd = ipc.open_file(pa.memory_map(os.path.join(self.arrow_dir, shard_name(s))))
-            self._readers[s] = rd
-        return rd
-
-    def __len__(self):
-        return int(self.shard.shape[0])
-
-    def raw(self, i: int) -> tuple[str, bytes]:
-        s, r = int(self.shard[i]), int(self.row[i])
-        b = self._reader(s).get_batch(r // BATCH_ROWS)
-        j = r % BATCH_ROWS
-        return b.column("img_name")[j].as_py(), b.column("image_bytes")[j].as_py()
-
-    def __getitem__(self, i):
-        name, raw = self.raw(i)
-        img = Image.open(io.BytesIO(raw)).convert("RGB")
-        img = img.resize((self.img_size, self.img_size), Image.Resampling.BICUBIC)
-        x = (PILToTensor()(img) / 255.0 - 0.5) * 2
-        if self.hflip and np.random.default_rng([self.flip_seed, int(self.index_pos[i])]).random() < 0.5:
-            x = x.flip(-1)
-        return {"img": x, "label": -1, "index": int(self.index_pos[i]), "img_name": name}
 
     def describe(self) -> dict:
         return {
