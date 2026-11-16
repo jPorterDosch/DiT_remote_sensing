@@ -1,0 +1,80 @@
+{
+ "classes": [
+  "Atelectasis",
+  "Cardiomegaly",
+  "Effusion",
+  "Infiltration",
+  "Mass",
+  "Nodule",
+  "Pneumonia",
+  "Pneumothorax",
+  "Consolidation",
+  "Edema",
+  "Emphysema",
+  "Fibrosis",
+  "Pleural_Thickening",
+  "Hernia"
+ ],
+ "splits": {
+  "train": {
+   "n": 16000,
+   "counts": [
+    1522,
+    313,
+    1593,
+    2582,
+    730,
+    915,
+    168,
+    484,
+    560,
+    258,
+    243,
+    233,
+    427,
+    24
+   ],
+   "sha256": "83118780f14e8328ac09ad9652efa0f51296f6a14fd40f61dadec56e1878b91e"
+  },
+  "val": {
+   "n": 2000,
+   "counts": [
+    168,
+    38,
+    233,
+    323,
+    96,
+    116,
+    15,
+    65,
+    63,
+    28,
+    28,
+    26,
+    62,
+    2
+   ],
+   "sha256": "4c6b2438332505df99b29588cb3d8e234c2941d72c12beea13a8dd10e4f8aa7e"
+  },
+  "test": {
+   "n": 25596,
+   "counts": [
+    3279,
+    1069,
+    4658,
+    6112,
+    1748,
+    1623,
+    555,
+    2665,
+    1815,
+    925,
+    1093,
+    435,
+    1143,
+    86
+   ],
+   "sha256": "184ea6ded8a49f9c8ecad3f72be821ecc153c3ff9e074e7e5a91abee815bb953"
+  }
+ }
+}

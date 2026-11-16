@@ -24,6 +24,10 @@ import sys
 
 import numpy as np
 
+from eval.cxr_splits import CHEXPERT_TEST_N as _CXR_CHEXPERT_TEST_N  # numpy + pandas only
+from eval.cxr_splits import PROBE_SIZES as _CXR_PROBE
+from eval.cxr_splits import VINDR_KAGGLE_SIZES as _CXR_VINDR_SIZES
+
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(REPO_ROOT, "src"))
 
@@ -75,6 +79,42 @@ OFFICIAL = {
     "m_brick_kiln": _geobench("m_brick_kiln", 15063, 999, 999),
     "m_pv4ger": _geobench("m_pv4ger", 11814, 999, 999),
     "m_bigearthnet": _geobench("m_bigearthnet", 20000, 1000, 1000, multilabel=True),
+}
+
+
+# Chest X-ray probe trees (eval/export_cxr.py): <root>/<split>/<name>.png + labels.npz, multi-label.
+# The class list (LABEL order) is the export manifest's. ChestX-ray14's manifest is tracked like
+# the GEO-Bench ones; CheXpert / VinDr-CXR manifests hold aggregate label counts under a
+# data-use agreement, so they live on the mode-700 tree scratch (data/cxr/manifests) and never
+# enter git.
+CXR_TRACKED_MANIFESTS = ("chestxray14",)
+
+
+def cxr_manifest_path(key: str) -> str:
+    if key in CXR_TRACKED_MANIFESTS:
+        return os.path.join(REPO_ROOT, "eval", "manifests", f"{key}.json")
+    return os.path.join(REPO_ROOT, "data", "cxr", "manifests", f"{key}.json")
+
+
+def _cxr(key: str, sizes: dict) -> dict:
+    def classes() -> list[str]:
+        path = cxr_manifest_path(key)
+        if not os.path.exists(path):
+            raise SystemExit(
+                f"{key}: class manifest {path} missing; run `python -m eval.export_cxr --dataset {key} "
+                f"--out <root> --write-manifest` first"
+            )
+        with open(path) as f:
+            return json.load(f)["classes"]
+
+    return {"sizes": sizes, "root": f"data/cxr/{key}", "classes": classes, "multilabel": True}
+
+
+OFFICIAL_CXR = {
+    # test = test_list.txt of the shipped ChestX-ray14 archive, counted (rule 16)
+    "chestxray14": _cxr("chestxray14", {**_CXR_PROBE, "test": 25596}),
+    "chexpert": _cxr("chexpert", {**_CXR_PROBE, "test": _CXR_CHEXPERT_TEST_N}),
+    "vindr_cxr_kaggle": _cxr("vindr_cxr_kaggle", {s: _CXR_VINDR_SIZES[s] for s in ("train", "val", "test")}),
 }
 
 
@@ -165,12 +205,14 @@ def key(task: str) -> str:
 
 
 def official_spec(dataset: str) -> dict:
-    if dataset not in OFFICIAL:
-        raise SystemExit(
-            f"{dataset}: not registered in eval/features.OFFICIAL (count the shipped partition "
-            f"first, rule 16). Registered: {sorted(OFFICIAL)}"
-        )
-    return OFFICIAL[dataset]
+    if dataset in OFFICIAL:
+        return OFFICIAL[dataset]
+    if dataset in OFFICIAL_CXR:
+        return OFFICIAL_CXR[dataset]
+    raise SystemExit(
+        f"{dataset}: not registered in eval/features.OFFICIAL (count the shipped partition "
+        f"first, rule 16). Registered: {sorted(OFFICIAL)}"
+    )
 
 
 def official_classes(dataset: str) -> list[str]:
