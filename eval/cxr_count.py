@@ -359,7 +359,7 @@ def count_vindr_kaggle(raw_dir: str) -> dict:
     }
     rows_, cols_, ratio = [], [], []
     errors: Counter = Counter()
-    missing = n_read = 0
+    n_read = 0
     for z, path in enumerate(paths):
         wanted = {(zi, j): img for img, (zi, j) in where.items() if zi == z and img in rads}
         if not wanted:

@@ -1,6 +1,6 @@
 """Write a chest X-ray probe tree: the dataset-agnostic core of the CXR export.
 
-    python -m eval.export_cxr --dataset chestxray14 --out data/cxr/chestxray14 [--max-samples N] [--write-manifest]
+    python -m eval.export_cxr --dataset chestxray14 --out data/cxr/chestxray14_v<N> [--max-samples N] [--write-manifest]
 
 Tree layout (multi-label, what eval.features.list_official_split reads):
     <root>/<split>/<name>.png      RGB uint8, greyscale replicated, <= MAX_SIDE square
@@ -122,9 +122,13 @@ def write_tree(
     table_extra: dict[str, dict],
     restricted: bool,
     report_extra: Callable[[dict, dict[str, list[float]]], dict] | None = None,
+    before_rename: Callable[[str], None] | None = None,
 ) -> dict:
     """Write the tree under <root>.partial, rename to <root> on success. A failure leaves the
     .partial in place (never deleted); a retry needs a new root.
+
+    `before_rename(partial)` (optional) runs on the complete tree while it is still <root>.partial;
+    when it raises, <root> is never created (a tree that fails its manifest never gets the final name).
 
     `report_extra(report, means)` (optional) returns extra top-level keys for export_report.json;
     `means` holds, per split, the mean of every written 8-bit image. Without it nothing changes."""
@@ -195,6 +199,8 @@ def write_tree(
             report.update(report_extra(report, means))
         with open(os.path.join(partial, "export_report.json"), "w") as f:
             json.dump(report, f, indent=1)
+        if before_rename is not None:
+            before_rename(partial)
         os.rename(partial, root)
     except Exception as e:
         if not restricted:
@@ -240,15 +246,21 @@ def check_cxr_manifest(key: str, manifest: dict, write: bool) -> None:
     print(f"{key}: manifest written -> {path}")
 
 
-def _tree_manifest(key: str, root: str, classes: list[str], restricted: bool) -> dict:
+def _tree_manifest(
+    key: str, root: str, classes: list[str], restricted: bool, log_root: str | None = None
+) -> dict:
+    """Manifest of the tree at `root` (which may still be <out>.partial); a restricted failure goes to
+    <log_root>.errors.jsonl (default: beside `root`)."""
     if not restricted:
         return export_geobench.tree_manifest(key, root, classes)
+    log_root = log_root or root
     try:
         return export_geobench.tree_manifest(key, root, classes)
     except (SystemExit, Exception) as e:  # the geobench messages name image files
-        ordinal = _log_error(root, {"stage": "tree_manifest", "error": str(e) if str(e) else repr(e)})
+        ordinal = _log_error(log_root, {"stage": "tree_manifest", "error": str(e) if str(e) else repr(e)})
         raise SystemExit(
-            f"{key}: tree manifest failed ({type(e).__name__}); detail: record {ordinal} of {root}.errors.jsonl"
+            f"{key}: tree manifest failed ({type(e).__name__}); "
+            f"detail: record {ordinal} of {log_root}.errors.jsonl"
         ) from None
 
 
@@ -266,8 +278,6 @@ def chestxray14_splits(arrow_dir: str, manifest_dir: str, raw_dir: str) -> tuple
     both keyed on img_name WITH the .png suffix (the pinned draw was computed on those strings);
     test = every test-bucket image sorted by name. Tree names drop the suffix. `load` decodes one
     shard row on demand: no image bytes are read while the splits are built."""
-    import io
-
     import pandas as pd
     import pyarrow as pa
     import pyarrow.ipc as ipc
@@ -301,6 +311,9 @@ def chestxray14_splits(arrow_dir: str, manifest_dir: str, raw_dir: str) -> tuple
             f"{len(set(val) - validation)} val names are not in validation.csv"
         )
     chosen = {"train": train, "val": val, "test": test}
+    odd = sum(not n.endswith(".png") for names in chosen.values() for n in names)
+    if odd:  # tree names are img_name minus this suffix; any other name would be cut wrongly
+        raise SystemExit(f"chestxray14: {odd} image names do not end in .png")
     patients = {s: {meta.at[n, "Patient ID"] for n in names} for s, names in chosen.items()}
     for a, b in (("train", "val"), ("train", "test"), ("val", "test")):
         if patients[a] & patients[b]:
@@ -897,6 +910,13 @@ def vindr_kaggle_splits(
     outside = sum(not _CLASS_NAME_RE.fullmatch(c) for c in classes)
     if outside:
         raise SystemExit(f"vindr_cxr_kaggle: {outside} class names fail the class-name allow-list")
+    pinned = list(S.VINDR_KAGGLE_CLASSES)
+    if classes != pinned:  # the label set is pinned, never re-selected from this run's test split
+        differ = len(set(classes) ^ set(pinned))
+        raise SystemExit(
+            f"vindr_cxr_kaggle: the threshold rule gives {len(classes)} classes, the pinned "
+            f"VINDR_KAGGLE_CLASSES holds {len(pinned)}, {differ} names are in one list only"
+        )
     labels = {s: S.vindr_two_of_three(rows, sel[s], classes) for s in ("train", "val", "test")}
 
     ids = [i for s in ("train", "val", "test") for i in sel[s]]
@@ -1066,6 +1086,19 @@ def _export(args, key: str) -> int:
         splits, table_extra, classes = SPLITTERS[key](args)
     if args.max_samples is not None:
         splits = {s: rows[: args.max_samples] for s, rows in splits.items()}
+    held: dict = {}
+
+    def verify(partial: str) -> None:
+        """The complete tree, still <out>.partial, against the manifest. A tree that differs keeps
+        the .partial name, so <out> never exists for a tree that failed its check."""
+        try:
+            held["manifest"] = _tree_manifest(key, partial, classes, restricted, log_root=args.out)
+            if os.path.exists(F.cxr_manifest_path(key)) or not args.write_manifest:
+                check_cxr_manifest(key, held["manifest"], write=False)
+                held["checked"] = True
+        except SystemExit as e:
+            raise SystemExit(f"{e}; {partial} left in place, {args.out} not created") from None
+
     write_tree(
         args.out,
         key,
@@ -1074,13 +1107,14 @@ def _export(args, key: str) -> int:
         table_extra,
         restricted,
         report_extra=getattr(args, "report_extra", None),
+        before_rename=verify if args.max_samples is None else None,
     )
     if getattr(args, "summary", None) is not None:
         print(args.summary())
     n = {s: len(splits.get(s, [])) for s in ("train", "val", "test")}
     if args.max_samples is None:
-        manifest = _tree_manifest(key, args.out, classes, restricted)
-        check_cxr_manifest(key, manifest, write=args.write_manifest)
+        if not held.get("checked"):  # --write-manifest and no manifest yet: this tree defines it
+            check_cxr_manifest(key, held["manifest"], write=True)
     else:
         print(f"{key}: --max-samples {args.max_samples}: subset tree, manifest not checked")
     print(f"CXR_EXPORT_OK dataset={key} train={n['train']} val={n['val']} test={n['test']}")

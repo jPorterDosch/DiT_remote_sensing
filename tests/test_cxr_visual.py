@@ -63,6 +63,17 @@ class _St:
         self.st_uid = os.getuid() if uid is None else uid
 
 
+@pytest.fixture(autouse=True)
+def _restricted_closed(monkeypatch):
+    monkeypatch.setattr(V, "_RESTRICTED_OK", False)
+
+
+@pytest.fixture
+def opened(monkeypatch, _restricted_closed):
+    """Restricted trees open, as after a passed notebook_guard."""
+    monkeypatch.setattr(V, "_RESTRICTED_OK", True)
+
+
 @pytest.fixture
 def private(monkeypatch):
     """The guard sees a private (0700, ours) directory: pytest's tmp_path may sit under any ancestor."""
@@ -172,7 +183,81 @@ def test_notebook_is_tracked_clean():
         assert any(title in h for h in heads), title
     # the path cell runs before any call and puts the repository on sys.path
     first_code = next(c for c in cells if c["cell_type"] == "code")
-    assert "sys.path" in "".join(first_code["source"]) and "V." not in "".join(first_code["source"])
+    src = "".join(first_code["source"])
+    assert "sys.path" in src and re.findall(r"\bV\.(\w+)", src) == ["notebook_guard"]
+    # the guard is the last statement, so the import and the inline backend are set even when it refuses
+    assert src.rstrip().splitlines()[-1] == "V.notebook_guard(NB_DIR)" and "__vsc_ipynb_file__" in src
+    assert src.index("NB_DIR =") < src.index("os.chdir(")  # the notebook's own directory, not the repository
+
+
+# ------------------------------------------------------------------- restricted trees stay closed
+@pytest.mark.parametrize("key", ["chexpert", "vindr_cxr_kaggle"])
+def test_restricted_tree_does_not_open_without_a_passed_guard(key, tmp_path):
+    with pytest.raises(SystemExit) as ei:
+        V._Tree(key, str(tmp_path / "tree"))
+    assert str(ei.value).startswith(f"{key}: a restricted tree opens only") and str(tmp_path) not in str(
+        ei.value
+    )
+    for call in (
+        lambda: V.tree_grid(key, "train", root=str(tmp_path)),
+        lambda: V.prevalence(key, root=str(tmp_path)),
+        lambda: V.size_histograms(key, root=str(tmp_path)),
+        lambda: V.raw_vs_exported(key, str(tmp_path), root=str(tmp_path)),
+        lambda: V.extreme_aspect(key, str(tmp_path), root=str(tmp_path)),
+    ):
+        with pytest.raises(SystemExit, match="a restricted tree opens only"):
+            call()
+    with pytest.raises(SystemExit, match="a restricted tree opens only"):
+        V.photometric_pairs(str(tmp_path))
+
+
+@pytest.mark.parametrize("git_kind", ["dir", "file"])  # a checkout holds a .git directory, a worktree a file
+def test_notebook_guard_refuses_a_notebook_inside_a_git_worktree(git_kind, private, tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    (repo / "notebooks").mkdir(parents=True)
+    if git_kind == "dir":
+        (repo / ".git").mkdir()
+    else:
+        (repo / ".git").write_text("gitdir: /elsewhere\n")
+    monkeypatch.setattr(V, "_RESTRICTED_OK", True)  # an earlier pass does not survive a refusal
+    for d in (repo / "notebooks", repo):
+        with pytest.raises(SystemExit, match="inside a git worktree"):
+            V.notebook_guard(str(d))
+        assert V._RESTRICTED_OK is False
+    with pytest.raises(SystemExit, match="a restricted tree opens only"):
+        V._Tree("chexpert", str(tmp_path / "tree"))
+
+
+def test_notebook_guard_refuses_a_place_that_is_not_private(monkeypatch, tmp_path):
+    monkeypatch.setattr(V, "_stat", lambda p: _St(0o755))
+    with pytest.raises(SystemExit, match="mode 700"):
+        V.notebook_guard(str(tmp_path))
+    assert V._RESTRICTED_OK is False
+    monkeypatch.setattr(V, "_stat", lambda p: _St(0o700, uid=os.getuid() + 1))
+    with pytest.raises(SystemExit, match="mode 700"):
+        V.notebook_guard(str(tmp_path))
+    assert V._RESTRICTED_OK is False
+
+
+@pytest.mark.usefixtures("cs")
+def test_notebook_guard_opens_restricted_trees_outside_git_under_a_private_directory(private, tmp_path):
+    raw, root, _table, _k, _f = _chexpert_world(tmp_path)
+    nb_dir = tmp_path / "visual"
+    nb_dir.mkdir()
+    with pytest.raises(SystemExit, match="a restricted tree opens only"):
+        V.tree_grid("chexpert", "train", n=2, root=root)
+    V.notebook_guard(str(nb_dir))
+    assert V._RESTRICTED_OK is True
+    assert isinstance(V.tree_grid("chexpert", "train", n=2, root=root), matplotlib.figure.Figure)
+
+
+def test_the_tracked_notebook_itself_is_refused_by_its_own_guard(private):
+    """The tracked file lives in the repository: run in place, its guard must fire (in a git checkout)."""
+    nb_dir = os.path.join(REPO, "notebooks")
+    if not any(os.path.lexists(os.path.join(d, ".git")) for d in V._ancestors(nb_dir)):
+        pytest.skip("not a git checkout (clean export): no .git above notebooks/")
+    with pytest.raises(SystemExit, match="inside a git worktree"):
+        V.notebook_guard(nb_dir)
 
 
 # ------------------------------------------------------------------- figures on the synthetic trees
@@ -300,7 +385,7 @@ def test_tree_grid_puts_each_rows_own_classes_under_its_image_chestxray14(w14):
     _check_tree_grid_labels("chestxray14", w14["root"], "train")
 
 
-@pytest.mark.usefixtures("cs")
+@pytest.mark.usefixtures("cs", "opened")
 def test_tree_grid_puts_each_rows_own_classes_under_its_image_chexpert(tmp_path):
     _raw, root, _table, _k, _f = _chexpert_world(tmp_path)
     _check_tree_grid_labels("chexpert", root, "train")
@@ -337,7 +422,7 @@ def test_raw_vs_exported_refuses_a_shard_row_that_holds_another_image_chestxray1
         V.raw_vs_exported("chestxray14", w14["arrow"], n=100, root=w14["root"])
 
 
-@pytest.mark.usefixtures("cs")
+@pytest.mark.usefixtures("cs", "opened")
 def test_y_of_without_a_label_row_does_not_quote_any_name(tmp_path):
     _raw, root, table, _k, _f = _chexpert_world(tmp_path)
     z = np.load(os.path.join(root, "train", "labels.npz"))
@@ -357,7 +442,7 @@ def test_y_of_without_a_label_row_does_not_quote_any_name(tmp_path):
 
 def test_tree_root_resolution(monkeypatch):
     assert V.tree_root("chexpert", "/x/y") == "/x/y"
-    assert V.tree_root("chexpert") == os.path.join(F.REPO_ROOT, "data", "cxr", "chexpert")
+    assert V.tree_root("chexpert") == os.path.join(F.REPO_ROOT, "data", "cxr", "chexpert_v1")
     monkeypatch.setitem(F.OFFICIAL_CXR, "chexpert", {**F.OFFICIAL_CXR["chexpert"], "root": "/abs/tree"})
     assert V.tree_root("chexpert") == "/abs/tree"
     with pytest.raises(SystemExit):
@@ -429,6 +514,13 @@ def test_the_guard_is_for_restricted_keys_only(w14, monkeypatch, tmp_path):
     monkeypatch.setattr(V, "_stat", lambda p: _St(0o755))
     argv = ["--dataset", "chestxray14", "--root", w14["root"], "--arrow-dir", w14["arrow"]]
     assert V.main([*argv, "--index", w14["index"], "--out", str(tmp_path / "v"), "--n", "2"]) == 0
+
+
+def test_main_chestxray14_reads_sources_from_the_shards_even_when_raw_dir_is_given(w14, tmp_path):
+    argv = ["--dataset", "chestxray14", "--root", w14["root"], "--arrow-dir", w14["arrow"], "--n", "2"]
+    argv += ["--index", w14["index"], "--raw-dir", str(tmp_path / "not_the_shards")]
+    assert V.main([*argv, "--out", str(tmp_path / "v")]) == 0
+    assert os.path.exists(tmp_path / "v" / "raw_vs_exported.png")
 
 
 def test_private_root_uses_the_real_stat_without_patching(w14, tmp_path):
@@ -626,7 +718,7 @@ def _no_leak(strings, forbidden):
         assert bad not in shown, "a restricted string reached the output"
 
 
-@pytest.mark.usefixtures("cs")
+@pytest.mark.usefixtures("cs", "opened")
 def test_chexpert_figures_carry_only_class_names_and_ordinals(tmp_path):
     raw, root, table, _key_of, forbidden = _chexpert_world(tmp_path)
     assert len(forbidden) > 20
@@ -646,7 +738,7 @@ def test_chexpert_figures_carry_only_class_names_and_ordinals(tmp_path):
         _no_leak([*texts, table["name"].iloc[0]], forbidden)
 
 
-@pytest.mark.usefixtures("cs")
+@pytest.mark.usefixtures("cs", "opened")
 def test_raw_vs_exported_pairs_each_export_with_its_own_source_chexpert(tmp_path):
     raw, root, table, key_of, _ = _chexpert_world(tmp_path)
     fig = V.raw_vs_exported("chexpert", raw, n=6, root=root)
@@ -665,7 +757,7 @@ def test_raw_vs_exported_pairs_each_export_with_its_own_source_chexpert(tmp_path
     assert len({p.tobytes() for p in panels[::2]}) == 6  # six distinct sources (distinct fixture pixels)
 
 
-@pytest.mark.usefixtures("cs")
+@pytest.mark.usefixtures("cs", "opened")
 def test_raw_vs_exported_refuses_a_row_whose_zip_ordinal_differs_from_source_ref(tmp_path):
     raw, root, table, _k, _ = _chexpert_world(tmp_path)
     table["source_ref"] = table["source_ref"].map({"0": "1", "1": "0"})
@@ -692,6 +784,9 @@ def test_main_chexpert_success_prints_counts_only(private, tmp_path, capsys):
     assert stat.S_IMODE(os.stat(out).st_mode) == 0o700
     prev = pd.read_csv(os.path.join(out, "prevalence.csv"))
     assert set(prev["class"]) == set(S.CHEXPERT_CLASSES)
+    assert V._RESTRICTED_OK is False  # main's private --out check covers its own run only
+    with pytest.raises(SystemExit, match="a restricted tree opens only"):
+        V.prevalence("chexpert", root=root)
 
 
 @pytest.mark.usefixtures("cs")
@@ -742,7 +837,7 @@ def _vindr_world(tmp_path):
     return raw, root, table
 
 
-@pytest.mark.usefixtures("vd")
+@pytest.mark.usefixtures("vd", "opened")
 def test_vindr_figures_carry_only_class_names_and_ordinals(tmp_path):
     raw, root, table = _vindr_world(tmp_path)
     refs = [r for r in table["source_ref"] if ":" in r]
@@ -760,7 +855,7 @@ def test_vindr_figures_carry_only_class_names_and_ordinals(tmp_path):
     assert any("MONOCHROME1 #1" in t for t in _texts(figs[3]))
 
 
-@pytest.mark.usefixtures("vd")
+@pytest.mark.usefixtures("vd", "opened")
 def test_photometric_pairs_with_an_empty_class_says_so_with_a_count(tmp_path):
     _raw, root, table = _vindr_world(tmp_path)
     one = str(tmp_path / "tree_one")
@@ -774,7 +869,7 @@ def test_photometric_pairs_with_an_empty_class_says_so_with_a_count(tmp_path):
     assert any("no rows of MONOCHROME1" in s and "'MONOCHROME2': 40" in s for s in texts), texts
 
 
-@pytest.mark.usefixtures("vd")
+@pytest.mark.usefixtures("vd", "opened")
 def test_raw_vs_exported_pairs_each_export_with_its_own_source_vindr(tmp_path):
     raw, root, table = _vindr_world(tmp_path)
     fig = V.raw_vs_exported("vindr_cxr_kaggle", raw, n=6, root=root)
@@ -793,7 +888,7 @@ def test_raw_vs_exported_pairs_each_export_with_its_own_source_vindr(tmp_path):
     assert len({p.tobytes() for p in panels[::2]}) == 6
 
 
-@pytest.mark.usefixtures("vd")
+@pytest.mark.usefixtures("vd", "opened")
 def test_raw_vs_exported_refuses_a_vindr_row_whose_ordinal_differs_from_source_ref(tmp_path):
     raw, root, table = _vindr_world(tmp_path)
     table["source_ref"] = table["source_ref"].iloc[::-1].tolist()

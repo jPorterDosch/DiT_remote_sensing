@@ -14,7 +14,10 @@ spells the tree name (zip ordinal checked against `source_ref`), vindr_cxr_kaggl
 member decoded by eval.cxr_dicom (ordinal checked against `source_ref`).
 
 CheXpert and VinDr-CXR are patient data. The figures show their images (that is their purpose) and are
-written only under a private directory (owned by you, no group/other bits). Everything else is
+written only under a private directory (owned by you, no group/other bits): `main` checks `--out`, and a
+notebook calls `notebook_guard(<its own directory>)` first, which refuses a notebook inside a git worktree
+(an executed copy would hold patient images in a tracked file). Without one of the two, no restricted
+tree opens. Everything else is
 count-only for those keys: stdout, stderr and exception messages carry counts, ordinals, split names,
 class names and exception type names, never an image name, patient id, source_ref, member name, CSV row
 or DICOM string; titles and tick labels carry class names and the ordinal within the sample (`#3`).
@@ -50,6 +53,8 @@ KEYS = ("chestxray14", "chexpert", "vindr_cxr_kaggle")
 RESTRICTED = X.RESTRICTED
 SPLITS = ("train", "val", "test")
 WARN_COUNTS: Counter = Counter()  # library warning classes seen by the DICOM / CSV / figure steps
+# Restricted trees open only after main's private --out check or notebook_guard (see _Tree).
+_RESTRICTED_OK = False
 
 
 def _stat(path: str) -> os.stat_result:
@@ -108,6 +113,37 @@ def _require_under(key: str, out: str, private_root: str) -> None:
         raise SystemExit(f"{key}: --out is not under --private-root; nothing written")
 
 
+def _ancestors(path: str):
+    d = os.path.realpath(path)
+    while True:
+        yield d
+        parent = os.path.dirname(d)
+        if parent == d:
+            return
+        d = parent
+
+
+def notebook_guard(notebook_dir: str) -> None:
+    """Notebook use. A figure of a restricted tree is rendered into the notebook file itself, so the
+    notebook must sit outside every git worktree (no `.git` in its directory or any ancestor) and under a
+    directory owned by you with no group/other bits. Only then do restricted trees open."""
+    global _RESTRICTED_OK
+    _RESTRICTED_OK = False
+    dirs = list(_ancestors(notebook_dir))
+    if any(os.path.lexists(os.path.join(d, ".git")) for d in dirs):
+        raise SystemExit(
+            "this notebook sits inside a git worktree: an executed copy would hold patient images "
+            "(CheXpert, VinDr-CXR) in a file git can add. Copy it to the mode-700 scratch (see its first "
+            "cell) and run the copy; the ChestX-ray14 cells still work here"
+        )
+    if not any(_is_private_dir(d) for d in dirs):
+        raise SystemExit(
+            "this notebook is not under a directory owned by you with mode 700 (no group/other bits); "
+            "the CheXpert and VinDr-CXR cells stay closed"
+        )
+    _RESTRICTED_OK = True
+
+
 def tree_root(key: str, root: str | None = None) -> str:
     """The tree root: `root` when given, else the registry's, joined to the repository root if relative."""
     if root is not None:
@@ -124,6 +160,11 @@ class _Tree:
 
     def __init__(self, key: str, root: str | None):
         self.key, self.restricted = key, key in RESTRICTED
+        if self.restricted and not _RESTRICTED_OK:
+            raise SystemExit(
+                f"{key}: a restricted tree opens only from main (private --out) or after "
+                "notebook_guard(<the notebook's directory>) passed; nothing read"
+            )
         self.root = tree_root(key, root)
         with _count_only(key, "reading the tree tables"):
             self.table = pd.read_csv(
@@ -271,7 +312,7 @@ def corpus_grid(arrow_dir, index_npz, which="train", n=24, seed=0):
     from datasets.cxr14 import Cxr14Dataset
 
     smoke = bool(np.load(index_npz)["smoke"])
-    ds = Cxr14Dataset(arrow_dir, index_npz, which=which, allow_smoke=smoke)
+    ds = Cxr14Dataset(arrow_dir, index_npz, which=which, allow_smoke=smoke, allow_all=True)  # a view
     rng = np.random.default_rng([seed, zlib.crc32(which.encode())])
     pick = rng.choice(len(ds), size=min(n, len(ds)), replace=False)
     fig, axes = _grid(len(pick), 6)
@@ -402,14 +443,14 @@ def gate_summary(gate_json) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=["check", "status", "detail"])
 
 
-def resample_gap(arrow_dir, index_npz, tree_root, n=256, seed=0) -> dict:
+def resample_gap(arrow_dir, index_npz, root, n=256, seed=0) -> dict:
     """Mean and max abs difference (0-255) between the training view (Cxr14Dataset: source -> 224) and
     the probe view (the tree PNG: pad, <= 448, then -> 224 bicubic) of n tree images of the index."""
     from datasets.cxr14 import Cxr14Dataset
 
-    tree = _Tree("chestxray14", tree_root)
+    tree = _Tree("chestxray14", root)
     smoke = bool(np.load(index_npz)["smoke"])
-    ds = Cxr14Dataset(arrow_dir, index_npz, which="all", allow_smoke=smoke)
+    ds = Cxr14Dataset(arrow_dir, index_npz, which="all", allow_smoke=smoke, allow_all=True)  # a view
     pos = {(int(s), int(r)): i for i, (s, r) in enumerate(zip(ds.shard, ds.row, strict=True))}
     t = tree.table[tree.table["split"].isin(["train", "val"])]
     rng = np.random.default_rng([seed, zlib.crc32(b"resample_gap")])
@@ -445,7 +486,7 @@ def _plan(args, key: str) -> list[tuple[str, str, object]]:
     """(kind, file name, thunk) for every figure / table that applies to the dataset."""
     root, n = args.root, args.n
     steps: list[tuple[str, str, object]] = []
-    raw = args.raw_dir or args.arrow_dir
+    raw = args.arrow_dir if key == "chestxray14" else args.raw_dir  # chestxray14 sources are the shards
     if key == "chestxray14":
         for which in ("train", "val"):
             steps.append(
@@ -471,6 +512,14 @@ def _plan(args, key: str) -> list[tuple[str, str, object]]:
 
 
 def main(argv=None) -> int:
+    global _RESTRICTED_OK
+    try:
+        return _main(argv)
+    finally:
+        _RESTRICTED_OK = False  # the private --out check covers this run only
+
+
+def _main(argv=None) -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--dataset", required=True, choices=KEYS)
     p.add_argument("--out", required=True, help="new directory (must not exist, nor <out>.partial)")
@@ -491,6 +540,8 @@ def main(argv=None) -> int:
     )
     args = p.parse_args(argv)
     key = args.dataset
+    global _RESTRICTED_OK
+    _RESTRICTED_OK = False
     plt.switch_backend("Agg")
     WARN_COUNTS.clear()
     if key == "chestxray14" and (not args.arrow_dir or not args.index):
@@ -503,6 +554,7 @@ def main(argv=None) -> int:
     partial = f"{out}.partial"
     if key in RESTRICTED:
         _require_private(key, out, args.private_root)
+        _RESTRICTED_OK = True  # every figure of this run goes under the private root just checked
     elif args.private_root is not None:
         if not _is_private_dir(args.private_root):
             raise SystemExit(f"{key}: --private-root is not a directory owned by you with mode 700")

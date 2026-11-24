@@ -9,7 +9,7 @@
 #   OUT         default $D/visual/${DATASET}_${SLURM_JOB_ID}; refuses to start when $OUT or $OUT.partial exists.
 #               The CheXpert / VinDr-CXR figures show patient images; the script passes --private-root "$D" for all
 #               three keys, so every OUT (chestxray14 too) must sit under the mode-700 $D.
-#   ROOT        optional tree root (default: the registry's data/cxr/<DATASET>)
+#   ROOT        optional tree root (default: the registry's data/cxr/<DATASET>_v<N>)
 #   RAW ARROW INDEX   optional path overrides (defaults below); GATE_JSON optional leakage gate JSON; N images per grid
 #
 # Success is the line CXR_VISUAL_OK printed by eval.cxr_visual; the python command's exit status is

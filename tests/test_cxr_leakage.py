@@ -111,7 +111,20 @@ def test_gate_passes_on_a_clean_build(g, capsys):
     rc, out, rec = _run(g, capsys)
     assert rc == 0 and out.rstrip("\n").splitlines()[-1] == "CXR_LEAKAGE_GATE PASS"
     assert all(_status(rec).values()) and rec["verdict"] == "CXR_LEAKAGE_GATE PASS" and rec["skipped"] == []
-    assert {n.split()[0] for n in _status(rec)} == {"1", "1b", "1c", "2", "2b", "3", "4", "5", "6", "7", "8"}
+    assert {n.split()[0] for n in _status(rec)} == {
+        "0",
+        "1",
+        "1b",
+        "1c",
+        "2",
+        "2b",
+        "3",
+        "4",
+        "5",
+        "6",
+        "7",
+        "8",
+    }
     assert sum(n.startswith("8 ") for n in _status(rec)) == 3
     for note in L.NOTES:
         assert f"NOTE {note}" in out
@@ -131,6 +144,65 @@ def _edit_index(g, fn):
     z = fn(z) or z
     os.rename(g["npz"], g["npz"] + ".orig")
     np.savez(g["npz"], **z)
+
+
+# ------------------------------------------------------------------- check 0
+@pytest.mark.parametrize("fname", L.MANIFEST_FILES)
+def test_gate_fails_when_a_manifest_file_is_not_the_one_the_index_was_built_from(g, capsys, fname):
+    with open(os.path.join(g["man"], fname), "a") as f:
+        f.write("\n")  # same rows for every reader, different bytes
+    rc, out, rec = _run(g, capsys)
+    assert rc != 0 and _failed(rec) == {"0"}  # no other check can see it
+    assert "4 manifest files, 1 differ from the sha256 the index recorded, 0 named on one side only" in out
+
+
+def test_gate_fails_when_the_index_records_another_manifest_file_set(g, capsys):
+    def edit(z):
+        rec = json.loads(str(z["manifest_sha256"]))
+        rec.pop("report.json")
+        z["manifest_sha256"] = np.array(json.dumps(rec, sort_keys=True))
+
+    _edit_index(g, edit)
+    rc, out, rec = _run(g, capsys)
+    assert rc != 0 and _failed(rec) == {"0"} and "0 differ" in out and "1 named on one side only" in out
+
+
+def test_gate_fails_when_the_index_has_no_manifest_binding(g, capsys):
+    def edit(z):
+        del z["manifest_sha256"]
+
+    _edit_index(g, edit)
+    rc, out, rec = _run(g, capsys)
+    assert rc != 0 and _failed(rec) == {"0"}
+    assert (
+        "FAIL 0 index_bound_to_manifest: cannot read index npz or manifest files of index (KeyError)" in out
+    )
+
+
+def test_the_gate_hashes_the_same_manifest_files_as_the_index_builder():
+    assert L.MANIFEST_FILES == G.MANIFEST_FILES  # the gate keeps its own literal; this pins the two together
+
+
+# ------------------------------------------------------------------- empty sides of checks 1 and 2
+def test_gate_fails_when_the_index_has_no_retained_row(g, capsys):
+    def edit(z):
+        z["bucket_code"] = np.ones_like(z["bucket_code"])  # every row is a validation row
+
+    _edit_index(g, edit)
+    rc, out, rec = _run(g, capsys)
+    assert rc != 0 and {"1", "2"} <= _failed(rec)
+    assert "retained patients 0," in out and "retained names 0," in out
+    assert "retained vs val+test shared 0" in out  # nothing shared: only the empty-side guard fails it
+
+
+@pytest.mark.parametrize("split", ["val", "test"])
+def test_gate_fails_when_a_tree_evaluation_split_is_empty(g, capsys, split):
+    _edit_table(
+        g["trees"]["chestxray14"], lambda df: df.__setitem__("split", df["split"].replace(split, "train"))
+    )
+    rc, out, rec = _run(g, capsys)
+    assert rc != 0 and {"1", "2"} <= _failed(rec)
+    assert "shared 0;" in out and "all vs test shared 0" in out
 
 
 def _index_names(g):
@@ -259,8 +331,8 @@ def test_gate_fails_when_a_tree_train_image_is_outside_the_retained_bucket(g, ca
         df.loc[df.index[df["split"] == "val"][0], "split"] = "train"
 
     _edit_table(g["trees"]["chestxray14"], edit)
-    _, out, rec = _run(g, capsys)
-    assert "4" in _failed(rec) and "1 train names outside retained" in out
+    rc, out, rec = _run(g, capsys)
+    assert rc != 0 and "4" in _failed(rec) and "1 train names outside retained" in out
 
 
 def test_gate_fails_when_a_tree_test_split_is_not_the_official_list(g, capsys):
@@ -268,8 +340,8 @@ def test_gate_fails_when_a_tree_test_split_is_not_the_official_list(g, capsys):
         df.loc[df.index[df["split"] == "test"][0], "split"] = "train"
 
     _edit_table(g["trees"]["chestxray14"], edit)
-    _, out, rec = _run(g, capsys)
-    assert "4" in _failed(rec) and "1 official test names missing" in out
+    rc, out, rec = _run(g, capsys)
+    assert rc != 0 and "4" in _failed(rec) and "1 official test names missing" in out
 
 
 # ------------------------------------------------------------------- check 5
@@ -308,13 +380,17 @@ def test_gate_fails_when_chexpert_patients_are_blank(g, capsys):
 
 
 # ------------------------------------------------------------------- check 7
-def test_gate_fails_when_a_vindr_image_id_is_in_two_splits(g, capsys):
+@pytest.mark.parametrize("a,b", [("train", "val"), ("train", "test"), ("val", "test")])
+def test_gate_fails_when_a_vindr_image_id_is_in_two_splits(g, capsys, a, b):
     def edit(df):
-        df.loc[df.index[df["split"] == "val"][0], "name"] = df.loc[df["split"] == "train", "name"].iloc[0]
+        df.loc[df.index[df["split"] == b][0], "name"] = df.loc[df["split"] == a, "name"].iloc[0]
 
     _edit_table(g["trees"]["vindr_cxr_kaggle"], edit)
     rc, out, rec = _run(g, capsys)
-    assert rc != 0 and "7" in _failed(rec) and "train/val 1" in out
+    assert rc != 0 and "7" in _failed(rec)
+    (line,) = [ln for ln in out.splitlines() if "7 vindr_no_shared_image_id" in ln]  # not check 6's pairs
+    assert line.startswith("FAIL") and f"{a}/{b} 1" in line
+    assert sum(f"{x} 0" in line for x in ("train/val", "train/test", "val/test")) == 2
 
 
 # ------------------------------------------------------------------- check 8

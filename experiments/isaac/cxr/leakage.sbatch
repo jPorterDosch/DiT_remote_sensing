@@ -8,7 +8,7 @@
 #       experiments/isaac/cxr/leakage.sbatch
 #
 #   INDEX MANIFEST RAW   defaults below (the v2 index, its manifest and the shipped ChestX-ray14 files)
-#   TREE_CHESTXRAY14 TREE_CHEXPERT TREE_VINDR   probe tree roots, default $PROJECT_ROOT/data/cxr/<key>;
+#   TREE_CHESTXRAY14 TREE_CHEXPERT TREE_VINDR   probe tree roots, default the registry's $PROJECT_ROOT/data/cxr/<key>_v<N>;
 #                        a root that does not exist prints SKIPPED <key> and ends the run INCOMPLETE
 #
 # Output: results/gates/cxr_leakage_${SLURM_JOB_ID}.json (never overwritten). Success is the final line
@@ -46,9 +46,9 @@ export PYTHONPATH="$PROJECT_ROOT/src:$PROJECT_ROOT"
 INDEX="${INDEX:-$D/chestxray14/index_v2.npz}"
 MANIFEST="${MANIFEST:-$D/chestxray14/manifest_v2}"
 RAW="${RAW:-$D/chestxray14/raw}"
-TREE_CHESTXRAY14="${TREE_CHESTXRAY14:-$PROJECT_ROOT/data/cxr/chestxray14}"
-TREE_CHEXPERT="${TREE_CHEXPERT:-$PROJECT_ROOT/data/cxr/chexpert}"
-TREE_VINDR="${TREE_VINDR:-$PROJECT_ROOT/data/cxr/vindr_cxr_kaggle}"
+TREE_CHESTXRAY14="${TREE_CHESTXRAY14:-$PROJECT_ROOT/data/cxr/chestxray14_v1}"
+TREE_CHEXPERT="${TREE_CHEXPERT:-$PROJECT_ROOT/data/cxr/chexpert_v1}"
+TREE_VINDR="${TREE_VINDR:-$PROJECT_ROOT/data/cxr/vindr_cxr_kaggle_v2}"
 JOB="${SLURM_JOB_ID:-manual}"
 
 mkdir -p results/gates

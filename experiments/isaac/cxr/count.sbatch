@@ -33,6 +33,7 @@ python3 -c "import sys; assert sys.version_info[:2] >= (3, 11) and 'DiTF' in sys
 set -euo pipefail
 
 D=/lustre/isaac24/scratch/jdosch1/DiT_remote_sensing/datasets/cxr
+[ "$(stat -c %a "$D")" = "700" ] || { echo "FATAL: $D is not mode 700" >&2; exit 1; }
 mkdir -p "$D/counts"
 python3 -m eval.cxr_count --chexpert "$D/chexpert/raw/chexpertchestxrays-u20210408" \
     --vindr "$D/vindr_cxr/raw" --out "$D/counts/counts_${SLURM_JOB_ID}.json"

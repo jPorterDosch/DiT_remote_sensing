@@ -7,6 +7,7 @@ import csv
 import io
 import json
 import os
+import shutil
 
 import numpy as np
 import pandas as pd
@@ -220,8 +221,15 @@ def test_official_spec_sees_both_registries_and_OFFICIAL_is_unchanged():
     assert F.official_spec("chexpert")["sizes"]["test"] == 202
     assert F.official_spec("vindr_cxr_kaggle")["sizes"] == {"train": 10500, "val": 1500, "test": 3000}
     assert F.official_spec("m_eurosat") is F.OFFICIAL["m_eurosat"]
-    with pytest.raises(SystemExit, match="not registered"):
+    with pytest.raises(SystemExit, match="not registered") as ei:
         F.official_spec("nope")
+    assert all(k in str(ei.value) for k in ("m_eurosat", "chestxray14", "chexpert", "vindr_cxr_kaggle"))
+    # the registry roots name the tree versions that exist (a re-export gets a new name)
+    assert {k: v["root"] for k, v in F.OFFICIAL_CXR.items()} == {
+        "chestxray14": "data/cxr/chestxray14_v1",
+        "chexpert": "data/cxr/chexpert_v1",
+        "vindr_cxr_kaggle": "data/cxr/vindr_cxr_kaggle_v2",
+    }
 
 
 def test_cxr_manifest_paths_and_classes_without_manifest(monkeypatch, tmp_path):
@@ -273,8 +281,36 @@ def test_main_exports_writes_then_verifies_manifest(fake_key, monkeypatch, tmp_p
     capsys.readouterr()
     # a tree with different pixels must not match the written manifest
     monkeypatch.setitem(X.SPLITTERS, fake_key, lambda args: (_splits(w=50, h=50), {}, list(CLASSES)))
-    with pytest.raises(SystemExit, match="differs"):
-        X.main(["--dataset", fake_key, "--out", str(tmp_path / "c")])
+    for extra in ([], ["--write-manifest"]):  # neither mode gives a differing tree its final name
+        with pytest.raises(SystemExit, match="differs|refusing to overwrite") as ei:
+            X.main(["--dataset", fake_key, "--out", str(tmp_path / "c"), *extra])
+        assert str(ei.value).endswith(f"{tmp_path / 'c'}.partial left in place, {tmp_path / 'c'} not created")
+        assert not os.path.exists(tmp_path / "c") and os.path.isdir(str(tmp_path / "c") + ".partial")
+        shutil.rmtree(str(tmp_path / "c") + ".partial")
+    assert json.load(open(F.cxr_manifest_path(fake_key)))["splits"]["train"]["n"] == 5  # never overwritten
+
+
+def test_write_tree_before_rename_sees_the_complete_partial_and_can_stop_the_rename(fake_key, tmp_path):
+    root = str(tmp_path / "t")
+    seen = []
+
+    def hook(partial):
+        seen.append(sorted(os.listdir(partial)))
+        assert partial == root + ".partial" and not os.path.exists(root)
+
+    X.write_tree(root, fake_key, _splits(), CLASSES, {}, restricted=False, before_rename=hook)
+    assert seen == [["export_report.json", "export_table.csv", "test", "train", "val"]] and os.path.isdir(
+        root
+    )
+
+    def stop(partial):
+        raise SystemExit("stop")
+
+    root2 = str(tmp_path / "u")
+    with pytest.raises(SystemExit, match="stop"):
+        X.write_tree(root2, fake_key, _splits(), CLASSES, {}, restricted=True, before_rename=stop)
+    assert not os.path.exists(root2) and os.path.isdir(root2 + ".partial")
+    assert not os.path.exists(root2 + ".errors.jsonl")  # a count-only exit is not an export error
 
 
 @pytest.mark.parametrize("key", ["chestxray14", "chexpert", "vindr_cxr_kaggle"])
@@ -331,6 +367,8 @@ def test_restricted_tree_manifest_failure_hides_the_file_name(fake_key, monkeypa
         X.main(["--dataset", fake_key, "--out", root, "--write-manifest"])
     assert "patient123" not in str(ei.value) and "record 1" in str(ei.value)
     assert "patient123_study1.png" in open(root + ".errors.jsonl").read()
+    assert not os.path.exists(root) and os.path.isdir(root + ".partial")
+    assert not os.path.exists(root + ".partial.errors.jsonl")  # the log sits beside --out
     assert not os.path.exists(F.cxr_manifest_path(fake_key))
 
 
@@ -519,6 +557,18 @@ def test_chestxray14_load_refuses_a_row_that_holds_another_image(cx):
 def test_chestxray14_guard_rows_and_csv_must_name_the_same_images(cx):
     _edit_csv(cx, lambda df: df.drop(index=[0, 1], inplace=True))
     with pytest.raises(SystemExit, match=r"2 only in rows.csv, 0 only in the CSV"):
+        _splits14(cx)
+
+
+def test_chestxray14_guard_every_name_must_end_in_png(cx):
+    path = os.path.join(cx["man"], "rows.csv")
+    rows = pd.read_csv(path, dtype={"img_name": str})
+    old = rows.loc[rows["bucket"] == "test", "img_name"].iloc[:2].tolist()
+    new = {n: n[: -len(".png")] + ".jpeg" for n in old}
+    rows["img_name"] = rows["img_name"].replace(new)
+    rows.to_csv(path, index=False)
+    _edit_csv(cx, lambda df: df.__setitem__("Image Index", df["Image Index"].replace(new)))
+    with pytest.raises(SystemExit, match=r"2 image names do not end in \.png"):
         _splits14(cx)
 
 
@@ -1012,6 +1062,7 @@ def vd(monkeypatch):
     for k, v in VD_SIZES.items():
         monkeypatch.setitem(S.VINDR_KAGGLE_SIZES, k, v)
     monkeypatch.setattr(S, "VINDR_MIN_TEST_POSITIVES", 1)
+    monkeypatch.setattr(S, "VINDR_KAGGLE_CLASSES", tuple(_vd_expected([])[0]))  # the fixture's own pin
 
 
 @functools.lru_cache(maxsize=None)
@@ -1323,6 +1374,27 @@ def test_vindr_no_class_reaching_the_threshold_fails(vd, tmp_path, capsys, monke
     assert msg == "vindr_cxr_kaggle: no class reaches the test-positive threshold"
 
 
+def test_vindr_label_set_that_differs_from_the_pin_fails_count_only(vd, tmp_path, capsys, monkeypatch):
+    derived = _vd_expected([])[0]
+    assert len(derived) == 3
+    for pin, differ in ((derived[:-1], 1), ([*derived, "Atelectasis"], 1), (["Atelectasis"], 4)):
+        monkeypatch.setattr(S, "VINDR_KAGGLE_CLASSES", tuple(pin))
+        msg, _ = _vd_fail(_vd_zip(tmp_path), str(tmp_path / "tree"), capsys)
+        assert msg == (
+            f"vindr_cxr_kaggle: the threshold rule gives 3 classes, the pinned VINDR_KAGGLE_CLASSES "
+            f"holds {len(pin)}, {differ} names are in one list only"
+        )
+        assert not os.path.exists(tmp_path / "tree")
+
+
+def test_the_real_vindr_pin_is_twelve_sorted_allow_listed_names_without_the_excluded_ones():
+    pin = S.VINDR_KAGGLE_CLASSES
+    assert len(pin) == 12 and list(pin) == sorted(pin) and not set(pin) & set(S.VINDR_EXCLUDED)
+    from eval.cxr_count import _CLASS_NAME_RE  # the allow-list vindr_kaggle_splits applies
+
+    assert all(_CLASS_NAME_RE.fullmatch(c) for c in pin)
+
+
 # --- load: a scan that passed the pre-pass but cannot be turned into a picture
 def test_vindr_constant_scan_fails_the_export_without_naming_it(vd, tmp_path, capsys):
     bad = make_dicom(arr=np.full((16, 24), 900, np.uint16))
@@ -1438,19 +1510,30 @@ def test_report_records_max_samples_only_when_set(vd, tmp_path):
 
 
 # --- task 8 fix round 2: opt-in process pool for the zip read + DICOM decode (--workers)
+import ast  # noqa: E402
 import concurrent.futures as cf  # noqa: E402
 import signal  # noqa: E402
 
-
-def _hook_warn(img):
-    """Runs inside a pool worker (initializer argument): a library warning that quotes a secret."""
-    warnings.warn("XSECRETX patient string")
+import cxr_pool_hooks as H  # noqa: E402  (worker hooks: a module a spawned worker imports cheaply)
 
 
-def _hook_die(img):
-    """Runs inside a pool worker: one scan kills its process outright."""
-    if img == VD_IDS[7]:
-        os._exit(1)
+def _imported(path):
+    """Top-level names of every module a source file imports."""
+    names = set()
+    for node in ast.walk(ast.parse(open(path).read())):
+        if isinstance(node, ast.Import):
+            names |= {a.name.split(".")[0] for a in node.names}
+        elif isinstance(node, ast.ImportFrom):
+            names.add((node.module or "").split(".")[0])
+    return names
+
+
+def test_pool_hooks_come_from_a_module_that_imports_only_the_standard_library():
+    """A spawned worker imports the module that defines its hook. From this test module that is
+    torch and pandas per worker (212 s cold, job 6606235), enough to trip the 240 s alarm."""
+    assert _imported(H.__file__) == {"__future__", "os", "warnings"}
+    assert {"pandas", "pytest", "test_cxr14"} <= _imported(__file__)  # the reader does see heavy imports
+    assert H.warn_secret.__module__ == H.die_on.__module__ == "cxr_pool_hooks"
 
 
 @pytest.fixture
@@ -1525,7 +1608,7 @@ def test_vindr_corrupt_member_with_workers_is_count_only_and_logged(vd, tmp_path
 
 
 def test_vindr_worker_that_dies_ends_the_export_count_only(vd, tmp_path, capfd, monkeypatch, alarm):
-    monkeypatch.setattr(X, "_VINDR_POOL_HOOK", _hook_die)
+    monkeypatch.setattr(X, "_VINDR_POOL_HOOK", functools.partial(H.die_on, VD_IDS[7]))
     root = str(tmp_path / "tree")
     msg, shown = _vd_fail(_vd_zip(tmp_path), root, capfd, ("--workers", "2"))
     assert "export failed in split" in shown and "RuntimeError" in shown
@@ -1535,7 +1618,7 @@ def test_vindr_worker_that_dies_ends_the_export_count_only(vd, tmp_path, capfd, 
 
 
 def test_vindr_warnings_raised_in_a_worker_are_tallied_by_class_only(vd, tmp_path, capfd, monkeypatch, alarm):
-    monkeypatch.setattr(X, "_VINDR_POOL_HOOK", _hook_warn)
+    monkeypatch.setattr(X, "_VINDR_POOL_HOOK", H.warn_secret)
     root = str(tmp_path / "tree")
     assert _vd_export(_vd_zip(tmp_path), root, ("--workers", "3")) == 0
     out = capfd.readouterr()

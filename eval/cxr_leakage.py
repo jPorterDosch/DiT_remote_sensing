@@ -8,6 +8,13 @@ against it), and eval.features imports the split-size constants from eval.cxr_sp
 check 8 are the same constants the exporter draws with: for CheXpert and VinDr-CXR check 8 confirms
 "tree size equals the constant", not an independent count.
 
+What the checks can and cannot see. Checks 1-5 are anchored on the shipped ChestX-ray14 files, so they are
+independent of the exporter; check 0 first proves that --manifest-dir is the manifest the index was built
+from (its own sha256 over the four manifest files against the hashes the index recorded), because the
+index names of every later check come from that directory's rows.csv. Checks 6, 7 and 8 read columns the
+exporter itself wrote (export_table.csv, labels.npz): they prove each CheXpert / VinDr-CXR tree is
+consistent with itself, not that the exporter read the source archive correctly.
+
     python -m eval.cxr_leakage --index <npz> --manifest-dir <dir> --raw-dir <dir> \\
         --tree chestxray14=<root> --tree chexpert=<root> --tree vindr_cxr_kaggle=<root> --out <json>
 
@@ -22,6 +29,7 @@ CXR_LEAKAGE_GATE INCOMPLETE (non-zero exit). FAIL outranks INCOMPLETE. There is 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -43,6 +51,8 @@ CSV_NAME = "Data_Entry_2017_v2020.csv"
 TRAIN_VAL_LIST = "train_val_list.txt"
 TEST_LIST = "test_list.txt"
 SPLITS = ("train", "val", "test")
+# The files an index is bound to. A literal: deliberately not read from datasets.cxr14.
+MANIFEST_FILES = ("rows.csv", "retained.csv", "validation.csv", "report.json")
 
 NOTES = (
     "published 86,523 / 25,595 vs shipped 86,524 / 25,596 (list files lack a final newline)",
@@ -50,6 +60,7 @@ NOTES = (
     "the gate cannot see which split a training run loads: alignment must load split train (bucket retained) only",
 )
 
+C0 = "0 index_bound_to_manifest"
 C1 = "1 index_patients_disjoint_from_tree_eval"
 C1B = "1b index_patient_id_matches_csv"
 C1C = "1c tree_patient_column_matches_csv"
@@ -127,6 +138,25 @@ class _Inputs:
         return self._get(("list", fname), "list file", "raw dir", read)
 
     # ---- index
+    def manifest_binding(self) -> tuple[dict, dict]:
+        """(sha256 per manifest file as the index recorded it, sha256 of the files in --manifest-dir now)."""
+
+        def read():
+            z = np.load(self.index_npz, allow_pickle=False)
+            recorded = json.loads(str(z["manifest_sha256"]))
+            if not isinstance(recorded, dict):
+                raise TypeError("manifest_sha256 is not a mapping")
+            now = {}
+            for name in MANIFEST_FILES:
+                h = hashlib.sha256()
+                with open(os.path.join(self.manifest_dir, name), "rb") as f:
+                    for chunk in iter(lambda: f.read(1 << 24), b""):
+                        h.update(chunk)
+                now[name] = h.hexdigest()
+            return recorded, now
+
+        return self._get("binding", "index npz or manifest files", "index", read)
+
     def index(self) -> dict:
         def read():
             z = np.load(self.index_npz, allow_pickle=False)
@@ -210,6 +240,22 @@ def _unresolved(n) -> str:
 
 
 # ------------------------------------------------------------------------------ checks
+def _check0(inp: _Inputs):
+    """The index names of checks 1, 2, 2b, 1b, 4 and 5 come from <manifest-dir>/rows.csv, so a manifest
+    directory that is not the one the index was built from would make them compare the wrong images."""
+    recorded, now = inp.manifest_binding()
+    one_side = set(recorded) ^ set(now)
+    differ = sum(recorded[f] != now[f] for f in now if f in recorded)
+    return [
+        (
+            C0,
+            not one_side and not differ,
+            f"{len(now)} manifest files, {differ} differ from the sha256 the index recorded, "
+            f"{len(one_side)} named on one side only",
+        )
+    ]
+
+
 def _check1_2(inp: _Inputs):
     """(a) rows alignment trains on (bucket retained) vs tree val + test; (b) ALL index rows vs tree test.
     The validation bucket is the source of the tree val, so it is deliberately not compared with it."""
@@ -431,6 +477,7 @@ def _run(index_npz, manifest_dir, raw_dir, trees):
     present = {k: inp.has_tree(k) for k in keys}
     skipped = [k for k in keys if not present[k]]
     r: list = []
+    _run_one(r, (C0,), _check0, inp)
     if present["chestxray14"]:
         _run_one(r, (C1, C2), _check1_2, inp)
     _run_one(r, (C2B,), _check2b, inp)
@@ -466,7 +513,7 @@ def verdict(results, skipped) -> str:
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--index", required=True, help="alignment index npz")
-    p.add_argument("--manifest-dir", required=True, help="manifest directory holding rows.csv")
+    p.add_argument("--manifest-dir", required=True, help="the manifest directory the index was built from")
     p.add_argument("--raw-dir", required=True, help="shipped ChestX-ray14 CSV and list files")
     p.add_argument(
         "--tree", action="append", default=[], metavar="KEY=PATH", help="probe tree root, repeatable"

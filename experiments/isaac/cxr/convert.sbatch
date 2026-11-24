@@ -49,7 +49,7 @@ python3 experiments/isaac/cxr/quota_guard.py --min-free-gb 900
 mkdir -p "$OUT"
 echo "shard $I: $RAW -> $OUT"
 python3 -m datasets.cxr14 convert --shard "$I" --raw-dir "$RAW" --out-dir "$OUT"
-python3 - "$OUT" "$I" <<'PY'
+python3 -I - "$OUT" "$I" <<'PY'
 import glob, json, sys
 out, i = sys.argv[1], int(sys.argv[2])
 (path,) = glob.glob(f"{out}/meta/cxr14-{i:02d}-of-*.arrow.json")

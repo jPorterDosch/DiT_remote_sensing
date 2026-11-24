@@ -200,7 +200,8 @@ def build_manifest(arrow_dir: str, raw_dir: str, out_dir: str, shards=None) -> d
         mp = _meta_path(arrow_dir, i)
         if not os.path.exists(mp):
             raise SystemExit(f"shard {i}: {mp} missing (python -m datasets.cxr14 convert)")
-        meta = json.load(open(mp))
+        with open(mp) as f:
+            meta = json.load(f)
         sp = os.path.join(arrow_dir, shard_name(i))
         if not os.path.exists(sp):
             raise SystemExit(f"shard {i}: {sp} missing")
@@ -323,7 +324,8 @@ def build_index(manifest_dir: str, out: str, allow_smoke: bool = False) -> dict:
     rp = os.path.join(manifest_dir, "report.json")
     if not os.path.exists(rp):
         raise SystemExit(f"{rp} missing: the manifest build did not finish")
-    report = json.load(open(rp))
+    with open(rp) as f:
+        report = json.load(f)
     smoke = bool(report.get("smoke", False))
     if smoke and report.get("complete") is not False:
         raise SystemExit("report.json says both smoke and complete")
@@ -404,7 +406,16 @@ class Cxr14Dataset(ArrowCorpus):
     """Rows of an index npz, read from the converted arrow shards. which: "train" = the retained
     bucket, "val" = the validation bucket (patients disjoint from retained), "all" = both. The
     index holds no test row, so none is reachable. index_pos is the position in the npz; the
-    npz order (shard, then row) is deterministic. There is no row-modulo holdout and no flip."""
+    npz order (shard, then row) is deterministic. There is no row-modulo holdout and no flip.
+
+    "all" serves the probe-validation patients beside the alignment rows, so it is refused unless
+    allow_all=True (checks and figures only, never a training run).
+
+    The constructor verifies the binding the leakage gate relies on (ValueError otherwise): the
+    manifest files (at the directory the index records, or `manifest_dir`) still hash to the
+    index's manifest_sha256, and every served (shard, row) holds the image name and the bucket the
+    manifest gives it. Shard bytes are not re-hashed here (minutes over the full corpus);
+    `python -m datasets.cxr14 check` does that."""
 
     n_shards = N_ARCHIVES
     shard_name = staticmethod(shard_name)
@@ -418,11 +429,18 @@ class Cxr14Dataset(ArrowCorpus):
         which: str = "train",
         hflip: bool = False,
         allow_smoke: bool = False,
+        allow_all: bool = False,
+        manifest_dir: str | None = None,
     ):
         if hflip:
             raise ValueError("cxr14: horizontal flip is refused (heart side)")
         if which not in ("train", "val", "all"):
             raise ValueError(which)
+        if which == "all" and not allow_all:
+            raise ValueError(
+                'cxr14: which="all" serves the probe-validation patients beside the alignment rows; '
+                "pass allow_all=True (checks and figures only, never a training run)"
+            )
         z = np.load(index_npz)
         if not bool(z["one_row_per_image"]):
             raise ValueError(f"{index_npz}: not a one-row-per-image index")
@@ -439,6 +457,49 @@ class Cxr14Dataset(ArrowCorpus):
         self.which = which
         self.index_npz = index_npz
         self._check_shards()
+        self._check_binding(z, code[keep], manifest_dir)
+
+    def _check_binding(self, z, code: np.ndarray, manifest_dir: str | None) -> None:
+        """Index <-> manifest <-> shards, for the served rows (see the class docstring)."""
+        mdir = manifest_dir if manifest_dir is not None else str(z["manifest_dir"])
+        lacking = [f for f in MANIFEST_FILES if not os.path.isfile(os.path.join(mdir, f))]
+        if lacking:
+            raise ValueError(
+                f"{self.index_npz}: manifest files {lacking} missing under {mdir}; pass manifest_dir= "
+                "if the manifest moved (its sha256 is checked against the index)"
+            )
+        if _manifest_sha(mdir) != json.loads(str(z["manifest_sha256"])):
+            raise ValueError(
+                f"{self.index_npz}: the manifest files under {mdir} differ from those the index was built from"
+            )
+        rows = pd.read_csv(
+            os.path.join(mdir, "rows.csv"),
+            usecols=["shard", "row", "img_name", "bucket"],
+            dtype={"shard": np.int64, "row": np.int64, "img_name": str, "bucket": str},
+        )
+        served = pd.DataFrame({"shard": self.shard, "row": self.row, "code": code.astype(np.int64)})
+        m = served.merge(rows, on=["shard", "row"], how="left")
+        if m["img_name"].isna().any():
+            raise ValueError(
+                f"{self.index_npz}: {int(m['img_name'].isna().sum())} served rows address (shard, row) "
+                "pairs the manifest lacks"
+            )
+        want_bucket = np.where(m["code"].to_numpy() == 0, "align", "validation")
+        bad_bucket = int((m["bucket"].to_numpy(dtype=object) != want_bucket).sum())
+        if bad_bucket:
+            raise ValueError(
+                f"{self.index_npz}: {bad_bucket} served rows have a different bucket in the manifest"
+            )
+        bad_name = 0
+        for s, grp in m.groupby("shard"):
+            names, _pids = _read_shard_columns(os.path.join(self.arrow_dir, self.shard_name(int(s))))
+            got = np.array(names, dtype=object)[grp["row"].to_numpy()]  # rows exist: _check_shards ran
+            bad_name += int((got != grp["img_name"].to_numpy(dtype=object)).sum())
+        if bad_name:
+            raise ValueError(
+                f"{self.index_npz}: {bad_name} of {len(m)} served rows hold a different image in "
+                f"{self.arrow_dir} than the manifest names (python -m datasets.cxr14 check)"
+            )
 
     def describe(self) -> dict:
         return {
@@ -539,7 +600,8 @@ def _check_index_against_shards(arrow_dir: str, manifest_dir: str, index: str, r
 
 
 def _check(arrow_dir: str, manifest_dir: str, index: str) -> None:
-    report = json.load(open(os.path.join(manifest_dir, "report.json")))
+    with open(os.path.join(manifest_dir, "report.json")) as f:
+        report = json.load(f)
     desc = index_description(index)
     if desc["manifest_sha256"] != _manifest_sha(manifest_dir):
         raise SystemExit("the index was built from different manifest files than those in --manifest-dir")
@@ -570,7 +632,9 @@ def _check(arrow_dir: str, manifest_dir: str, index: str) -> None:
         if report.get("complete") is not True or diff or report["n_images"] != N_IMAGES:
             raise SystemExit(f"counts differ from the pinned constants: {diff}")
         print("pinned counts match")
-    ds = Cxr14Dataset(arrow_dir, index, which="all", allow_smoke=desc["smoke"])
+    ds = Cxr14Dataset(
+        arrow_dir, index, which="all", allow_smoke=desc["smoke"], allow_all=True, manifest_dir=manifest_dir
+    )
     name, raw = ds.raw(0)
     print(f"row 0: {name} {len(raw)} bytes; {len(ds)} rows; CXR14_CHECK_OK")
 

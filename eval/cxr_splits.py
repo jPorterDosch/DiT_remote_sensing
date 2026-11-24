@@ -27,6 +27,24 @@ CHEXPERT_TEST_N = 202  # frontal rows of valid.csv, counted on the shipped file 
 VINDR_KAGGLE_SIZES = {"test": 3000, "val": 1500, "train": 10500}
 VINDR_EXCLUDED = ("No finding", "Other lesion")
 VINDR_MIN_TEST_POSITIVES = 10
+# The probe label set of the Kaggle copy. The threshold rule above (>= 10 two-of-three positives in the
+# drawn test split) chose these twelve once, on the shipped train.csv (export job 6600853), and reads
+# test-split label counts to do it. They are pinned here so the choice is made once and cannot move: an
+# export whose derivation differs from this list stops (see export_cxr.vindr_kaggle_splits).
+VINDR_KAGGLE_CLASSES = (
+    "Aortic enlargement",
+    "Atelectasis",
+    "Calcification",
+    "Cardiomegaly",
+    "Consolidation",
+    "ILD",
+    "Infiltration",
+    "Lung Opacity",
+    "Nodule/Mass",
+    "Pleural effusion",
+    "Pleural thickening",
+    "Pulmonary fibrosis",
+)
 CXR14_CLASSES = [
     "Atelectasis",
     "Cardiomegaly",

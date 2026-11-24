@@ -373,8 +373,10 @@ def test_smoke_manifest_needs_allow_smoke_and_is_stamped(corpus):
     G.build_index(d, str(corpus["tmp"] / "s.npz"), allow_smoke=True)
     assert G.index_description(str(corpus["tmp"] / "s.npz"))["smoke"] is True
     with pytest.raises(ValueError, match="smoke index"):
-        G.Cxr14Dataset(corpus["arrow"], str(corpus["tmp"] / "s.npz"), which="all")
-    ds = G.Cxr14Dataset(corpus["arrow"], str(corpus["tmp"] / "s.npz"), which="all", allow_smoke=True)
+        G.Cxr14Dataset(corpus["arrow"], str(corpus["tmp"] / "s.npz"), which="all", allow_all=True)
+    ds = G.Cxr14Dataset(
+        corpus["arrow"], str(corpus["tmp"] / "s.npz"), which="all", allow_smoke=True, allow_all=True
+    )
     assert ds.describe()["smoke"] is True and len(ds) > 0
     with pytest.raises(SystemExit, match="exists"):
         G.build_index(d, str(corpus["tmp"] / "s.npz"), allow_smoke=True)
@@ -402,7 +404,11 @@ def test_index_fields_and_description(indexed):
 
 def test_dataset_buckets_and_no_test_rows(indexed):
     c, npz = indexed
-    tr, va, al = (G.Cxr14Dataset(c["arrow"], npz, img_size=32, which=w) for w in ("train", "val", "all"))
+    with pytest.raises(ValueError, match="allow_all=True"):  # the default never mixes the two buckets
+        G.Cxr14Dataset(c["arrow"], npz, img_size=32, which="all")
+    tr, va, al = (
+        G.Cxr14Dataset(c["arrow"], npz, img_size=32, which=w, allow_all=True) for w in ("train", "val", "all")
+    )
     assert len(tr) + len(va) == len(al) == N_TV_PATIENTS * PER_PATIENT and len(va) > 0
     test_names = {n for n, p in c["rows"] if p in c["te"]}
     for ds in (tr, va, al):
@@ -416,12 +422,68 @@ def test_dataset_buckets_and_no_test_rows(indexed):
     assert al.describe()["which"] == "all" and al.describe()["smoke"] is False
     os.remove(os.path.join(c["arrow"], G.shard_name(1)))
     with pytest.raises(FileNotFoundError, match="datasets.cxr14 convert"):
-        G.Cxr14Dataset(c["arrow"], npz, which="all")
+        G.Cxr14Dataset(c["arrow"], npz, which="all", allow_all=True)
+
+
+def test_dataset_refuses_a_manifest_that_changed_or_moved(indexed):
+    c, npz = indexed
+    man = c["tmp"] / "man"
+    moved = c["tmp"] / "man_moved"
+    os.rename(man, moved)
+    with pytest.raises(ValueError, match="missing under"):
+        G.Cxr14Dataset(c["arrow"], npz)
+    assert len(G.Cxr14Dataset(c["arrow"], npz, manifest_dir=str(moved))) > 0  # same files, new place
+
+    def _rows_become_align(d):  # in place: _edit_csv ignores the return value
+        d["bucket"] = d["bucket"].replace("test", "align")
+
+    _edit_csv(moved / "rows.csv", _rows_become_align)
+    with pytest.raises(ValueError, match="differ from those the index was built from"):
+        G.Cxr14Dataset(c["arrow"], npz, manifest_dir=str(moved))
+
+
+def test_dataset_refuses_swapped_shards_and_a_renamed_row(indexed):
+    c, npz = indexed
+    assert len(G.Cxr14Dataset(c["arrow"], npz)) > 0
+    a, b = (os.path.join(c["arrow"], G.shard_name(i)) for i in (0, 1))
+    os.rename(a, a + ".t")
+    os.rename(b, a)
+    os.rename(a + ".t", b)
+    for which in ("train", "val"):
+        with pytest.raises(ValueError, match="hold a different image"):
+            G.Cxr14Dataset(c["arrow"], npz, which=which)
+    os.rename(a, a + ".t")
+    os.rename(b, a)
+    os.rename(a + ".t", b)
+    z = np.load(npz)
+    k = int(np.flatnonzero(z["bucket_code"] == 0)[0])
+    s, r = int(z["shard"][k]), int(z["row"][k])
+
+    def rename(cols):
+        cols["img_name"][r] = "99999999_000.png"
+        return cols
+
+    _rewrite_shard(c, s, rename)
+    with pytest.raises(ValueError, match=r"\b1 of \d+ served rows hold a different image"):
+        G.Cxr14Dataset(c["arrow"], npz, which="train")
+
+
+def test_dataset_refuses_an_index_whose_bucket_disagrees_with_the_manifest(indexed):
+    c, npz = indexed
+    z = dict(np.load(npz))
+    z["bucket_code"] = z["bucket_code"].copy()
+    k = int(np.flatnonzero(z["bucket_code"] == 1)[0])
+    z["bucket_code"][k] = 0  # a validation row relabelled as an alignment row
+    flipped = str(c["tmp"] / "flipped.npz")
+    with open(flipped, "wb") as f:
+        np.savez(f, **z)
+    with pytest.raises(ValueError, match="1 served rows have a different bucket"):
+        G.Cxr14Dataset(c["arrow"], flipped, which="train")
 
 
 def test_item_is_rgb_224_in_unit_range(indexed):
     c, npz = indexed
-    ds = G.Cxr14Dataset(c["arrow"], npz, which="all")
+    ds = G.Cxr14Dataset(c["arrow"], npz, which="all", allow_all=True)
     seen = set()
     for i in range(len(ds)):
         mode = Image.open(io.BytesIO(ds.raw(i)[1])).mode
