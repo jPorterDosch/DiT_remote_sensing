@@ -29,7 +29,9 @@ Spec (JSON): {"fractions": [...], "seeds": [...], "c_grid": [...], "datasets": [
               DiTF view of the pooled tokens instead of the raw protocol view, stamped in the cell),
               "expect": {...flux pins... | satdifuser: {"scale": ...}},
               "teacher": name | null, "per_dataset": {dataset: {overrides}}}]}
-Metrics: top-1 (single-label), micro-F1 (multi-label); never averaged across datasets.
+Metrics: top-1 (single-label), micro-F1 (multi-label); never averaged across datasets. Multi-label
+cells also store the test probabilities (`proba`) and the mean per-label AUROC (`auroc_mean`, with
+the per-label values in `selected`), next to micro-F1, which stays the score and the selection metric.
 """
 
 from __future__ import annotations
@@ -137,7 +139,7 @@ def blas_threads(n_rows: int) -> int:
     return int(min(BLAS_THREADS_CAP, max(1, n_rows // 256)))
 
 
-def fit_cell(cands: dict, tr: np.ndarray, ytr, yva, yte, c_grid):
+def fit_cell(cands: dict, tr: np.ndarray, ytr, yva, yte, c_grid, return_proba: bool = False):
     """eval.protocols.run_official on the probe-training rows `tr` (scaler fit on them), the
     same selection rule (first max over candidate order then C order) and a C grid argument.
     Multi-hot labels: the one-vs-rest fits spread over OVR_N_JOBS workers sized to the job's
@@ -154,14 +156,17 @@ def fit_cell(cands: dict, tr: np.ndarray, ytr, yva, yte, c_grid):
     threads = blas_threads(len(tr))
     with threadpool_limits(limits=threads, user_api="blas"):
         out = _fit_cell(cands, tr, ytr, yva, yte, c_grid)
+    proba = out[2].pop("_proba", None)
     cpus = len(os.sched_getaffinity(0))
     # ovr_threads = the BLAS threads of each one-vs-rest label fit (protocols.OVR_FIT_THREADS, a
     # constant since 2026-10-15; before: cpus // workers). Wide designs move at the 1e-3 level
     # with the thread count, so it is stamped per cell and tables_markdown reports a dataset
     # whose cells mix shares (config_current should keep that from happening).
     multilabel = np.asarray(ytr).ndim == 2
-    return (*out, {"blas_threads": threads, "ovr_n_jobs": int(n_jobs), "cpus": cpus,
-                   "ovr_threads": P.OVR_FIT_THREADS if multilabel else threads})  # fmt: skip
+    compute = {"blas_threads": threads, "ovr_n_jobs": int(n_jobs), "cpus": cpus,
+               "ovr_threads": P.OVR_FIT_THREADS if multilabel else threads}  # fmt: skip
+    # return_proba: the multi-label test probabilities (None for single-label) as a 6th item
+    return (*out, compute, proba) if return_proba else (*out, compute)
 
 
 def _fit_cell(cands, tr, ytr, yva, yte, c_grid):
@@ -183,11 +188,19 @@ def _fit_cell(cands, tr, ytr, yva, yte, c_grid):
     val_acc, name, Cv, sel_warn = best
     Atr, _, Ate = cands[name]
     sc = StandardScaler().fit(Atr[tr])
+    multilabel = np.asarray(y).ndim == 2
     with P._shared_for_workers(lambda: sc.transform(Atr[tr]), y) as A:
-        pred, n_warn = P.official_fit_eval(A, y, sc.transform(Ate), Cv)
+        out = P.official_fit_eval(A, y, sc.transform(Ate), Cv, with_proba=multilabel)
         del A
+    pred, n_warn = out[0], out[1]
     correct = P.per_image(yte, pred)
     sel = {"candidate": name, "C": Cv, "val_acc": val_acc, "sel_warn": sel_warn, "test_warn": n_warn}
+    if multilabel:
+        # Mean per-label AUROC is added next to micro-F1 (which stays the cell's score and the
+        # selection metric). The test probabilities travel under "_proba"; fit_cell pops them
+        # off, so `sel` stays JSON-serialisable and comparable.
+        sel.update(P.auroc_per_label(yte, out[2]))
+        sel["_proba"] = out[2]
     return correct, pred, sel, table
 
 
@@ -416,8 +429,16 @@ def run(
                     else:
                         cands_fit = {k: (Atr, Ava[va], Ate) for k, (Atr, Ava, Ate) in cands.items()}
                         yva_fit = yva[va]
-                    correct, pred, sel, table, compute = fit_cell(cands_fit, tr, ytr, yva_fit, yte, c_grid)
+                    correct, pred, sel, table, compute, proba = fit_cell(
+                        cands_fit, tr, ytr, yva_fit, yte, c_grid, return_proba=True
+                    )
                     score = P.metric(correct)
+                    # multi-label: the test probabilities and mean per-label AUROC, next to micro-F1
+                    auroc = (
+                        {}
+                        if proba is None
+                        else {"proba": proba.astype(np.float32), "auroc_mean": np.array(sel["auroc_mean"])}
+                    )
                     os.makedirs(os.path.dirname(path), exist_ok=True)
                     tmp = path + ".tmp.npz"
                     np.savez(
@@ -437,6 +458,7 @@ def run(
                         inputs=np.array(json.dumps(sha, sort_keys=True)),
                         config=np.array(json.dumps(cfg, sort_keys=True)),
                         compute=np.array(json.dumps(compute, sort_keys=True)),
+                        **auroc,
                     )
                     os.replace(tmp, path)
                     print(

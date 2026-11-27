@@ -463,12 +463,39 @@ def _n_not_converged(clf, wl) -> int:
     return sum(issubclass(w.category, ConvergenceWarning) for w in wl)
 
 
-def official_fit_eval(Xtr, ytr, Xev, Cv):
-    """Source: m_eurosat_probe.fit_eval / dinov2_m_eurosat.fit_eval (identical)."""
+def official_fit_eval(Xtr, ytr, Xev, Cv, with_proba: bool = False):
+    """Source: m_eurosat_probe.fit_eval / dinov2_m_eurosat.fit_eval (identical). with_proba: also
+    return predict_proba(Xev) of the same fit (the predictions are unchanged)."""
     with warnings.catch_warnings(record=True) as wl:
         warnings.simplefilter("always", ConvergenceWarning)
         clf = official_lr(Cv, ytr).fit(Xtr, ytr)
+    if with_proba:
+        return clf.predict(Xev), _n_not_converged(clf, wl), clf.predict_proba(Xev)
     return clf.predict(Xev), _n_not_converged(clf, wl)
+
+
+def auroc_per_label(y, proba) -> dict:
+    """Mean per-label ROC AUC of multi-hot labels (chest X-ray design 8.4), stored NEXT TO micro-F1:
+    roc_auc_score of each label's test column against its predicted probability. A label whose test
+    column holds one class only has no AUROC; it is skipped and the number of scored labels is
+    recorded, so a mean over fewer labels is visible."""
+    from sklearn.metrics import roc_auc_score
+
+    y, proba = np.asarray(y), np.asarray(proba)
+    if y.ndim != 2 or proba.shape != y.shape:
+        raise ValueError(
+            f"auroc_per_label needs (N, L) labels and probabilities, got {y.shape} / {proba.shape}"
+        )
+    per = [
+        float(roc_auc_score(y[:, j], proba[:, j])) if 0 < y[:, j].sum() < len(y) else None
+        for j in range(y.shape[1])
+    ]
+    scored = [a for a in per if a is not None]
+    return {
+        "auroc_mean": float(np.mean(scored)) if scored else float("nan"),
+        "auroc_per_label": per,
+        "auroc_n_labels": len(scored),
+    }
 
 
 SHARE_MIN_BYTES = 64 << 20  # below this, joblib's own per-call dump is cheap
@@ -560,11 +587,15 @@ def run_official(cands, ytr, yva, yte, c_grid=C_GRID):
     val_acc, name, Cv, sel_warn = best
     Atr, _, Ate = cands[name]
     sc = StandardScaler().fit(Atr)
+    multilabel = np.asarray(ytr).ndim == 2
     with _shared_for_workers(lambda: sc.transform(Atr), ytr) as A:
-        pred, n_warn = official_fit_eval(A, ytr, sc.transform(Ate), Cv)
+        out = official_fit_eval(A, ytr, sc.transform(Ate), Cv, with_proba=multilabel)
         del A
+    pred, n_warn = out[0], out[1]
     correct = per_image(yte, pred)
     sel = {"candidate": name, "C": Cv, "val_acc": val_acc, "sel_warn": sel_warn, "test_warn": n_warn}
+    if multilabel:
+        sel.update(auroc_per_label(yte, out[2]))
     return correct, pred, sel, table
 
 

@@ -254,11 +254,13 @@ def official_dino(args):
         F.check_identity(d, files, path)
         data[s] = (d, y, files, path)
     if getattr(args, "head", "lr") == "tsweight":
+        if F.dino_default_views(data["train"][0]) != F.DINO_OFFICIAL_VIEWS:
+            raise SystemExit("--head tsweight needs last-4-block CLS slots; MedSigLIP caches have none")
         # slots = last-4-block CLS + last-block patch mean, (N, 5, D); the LR views are not built
         sl = [FU.dino_slots(data[s][0]) for s in ("train", "val", "test")]
         cands, extra = {}, {"X3": tuple(x for x, _ in sl), "slots": sl[0][1]}
     else:
-        names = (args.view or F.DINO_OFFICIAL_VIEWS).split(",")
+        names = (args.view or F.dino_default_views(data["train"][0])).split(",")
         cands = {n: tuple(F.view("dino", data[s][0], n)[1] for s in ("train", "val", "test")) for n in names}
         extra = {}
     return (
@@ -350,8 +352,7 @@ def report_test(dataset: str, yte, pred, v) -> tuple[float, str, dict]:
 
 
 def run_official(args):
-    if args.dataset not in F.OFFICIAL:
-        raise SystemExit(f"{args.dataset}: no OFFICIAL entry (count the shipped partition first, rule 16)")
+    F.official_spec(args.dataset)  # GEO-Bench (OFFICIAL) or chest X-ray (OFFICIAL_CXR); unknown -> SystemExit
     loader = {"flux": official_flux, "dino": official_dino}.get(args.kind)
     if loader is None:
         raise SystemExit(f"official protocol supports kinds flux, dino (got {args.kind})")
@@ -385,6 +386,9 @@ def run_official(args):
             + ("" if r["conv_warnings"] == 0 else f"  [NOT CONVERGED x{r['conv_warnings']}]")
         )
     _, sel_line, extra_metrics = report_test(args.dataset, yte, pred, correct)
+    if "auroc_mean" in sel:  # multi-label: added next to micro-F1, which stays the score and selection metric
+        extra_metrics["auroc_mean"] = sel["auroc_mean"]
+        sel_line += f"  auroc_mean={sel['auroc_mean']:.4f} ({sel['auroc_n_labels']} labels)"
     print(f"  SELECTED on val: {sel['candidate']}, C={sel['C']} (val {sel['val_acc']:.4f})")
     print(f"  TEST: {sel_line}" + ("" if sel["test_warn"] == 0 else f"  [NOT CONVERGED x{sel['test_warn']}]"))
     wb.log_table("val_selection", table)
@@ -451,10 +455,7 @@ def main(argv=None) -> str:
     # Content identity of every file actually read (rule 11): a re-extraction or re-shard
     # gets a new hash and so a new run name -- it never overwrites the old results file.
     if args.protocol == "official":
-        if args.dataset not in F.OFFICIAL:
-            raise SystemExit(
-                f"{args.dataset}: no OFFICIAL entry (count the shipped partition first, rule 16)"
-            )
+        F.official_spec(args.dataset)  # registered in OFFICIAL or OFFICIAL_CXR (rule 16), else SystemExit
         files = {
             s: sorted(glob.glob(args.features.format(split=s)))
             for s in F.official_spec(args.dataset)["sizes"]

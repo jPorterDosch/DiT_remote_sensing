@@ -7,7 +7,8 @@ VIEW of it. Views reproduce exactly what the validated prototypes fed their prob
                     the other timesteps appended raw  (6ac arm A1, section 13)
         t:<i>       DiTF-normalized single timestep i  (6ac arm A2)
         concat      DiTF-normalized all-t concat  (Q2 flux_7t)
-  dino  cls | mp | clsmp | cls4 | cls4mp  (cls4 = last-4-block CLS concat; see DINO_OFFICIAL_VIEWS)
+  dino  cls | mp | clsmp | cls4 | cls4mp  (cls4 = last-4-block CLS concat; see DINO_OFFICIAL_VIEWS;
+        MedSigLIP caches use the same layout, cls = pooled head embedding, no cls4)
   vae   full | pool8 | pool4 | pool2 | pool1  (Q1 poolings of the 16x32x32 clean latent;
         poolN = N x N grid x 16 ch: 1024 / 256 / 64 / 16-d. Q1's "pool 4x4 (256d)" arm is pool8)
 
@@ -24,6 +25,10 @@ import sys
 
 import numpy as np
 
+from eval.cxr_splits import CHEXPERT_TEST_N as _CXR_CHEXPERT_TEST_N  # numpy + pandas only
+from eval.cxr_splits import PROBE_SIZES as _CXR_PROBE
+from eval.cxr_splits import VINDR_KAGGLE_SIZES as _CXR_VINDR_SIZES
+
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(REPO_ROOT, "src"))
 
@@ -31,6 +36,18 @@ DISCARD = [154, 1446]  # DiTF massive-activation channels
 # The DINO arm's official candidates: DINOv2/v3 linear eval's own grid, n_last_blocks in
 # {1, 4} x use_avgpool (dinov3/eval/linear.py create_linear_input), selected on val with C.
 DINO_OFFICIAL_VIEWS = "cls,clsmp,cls4,cls4mp"
+# MedSigLIP probe rows (eval/extract_medsiglip.py) use the DINO cache layout with cls = the pooled
+# head embedding and mp = the mean patch token; there is no cls4 (design 7.2: pooled, mean patch, both).
+MEDSIGLIP_OFFICIAL_VIEWS = "cls,mp,clsmp"
+
+
+def dino_default_views(d) -> str:
+    """The official candidate views of a kind-"dino" cache: MedSigLIP caches (eval/extract_medsiglip.py,
+    `preset` medsiglip...) have no cls4, so they get MEDSIGLIP_OFFICIAL_VIEWS; every DINO cache gets
+    DINO_OFFICIAL_VIEWS. A spec / --view that names views explicitly overrides this."""
+    preset = str(d["preset"]) if "preset" in getattr(d, "files", d) else ""
+    return MEDSIGLIP_OFFICIAL_VIEWS if preset.startswith("medsiglip") else DINO_OFFICIAL_VIEWS
+
 
 # cv/budget/mlp identity: the ordered image set every paired arm must consume. The
 # RESISC45 5,000 are the section-13 inversion cache's paths, in cache order (6ac).
@@ -75,6 +92,51 @@ OFFICIAL = {
     "m_brick_kiln": _geobench("m_brick_kiln", 15063, 999, 999),
     "m_pv4ger": _geobench("m_pv4ger", 11814, 999, 999),
     "m_bigearthnet": _geobench("m_bigearthnet", 20000, 1000, 1000, multilabel=True),
+}
+
+
+# Chest X-ray probe trees (eval/export_cxr.py): <root>/<split>/<name>.png + labels.npz, multi-label.
+# The class list (LABEL order) is the export manifest's. ChestX-ray14's manifest is tracked like
+# the GEO-Bench ones; CheXpert / VinDr-CXR manifests hold aggregate label counts under a
+# data-use agreement, so they live on the mode-700 tree scratch (data/cxr/manifests) and never
+# enter git. The registry roots name the tree versions those manifests were written from (a tree is
+# never overwritten: a re-export gets a new name and the root moves with its manifest).
+CXR_TRACKED_MANIFESTS = ("chestxray14",)
+
+
+def cxr_manifest_path(key: str) -> str:
+    if key in CXR_TRACKED_MANIFESTS:
+        return os.path.join(REPO_ROOT, "eval", "manifests", f"{key}.json")
+    return os.path.join(REPO_ROOT, "data", "cxr", "manifests", f"{key}.json")
+
+
+def _cxr(key: str, sizes: dict, tree: str) -> dict:
+    def classes() -> list[str]:
+        path = cxr_manifest_path(key)
+        if not os.path.exists(path):
+            raise SystemExit(
+                f"{key}: class manifest {path} missing; run `python -m eval.export_cxr --dataset {key} "
+                f"--out <root> --write-manifest` first"
+            )
+        with open(path) as f:
+            return json.load(f)["classes"]
+
+    return {"sizes": sizes, "root": f"data/cxr/{tree}", "classes": classes, "multilabel": True}
+
+
+# The _vN suffix is the export attempt that produced the tree. A tree is never overwritten or
+# repaired in place: a failed or changed export goes to a new name, so a root always names one
+# finished export. chestxray14 and chexpert landed on the first full export (v1). vindr_cxr_kaggle
+# is v2 because the first full export (job 6600696) stopped at one training image and left only
+# vindr_cxr_kaggle_v1.partial; the rerun (job 6600853) wrote v2. The suffix is the TREE version
+# only: the ChestX-ray14 alignment corpus has its own (manifest_v2 / index_v2, src/datasets/cxr14.py).
+OFFICIAL_CXR = {
+    # test = test_list.txt of the shipped ChestX-ray14 archive, counted (rule 16)
+    "chestxray14": _cxr("chestxray14", {**_CXR_PROBE, "test": 25596}, "chestxray14_v1"),
+    "chexpert": _cxr("chexpert", {**_CXR_PROBE, "test": _CXR_CHEXPERT_TEST_N}, "chexpert_v1"),
+    "vindr_cxr_kaggle": _cxr(
+        "vindr_cxr_kaggle", {s: _CXR_VINDR_SIZES[s] for s in ("train", "val", "test")}, "vindr_cxr_kaggle_v2"
+    ),
 }
 
 
@@ -165,12 +227,14 @@ def key(task: str) -> str:
 
 
 def official_spec(dataset: str) -> dict:
-    if dataset not in OFFICIAL:
-        raise SystemExit(
-            f"{dataset}: not registered in eval/features.OFFICIAL (count the shipped partition "
-            f"first, rule 16). Registered: {sorted(OFFICIAL)}"
-        )
-    return OFFICIAL[dataset]
+    if dataset in OFFICIAL:
+        return OFFICIAL[dataset]
+    if dataset in OFFICIAL_CXR:
+        return OFFICIAL_CXR[dataset]
+    raise SystemExit(
+        f"{dataset}: not registered in eval/features.OFFICIAL or OFFICIAL_CXR (count the shipped "
+        f"partition first, rule 16). Registered: {sorted(OFFICIAL) + sorted(OFFICIAL_CXR)}"
+    )
 
 
 def official_classes(dataset: str) -> list[str]:
