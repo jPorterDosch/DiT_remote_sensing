@@ -13,8 +13,12 @@ Design: docs/superpowers/specs/2026-11-14-cxr-domain-design.md, section 7 (Part 
   is therefore upsampled to 448 -- the accepted design call, with its named failure mode (the
   `@224up` vs `@448` probe rows of eval/extract_medsiglip.py measure it).
 - Normalisation: the shipped preprocessor_config.json's mean / std, read from the snapshot, never
-  typed in. The card states they map [0, 1] to [-1, 1]; preprocess_info() asserts exactly that, and
-  that the shipped resample is bilinear (2), the method prepare() implements.
+  typed in. The card states they map [0, 1] to [-1, 1]; preprocess_info() asserts exactly that.
+- Resize: the shipped preprocessor_config.json says resample 3 (PIL bicubic), but the model card
+  (snapshot 9cea28a1, README "If you want to reproduce the results from MedSigLIP evals") recommends
+  tf.image.resize bilinear, antialias=False, to match Big Vision training. prepare() follows the
+  card. preprocess_info() records the shipped value and refuses one other than bilinear (2) or
+  bicubic (3), so a changed config surfaces instead of passing silently.
 - Outputs: `last_hidden_state` (B, grid^2, D), the post-layernorm patch tokens (SigLIP has no class
   token), and `pooler_output` (B, D), the attention-pooled head embedding.
 """
@@ -31,6 +35,7 @@ import torch.nn.functional as F
 MODEL_ID = "google/medsiglip-448"
 RESIZE = "bilinear, align_corners=False, antialias=False"
 BILINEAR = 2  # PIL.Image.Resampling.BILINEAR, as stored in preprocessor_config.json
+KNOWN_RESAMPLE = {2: "bilinear", 3: "bicubic"}  # 3 is what google/medsiglip-448 ships
 
 
 def snapshot(model_id: str = MODEL_ID, revision: str | None = None) -> str:
@@ -61,12 +66,12 @@ def preprocess_info(snapshot_dir: str) -> dict:
     side = int(size.get("height", size.get("shortest_edge", 0)))
     if side <= 0 or int(size.get("width", side)) != side:
         raise SystemExit(f"preprocessor_config.json: expected a square size, got {size}")
-    if pc.get("resample") != BILINEAR:
+    if pc.get("resample") not in KNOWN_RESAMPLE:
         raise SystemExit(
-            f"preprocessor_config.json resample {pc.get('resample')!r} is not bilinear ({BILINEAR}); prepare() "
-            "implements the card's bilinear resize, so the model input would not match the shipped processor"
+            f"preprocessor_config.json resample {pc.get('resample')!r} is not one of {KNOWN_RESAMPLE}; the "
+            "shipped preprocessing changed -- re-read the model card before extracting"
         )
-    return {"mean": mean, "std": std, "side": side, "resample": pc.get("resample")}
+    return {"mean": mean, "std": std, "side": side, "resample_shipped": pc.get("resample"), "resize": RESIZE}
 
 
 def load_vision_tower(snap: str, dtype=torch.float32):

@@ -19,14 +19,16 @@ last-layer patch tokens. eval.probe.official_dino picks MEDSIGLIP_OFFICIAL_VIEWS
 for these caches by their `preset`; there is no cls4 (SigLIP has no class token per block).
 
 GATE (executed, prints PASS/FAIL): batch 0 of every split is pushed through the shipped
-SiglipImageProcessor as well; the model inputs must agree (448: to float precision; 224up: within
-2/255, the processor quantizes its resized image to uint8).
+SiglipImageProcessor as well, with its resample set to bilinear (the card's resize; the shipped
+config says bicubic, see models/medsiglip.py); the model inputs must agree (448: to float precision;
+224up: within 2/255, the processor quantizes its resized image to uint8).
 """
 
 from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import os
 import sys
 
@@ -153,7 +155,12 @@ def main(argv=None, encoder=None, processor=None) -> list[str]:
         if processor is None:
             from transformers import SiglipImageProcessor
 
-            processor = SiglipImageProcessor.from_pretrained(snapshot(revision=encoder.info["revision"]))
+            from models.medsiglip import BILINEAR
+
+            # the card's resize, not the shipped bicubic: the gate checks the inputs prepare() builds
+            processor = SiglipImageProcessor.from_pretrained(
+                snapshot(revision=encoder.info["revision"]), resample=BILINEAR
+            )
     preset = f"medsiglip{encoder.side}-{str(encoder.info['revision'])[:12]}_{args.view}"
     tag = "_smoke" if args.max_images else ""
     os.makedirs(args.out_dir, exist_ok=True)
@@ -172,7 +179,7 @@ def main(argv=None, encoder=None, processor=None) -> list[str]:
             labels=y,
             preset=np.array(preset),
             view=np.array(args.view),
-            info=np.array(repr(encoder.info)),
+            info=np.array(json.dumps(encoder.info, sort_keys=True, default=str)),  # parseable provenance
             images=np.array(hashlib.sha1("\n".join(paths).encode()).hexdigest()[:16] + f"/{len(paths)}"),
             device=np.array(str(encoder.device)),
         )

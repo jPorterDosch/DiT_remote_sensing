@@ -110,9 +110,12 @@ def test_preprocess_info_reads_the_card_values_and_rejects_others(tmp_path):
     (tmp_path / "preprocessor_config.json").write_text(json.dumps(bad))
     with pytest.raises(SystemExit, match="does not map"):
         preprocess_info(str(tmp_path))
-    bicubic = {**good, "resample": 3}  # the guard against a shipped resize we do not implement
-    (tmp_path / "preprocessor_config.json").write_text(json.dumps(bicubic))
-    with pytest.raises(SystemExit, match="not bilinear"):
+    shipped = {**good, "resample": 3}  # what google/medsiglip-448 ships: accepted and recorded
+    (tmp_path / "preprocessor_config.json").write_text(json.dumps(shipped))
+    assert preprocess_info(str(tmp_path))["resample_shipped"] == 3
+    nearest = {**good, "resample": 0}  # an unknown change to the shipped preprocessing is refused
+    (tmp_path / "preprocessor_config.json").write_text(json.dumps(nearest))
+    with pytest.raises(SystemExit, match="not one of"):
         preprocess_info(str(tmp_path))
 
 
@@ -253,6 +256,7 @@ def test_224up_view_passes_the_processor_gate(enc, tmp_path, monkeypatch):
     assert os.path.basename(outs[0]).startswith(
         "medsiglip448-test-rev_224up_chestxray14_"
     )  # revision in the name
+    assert json.loads(str(np.load(outs[0])["info"]))["revision"] == "test-rev"  # provenance parses as JSON
 
 
 @pytest.mark.parametrize("case", ["stored_small", "source_short_side"])
