@@ -40,6 +40,15 @@ DINO_OFFICIAL_VIEWS = "cls,clsmp,cls4,cls4mp"
 # head embedding and mp = the mean patch token; there is no cls4 (design 7.2: pooled, mean patch, both).
 MEDSIGLIP_OFFICIAL_VIEWS = "cls,mp,clsmp"
 
+
+def dino_default_views(d) -> str:
+    """The official candidate views of a kind-"dino" cache: MedSigLIP caches (eval/extract_medsiglip.py,
+    `preset` medsiglip...) have no cls4, so they get MEDSIGLIP_OFFICIAL_VIEWS; every DINO cache gets
+    DINO_OFFICIAL_VIEWS. A spec / --view that names views explicitly overrides this."""
+    preset = str(d["preset"]) if "preset" in getattr(d, "files", d) else ""
+    return MEDSIGLIP_OFFICIAL_VIEWS if preset.startswith("medsiglip") else DINO_OFFICIAL_VIEWS
+
+
 # cv/budget/mlp identity: the ordered image set every paired arm must consume. The
 # RESISC45 5,000 are the section-13 inversion cache's paths, in cache order (6ac).
 CV_IDENTITY = {

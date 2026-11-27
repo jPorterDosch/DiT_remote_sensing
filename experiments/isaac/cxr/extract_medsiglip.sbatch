@@ -6,8 +6,8 @@
 #
 #   # once, on a login node (download only, no compute): accept the model's terms on Hugging Face,
 #   # log in (`huggingface-cli login`, token stored under $HF_HOME on scratch), then
-#   #   source experiments/isaac/scratch_env.sh && PYTHONPATH=src python3 -c \
-#   #     "from models.medsiglip import snapshot; print(snapshot())"
+#   #   source experiments/isaac/scratch_env.sh && PYTHONPATH=src python3 -m models.medsiglip
+#   # (prints the snapshot and the pinned target string medsiglip:448@<revision>)
 #   mkdir -p logs
 #   sbatch --export=ALL,DATASET=chestxray14,VIEW=224up[,SMOKE=1][,REVISION=<sha>] experiments/isaac/cxr/extract_medsiglip.sbatch
 #
@@ -16,7 +16,7 @@
 #   SMOKE=1   64 images per split (strided), written with a _smoke suffix
 #   REVISION  optional Hugging Face revision pin (default: the cached snapshot; recorded either way)
 #
-# Output: $D/eval_feats/medsiglip448_<VIEW>_<DATASET>_<split>[_smoke].npz under the mode-700 CXR
+# Output: $D/eval_feats/medsiglip448-<revision[:12]>_<VIEW>_<DATASET>_<split>[_smoke].npz under the mode-700 CXR
 # tree (features of CheXpert / VinDr-CXR images stay with the images; ChestX-ray14 goes there too
 # so the three rows share one root). Success is the line MEDSIGLIP_EXTRACT_OK; the python command's
 # exit status is the script's.
@@ -60,5 +60,8 @@ export PYTHONPATH="$PROJECT_ROOT/src:$PROJECT_ROOT"
 args=(--dataset "$DATASET" --view "$VIEW" --out-dir "$D/eval_feats")
 [ "${SMOKE:-0}" = 1 ] && args+=(--max-images 64)
 [ -z "${REVISION:-}" ] || args+=(--revision "$REVISION")
+# Design 6.4: every writing job checks the scratch quota first. The output is small (about 1 GB per
+# dataset and view, estimate), so the margin is 50 GB rather than the export jobs' 900.
+python3 -I experiments/isaac/cxr/quota_guard.py --min-free-gb 50
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
 python3 -m eval.extract_medsiglip "${args[@]}"

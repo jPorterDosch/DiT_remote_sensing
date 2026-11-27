@@ -6,15 +6,17 @@
 Two input conditions, both reported:
   224up  the stored PNG resized to 224 px (bicubic, the probe view every FLUX / DINO row reads),
          then upsampled to 448 inside the encoder -- exactly what the student was aligned to;
-  448    the stored 448 px PNG as is (the export pads to a square and resizes to 448 when the
-         source is at least 448 px) -- the teacher's native strength. An image stored below 448 px
-         would have to be excluded from this row; that is not implemented, so the run refuses and
-         prints the count instead (the design expects none).
+  448    the stored 448 px PNG as is -- the teacher's native strength. Design 7.2: only images whose
+         SOURCE has a short side of at least 448 px qualify (read from the export's
+         export_table.csv, src_w / src_h); an image that does not would have to be excluded from
+         this row, which is not implemented, so the run refuses and prints the count per split
+         instead (the design expects none).
 
-Writes results/eval_feats/medsiglip448_<view>_<dataset>_<split>.npz in the DINO cache layout, so
-eval.features / eval.probe read it as kind "dino": `cls` = the attention-pooled head embedding,
-`mp` = the mean of the last-layer patch tokens (views cls | mp | clsmp, MEDSIGLIP_OFFICIAL_VIEWS).
-There is no cls4: SigLIP has no class token per block.
+Writes <out-dir>/medsiglip448-<revision[:12]>_<view>_<dataset>_<split>.npz (the snapshot revision is
+in the name, so caches of two snapshots cannot be mixed) in the DINO cache layout, so the probe
+reads it as kind "dino": `cls` = the attention-pooled head embedding, `mp` = the mean of the
+last-layer patch tokens. eval.probe.official_dino picks MEDSIGLIP_OFFICIAL_VIEWS (cls | mp | clsmp)
+for these caches by their `preset`; there is no cls4 (SigLIP has no class token per block).
 
 GATE (executed, prints PASS/FAIL): batch 0 of every split is pushed through the shipped
 SiglipImageProcessor as well; the model inputs must agree (448: to float precision; 224up: within
@@ -56,6 +58,32 @@ def load_image(path: str, view: str) -> torch.Tensor | None:
     else:
         im = im.resize((224, 224), Image.Resampling.BICUBIC)
     return torch.from_numpy(np.asarray(im).copy()).permute(2, 0, 1).float() / 127.5 - 1
+
+
+def native_448_shortfall(dataset: str, jobs: dict) -> dict:
+    """Per split, the number of images that do NOT qualify for the native 448 row: source short side
+    below 448 px (export_table.csv src_w / src_h) or stored side other than 448. Refuses when the
+    export table is missing or lacks an image."""
+    import csv
+
+    table = os.path.join(F.official_spec(dataset)["root"], "export_table.csv")
+    if not os.path.exists(table):
+        raise SystemExit(f"{table} missing: the 448 row needs the export's per-image source sizes")
+    rows = {}
+    with open(table, newline="") as f:
+        for r in csv.DictReader(f):
+            rows[(r["split"], r["name"])] = (int(r["src_w"]), int(r["src_h"]), int(r["side"]))
+    out = {}
+    for split, (paths, _) in jobs.items():
+        bad = 0
+        for p in paths:
+            key = (split, os.path.splitext(os.path.basename(p))[0])
+            if key not in rows:
+                raise SystemExit(f"{p}: not in {table}")
+            w, h, side = rows[key]
+            bad += min(w, h) < 448 or side != 448
+        out[split] = bad
+    return out
 
 
 def gate(enc, x: torch.Tensor, view: str, processor) -> float:
@@ -111,11 +139,11 @@ def main(argv=None, encoder=None, processor=None) -> list[str]:
             for keep in [np.linspace(0, len(ps) - 1, args.max_images).astype(int)]
         }
     if args.view == "448":  # count before any GPU work
-        small = {k: sum(Image.open(f).size[0] != 448 for f in ps) for k, (ps, _) in jobs.items()}
+        small = native_448_shortfall(args.dataset, jobs)
         if any(small.values()):
             raise SystemExit(
-                f"{args.dataset}: images stored below 448 px per split {small}; the 448 row "
-                "would have to exclude them, which is not implemented -- refusing"
+                f"{args.dataset}: images whose source short side is below 448 px (or not stored at 448) "
+                f"per split {small}; the 448 row would have to exclude them, which is not implemented -- refusing"
             )
 
     if encoder is None:
@@ -126,7 +154,7 @@ def main(argv=None, encoder=None, processor=None) -> list[str]:
             from transformers import SiglipImageProcessor
 
             processor = SiglipImageProcessor.from_pretrained(snapshot(revision=encoder.info["revision"]))
-    preset = f"medsiglip{encoder.side}_{args.view}"
+    preset = f"medsiglip{encoder.side}-{str(encoder.info['revision'])[:12]}_{args.view}"
     tag = "_smoke" if args.max_images else ""
     os.makedirs(args.out_dir, exist_ok=True)
     outs = []

@@ -3,15 +3,18 @@
 Design: docs/superpowers/specs/2026-11-14-cxr-domain-design.md, section 7 (Part B).
 
 - Weights: `google/medsiglip-448` on Hugging Face (gated; accept the model's terms first). Only the
-  vision tower is loaded (SiglipVisionModel from the full checkpoint). The resolved snapshot
-  revision is recorded in every describe() / cache, so a silently updated checkpoint changes the
-  record.
+  vision tower is loaded (SiglipVisionModel from the full checkpoint), and loading REFUSES if any
+  vision weight is missing or mis-shaped (transformers would otherwise only warn and keep random
+  weights). The resolved snapshot revision is recorded in every describe() / cache; the alignment
+  target requires it pinned (`medsiglip:448@<revision>`, models/align_targets.py), so it is part of
+  the run identity. `python -m models.medsiglip` downloads the snapshot and prints its revision.
 - Input: images in [-1, 1], (B, 3, H, W). A non-native side is resized to the model's side with
   bilinear interpolation WITHOUT antialiasing (the model card's resize). The 224 px training view
   is therefore upsampled to 448 -- the accepted design call, with its named failure mode (the
   `@224up` vs `@448` probe rows of eval/extract_medsiglip.py measure it).
 - Normalisation: the shipped preprocessor_config.json's mean / std, read from the snapshot, never
-  typed in. The card states they map [0, 1] to [-1, 1]; load() asserts exactly that.
+  typed in. The card states they map [0, 1] to [-1, 1]; preprocess_info() asserts exactly that, and
+  that the shipped resample is bilinear (2), the method prepare() implements.
 - Outputs: `last_hidden_state` (B, grid^2, D), the post-layernorm patch tokens (SigLIP has no class
   token), and `pooler_output` (B, D), the attention-pooled head embedding.
 """
@@ -27,6 +30,7 @@ import torch.nn.functional as F
 
 MODEL_ID = "google/medsiglip-448"
 RESIZE = "bilinear, align_corners=False, antialias=False"
+BILINEAR = 2  # PIL.Image.Resampling.BILINEAR, as stored in preprocessor_config.json
 
 
 def snapshot(model_id: str = MODEL_ID, revision: str | None = None) -> str:
@@ -57,7 +61,28 @@ def preprocess_info(snapshot_dir: str) -> dict:
     side = int(size.get("height", size.get("shortest_edge", 0)))
     if side <= 0 or int(size.get("width", side)) != side:
         raise SystemExit(f"preprocessor_config.json: expected a square size, got {size}")
+    if pc.get("resample") != BILINEAR:
+        raise SystemExit(
+            f"preprocessor_config.json resample {pc.get('resample')!r} is not bilinear ({BILINEAR}); prepare() "
+            "implements the card's bilinear resize, so the model input would not match the shipped processor"
+        )
     return {"mean": mean, "std": std, "side": side, "resample": pc.get("resample")}
+
+
+def load_vision_tower(snap: str, dtype=torch.float32):
+    """SiglipVisionModel from a (full SigLIP) snapshot; refuses when any vision weight was not loaded.
+    Unexpected keys are expected (the text tower of the full checkpoint) and ignored."""
+    from transformers import SiglipVisionModel
+
+    model, li = SiglipVisionModel.from_pretrained(snap, dtype=dtype, output_loading_info=True)
+    missing, mismatched = sorted(li.get("missing_keys") or []), sorted(li.get("mismatched_keys") or [])
+    if missing or mismatched:
+        raise SystemExit(
+            f"{snap}: vision weights not loaded from the checkpoint (missing {missing[:5]}"
+            f"{' ...' if len(missing) > 5 else ''}, mismatched {mismatched[:5]}) -- refusing a partly "
+            "random teacher"
+        )
+    return model
 
 
 class MedSigLIP:
@@ -71,13 +96,15 @@ class MedSigLIP:
         revision: str | None = None,
         model=None,
         info: dict | None = None,
+        snapshot_dir: str | None = None,
     ):
         if model is None:
-            from transformers import SiglipVisionModel
-
-            snap = snapshot(model_id, revision)
-            info = {**preprocess_info(snap), "model_id": model_id, "revision": os.path.basename(snap)}
-            model = SiglipVisionModel.from_pretrained(snap, torch_dtype=dtype)
+            snap = snapshot_dir or snapshot(model_id, revision)
+            rev = os.path.basename(os.path.normpath(snap))
+            if revision is not None and not rev.startswith(revision):
+                raise SystemExit(f"pinned revision {revision!r} but the snapshot resolved to {rev!r}")
+            info = {**preprocess_info(snap), "model_id": model_id, "revision": rev}
+            model = load_vision_tower(snap, dtype)
         if info is None:
             raise ValueError("an injected model needs its info dict")
         cfg = model.config
@@ -126,3 +153,9 @@ class MedSigLIP:
         if n != self.grid * self.grid or math.isqrt(n) ** 2 != n:
             raise RuntimeError(f"expected a square {self.grid}x{self.grid} token grid, got {n} tokens")
         return tok, out.pooler_output
+
+
+if __name__ == "__main__":  # login node: download (gated; `huggingface-cli login` first) and print the pin
+    snap = snapshot()
+    print(snap)
+    print("align target pin: medsiglip:448@" + os.path.basename(os.path.normpath(snap)))

@@ -7,7 +7,7 @@ swappable choice, not wired in: this module defines the interface and a registry
     target = build("dinov3_vit7b16_sat", device)          # any eval.extract_dino preset
     target = build("dino:dinov2_vitl14", device)          # same, explicit family prefix
     target = build("import:my_pkg.my_mod:MyTarget", device)  # your own class, see AlignTarget
-    target = build("medsiglip:448", device)                # MedSigLIP-448 (chest X-ray); 448@<rev> pins
+    target = build("medsiglip:448@<revision>", device)     # MedSigLIP-448 (chest X-ray); pin required
     # TODO(spec s5/s6): shuffled / random-teacher control at matched compute -- a target whose
     # patches are a fixed random permutation of the images' real targets (or a frozen random
     # encoder); not implemented, no family registered for it yet.
@@ -145,14 +145,18 @@ class MedSigLIPTarget(AlignTarget):
         return {**super().describe(), **self.enc.info}
 
 
-def parse_medsiglip_arg(arg: str) -> str | None:
-    """'448' -> None (latest snapshot), '448@<revision>' -> that pinned revision. Only 448 exists."""
+def parse_medsiglip_arg(arg: str) -> str:
+    """'448@<revision>' -> the revision. The pin is required: the target string is the run identity
+    (AlignConfig.identity -> run name and resume check), so an unpinned `medsiglip:448` would name
+    the same run whichever snapshot the Hub serves (project rule 9: a default is not a pin).
+    `python -m models.medsiglip` prints the pin of the cached snapshot."""
     side, _, rev = arg.partition("@")
-    if side != "448":
+    if side != "448" or not rev:
         raise SystemExit(
-            f"medsiglip target: expected 'medsiglip:448' or 'medsiglip:448@<revision>', got {arg!r}"
+            f"medsiglip target: expected 'medsiglip:448@<revision>' (pinned; `python -m models.medsiglip` "
+            f"prints it), got {arg!r}"
         )
-    return rev or None
+    return rev
 
 
 @register("medsiglip")
