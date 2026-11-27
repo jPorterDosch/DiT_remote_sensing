@@ -7,7 +7,8 @@ VIEW of it. Views reproduce exactly what the validated prototypes fed their prob
                     the other timesteps appended raw  (6ac arm A1, section 13)
         t:<i>       DiTF-normalized single timestep i  (6ac arm A2)
         concat      DiTF-normalized all-t concat  (Q2 flux_7t)
-  dino  cls | mp | clsmp | cls4 | cls4mp  (cls4 = last-4-block CLS concat; see DINO_OFFICIAL_VIEWS)
+  dino  cls | mp | clsmp | cls4 | cls4mp  (cls4 = last-4-block CLS concat; see DINO_OFFICIAL_VIEWS;
+        MedSigLIP caches use the same layout, cls = pooled head embedding, no cls4)
   vae   full | pool8 | pool4 | pool2 | pool1  (Q1 poolings of the 16x32x32 clean latent;
         poolN = N x N grid x 16 ch: 1024 / 256 / 64 / 16-d. Q1's "pool 4x4 (256d)" arm is pool8)
 
@@ -35,6 +36,9 @@ DISCARD = [154, 1446]  # DiTF massive-activation channels
 # The DINO arm's official candidates: DINOv2/v3 linear eval's own grid, n_last_blocks in
 # {1, 4} x use_avgpool (dinov3/eval/linear.py create_linear_input), selected on val with C.
 DINO_OFFICIAL_VIEWS = "cls,clsmp,cls4,cls4mp"
+# MedSigLIP probe rows (eval/extract_medsiglip.py) use the DINO cache layout with cls = the pooled
+# head embedding and mp = the mean patch token; there is no cls4 (design 7.2: pooled, mean patch, both).
+MEDSIGLIP_OFFICIAL_VIEWS = "cls,mp,clsmp"
 
 # cv/budget/mlp identity: the ordered image set every paired arm must consume. The
 # RESISC45 5,000 are the section-13 inversion cache's paths, in cache order (6ac).

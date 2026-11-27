@@ -7,6 +7,7 @@ swappable choice, not wired in: this module defines the interface and a registry
     target = build("dinov3_vit7b16_sat", device)          # any eval.extract_dino preset
     target = build("dino:dinov2_vitl14", device)          # same, explicit family prefix
     target = build("import:my_pkg.my_mod:MyTarget", device)  # your own class, see AlignTarget
+    target = build("medsiglip:448", device)                # MedSigLIP-448 (chest X-ray); 448@<rev> pins
     # TODO(spec s5/s6): shuffled / random-teacher control at matched compute -- a target whose
     # patches are a fixed random permutation of the images' real targets (or a frozen random
     # encoder); not implemented, no family registered for it yet.
@@ -121,6 +122,42 @@ class DinoTarget(AlignTarget):
 
     def describe(self):
         return {**super().describe(), "preset": self.preset, "norm": list(map(list, self.spec["norm"]))}
+
+
+class MedSigLIPTarget(AlignTarget):
+    """MedSigLIP-448 last-layer patch tokens (models/medsiglip.py; design section 7.1). The training
+    image (224 px, [-1, 1]) is upsampled to 448 inside the encoder; the 32 x 32 tokens are pooled to
+    the student's grid by match_grid."""
+
+    def __init__(self, device, revision: str | None = None, encoder=None):
+        from models.medsiglip import MedSigLIP
+
+        self.enc = encoder if encoder is not None else MedSigLIP(device, revision=revision)
+        self.dim = self.enc.dim
+        self.name = f"medsiglip{self.enc.side}"
+
+    @torch.no_grad()
+    def patches(self, imgs):
+        tok, _pooled = self.enc.encode(imgs)
+        return tok
+
+    def describe(self):
+        return {**super().describe(), **self.enc.info}
+
+
+def parse_medsiglip_arg(arg: str) -> str | None:
+    """'448' -> None (latest snapshot), '448@<revision>' -> that pinned revision. Only 448 exists."""
+    side, _, rev = arg.partition("@")
+    if side != "448":
+        raise SystemExit(
+            f"medsiglip target: expected 'medsiglip:448' or 'medsiglip:448@<revision>', got {arg!r}"
+        )
+    return rev or None
+
+
+@register("medsiglip")
+def _medsiglip(arg: str, device) -> AlignTarget:
+    return MedSigLIPTarget(device, revision=parse_medsiglip_arg(arg))
 
 
 @register("dino")
