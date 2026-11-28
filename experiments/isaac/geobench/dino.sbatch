@@ -46,8 +46,13 @@ export WANDB_MODE="${WANDB_MODE:-offline}"
 set -euo pipefail
 
 PRESET="${PRESET:?set PRESET to an eval/extract_dino.py PRESETS key (dinov3_vit7b16_web, dinov3_vit7b16_sat, dinov3_vitl16_web)}"  # no braces: they would close the expansion
-KEY="$(python3 -c "import sys; from eval.features import OFFICIAL; print(list(OFFICIAL)[int(sys.argv[1])])" \
-    "${SLURM_ARRAY_TASK_ID:?run as an array job}")"  # array index -> OFFICIAL key, in registry order
+# DATASETS (space list) overrides the GEO-Bench registry, e.g. DATASETS="chestxray14 chexpert vindr_cxr_kaggle"
+# --array=0-2; without it the array index -> OFFICIAL key, in registry order (unchanged).
+KEY="$(python3 -c "
+import sys
+from eval.features import OFFICIAL
+keys = sys.argv[2].split() or list(OFFICIAL)
+print(keys[int(sys.argv[1])])" "${SLURM_ARRAY_TASK_ID:?run as an array job}" "${DATASETS:-}")"
 SMOKE="${SMOKE:-0}"
 # DEVICE=cpu: float32 extraction on a CPU node, for a model small enough (ViT-L) when no GPU slot
 # is free:  PRESET=dinov3_vitl16_web DEVICE=cpu sbatch -p short -q short -t 3:00:00 --gpus-per-task=0 \
@@ -64,9 +69,11 @@ if [ "$SMOKE" = 1 ]; then
 else
     OUT=models/dino_feats; CAP=()
 fi
+OUT="$(python3 -m eval.official_tree out "$KEY" "$OUT")"  # chest X-ray: the mode-700 CXR store
 echo "=== extract $KEY $PRESET device=$DEVICE smoke=$SMOKE -> $OUT $(date -Is)"
 
-python3 -m eval.export_geobench --task "${KEY//_/-}" --out "data/${KEY}_rgb"  # tree == manifest
+TREE="$(python3 -c "import sys; from eval.features import official_spec; print(official_spec(sys.argv[1])['root'])" "$KEY")"
+python3 -m eval.official_tree verify "$KEY" "$TREE"  # tree == manifest (GEO-Bench or chest X-ray)
 # Reuse only INTACT caches of THIS preset over the full split (rule 11): every member readable
 # (a job killed mid-np.savez leaves a truncated zip), preset recorded, N == the registry size.
 have=0

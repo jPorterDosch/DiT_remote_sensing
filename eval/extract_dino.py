@@ -224,10 +224,10 @@ def main(argv=None) -> list[str]:
     if args.dataset in F.CV_IDENTITY:
         paths, y = F.load_identity(F.CV_IDENTITY[args.dataset])
         jobs = {f"n{len(paths)}": (paths, y)}
-    elif args.dataset in F.OFFICIAL:
+    elif args.dataset in F.OFFICIAL or args.dataset in F.OFFICIAL_CXR:
         jobs = {s: F.list_official_split(args.dataset, s) for s in F.official_spec(args.dataset)["sizes"]}
     else:
-        raise SystemExit(f"{args.dataset}: neither a CV_IDENTITY nor an OFFICIAL dataset")
+        raise SystemExit(f"{args.dataset}: neither a CV_IDENTITY nor an OFFICIAL / OFFICIAL_CXR dataset")
     if args.max_images:
         jobs = {
             k: ([ps[i] for i in keep], ys[keep])
