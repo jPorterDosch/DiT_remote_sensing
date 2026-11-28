@@ -61,6 +61,7 @@ def _wrapper(name: str) -> type:
     return GeoBenchWrapper
 
 
-for _name in F.OFFICIAL:
+# Chest X-ray probe trees (OFFICIAL_CXR) use the same wrapper: same listing, same bicubic transform.
+for _name in [*F.OFFICIAL, *F.OFFICIAL_CXR]:
     if _name != "m_eurosat":
         register_dataset(_name)(_wrapper(_name))

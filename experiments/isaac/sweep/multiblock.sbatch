@@ -66,11 +66,12 @@ read -r -a BLOCK_LIST <<<"${BLOCKS//-/ }"
 read -r -a T_LIST <<<"${TS//-/ }"
 if [ "$SMOKE" = 1 ]; then
     ENS="${ENS:-2}"
-    SAVE_ROOT="models/smoke_multiblock/${DATASET}"
+    # chest X-ray datasets: under the mode-700 CXR store (eval/official_tree.py); GEO-Bench unchanged
+    SAVE_ROOT="$(python3 -m eval.official_tree out "$DATASET" "models/smoke_multiblock/${DATASET}")"
     rm -rf "$SAVE_ROOT"  # private smoke dir: always start clean so the gate tests THIS code
 else
     ENS="${ENS:-8}"
-    SAVE_ROOT="${SAVE_ROOT:-models/${DATASET}_multiblock_ens${ENS}}"
+    SAVE_ROOT="$(python3 -m eval.official_tree out "$DATASET" "${SAVE_ROOT:-models/${DATASET}_multiblock_ens${ENS}}")"
 fi
 echo "=== multiblock $DATASET t=${T_LIST[*]} blocks=${BLOCK_LIST[*]} ens=$ENS smoke=$SMOKE -> $SAVE_ROOT $(date -Is)"
 
@@ -81,8 +82,8 @@ s = official_spec(sys.argv[1])
 print(s['root'], ','.join(s['sizes']))" "$DATASET")
 DATA="${DATA:-$REG_ROOT}"
 IFS=',' read -r -a SPLIT_LIST <<<"$SPLITS"
-[ -d "$DATA/${SPLIT_LIST[0]}" ] || { echo "FATAL: $DATA missing -- export $DATASET first (eval.export_geobench)" >&2; exit 1; }
-python3 -m eval.export_geobench --task "${DATASET//_/-}" --out "$DATA"  # tree == committed manifest
+[ -d "$DATA/${SPLIT_LIST[0]}" ] || { echo "FATAL: $DATA missing -- export $DATASET first (eval.export_geobench / eval.export_cxr)" >&2; exit 1; }
+python3 -m eval.official_tree verify "$DATASET" "$DATA"  # tree == manifest (GEO-Bench or chest X-ray)
 
 seed_for() { case "$1" in train) echo 42 ;; test) echo 43 ;; val) echo 44 ;; *) echo "FATAL: no seed for split $1" >&2; exit 1 ;; esac; }
 

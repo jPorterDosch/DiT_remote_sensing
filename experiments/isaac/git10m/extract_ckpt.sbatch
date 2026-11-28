@@ -53,9 +53,10 @@ export WANDB_MODE="${WANDB_MODE:-disabled}"
 nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader
 set -euo pipefail
 
-DATASETS=(m_eurosat m_brick_kiln m_pv4ger m_so2sat m_forestnet m_bigearthnet)
-IDX="${SLURM_ARRAY_TASK_ID:?submit with --array=0-5 (one GEO-Bench task per array index)}"
-[ "$IDX" -ge 0 ] && [ "$IDX" -lt "${#DATASETS[@]}" ] || { echo "FATAL: array index $IDX not in 0..5" >&2; exit 1; }
+# DATASETS (space list) overrides the six GEO-Bench tasks, e.g. DATASETS="chestxray14 chexpert vindr_cxr_kaggle"
+read -r -a DATASETS <<<"${DATASETS:-m_eurosat m_brick_kiln m_pv4ger m_so2sat m_forestnet m_bigearthnet}"
+IDX="${SLURM_ARRAY_TASK_ID:?submit with --array=0-<N-1> (one dataset of DATASETS per array index)}"
+[ "$IDX" -ge 0 ] && [ "$IDX" -lt "${#DATASETS[@]}" ] || { echo "FATAL: array index $IDX not in 0..$((${#DATASETS[@]} - 1))" >&2; exit 1; }
 DATASET="${DATASETS[$IDX]}"
 CKPT="${CKPT:?set CKPT=<run>/checkpoints/lora_last_*.pt via --export}"
 [ -f "$CKPT" ] || { echo "FATAL: $CKPT missing" >&2; exit 1; }
@@ -85,10 +86,12 @@ TS=(100 180 260 340 420 500 580 740 900)
 TAG="_lora-${LORA_TAG}_k$(IFS=-; echo "${BLOCK_LIST[*]}")"  # tasks/extraction.py: ..._oneshot_g1.0_lora-<tag>_k<blocks>.npz
 [ "$TAG" != "_lora-${LORA_TAG}_k" ] || { echo "FATAL: empty block list in TAG" >&2; exit 1; }
 if [ "${SMOKE:-0}" = 1 ]; then
-    ENS=2; SUBSET_ARGS=(--subset-size 20); SAVE_ROOT="models/git10m_eval_smoke/$NAME/$DATASET"
+    ENS=2; SUBSET_ARGS=(--subset-size 20)
+    SAVE_ROOT="$(python3 -m eval.official_tree out "$DATASET" "models/git10m_eval_smoke/$NAME/$DATASET")"
     rm -rf "$SAVE_ROOT"  # private smoke dir: always start clean
 else
-    ENS=8; SUBSET_ARGS=(); SAVE_ROOT="models/git10m_eval/$NAME/$DATASET"
+    ENS=8; SUBSET_ARGS=()
+    SAVE_ROOT="$(python3 -m eval.official_tree out "$DATASET" "models/git10m_eval/$NAME/$DATASET")"
 fi
 [ -f "$RUN_DIR/conflict_gate.txt" ] && ! grep -q FAIL "$RUN_DIR/conflict_gate.txt" \
     || { echo "FATAL: $RUN_DIR/conflict_gate.txt missing or FAIL -- the run did not finish clean" >&2; exit 1; }
@@ -101,8 +104,8 @@ s = official_spec(sys.argv[1])
 print(s['root'], ','.join(s['sizes']))" "$DATASET")
 DATA="${DATA:-$REG_ROOT}"
 IFS=',' read -r -a SPLIT_LIST <<<"$SPLITS"
-[ -d "$DATA/${SPLIT_LIST[0]}" ] || { echo "FATAL: $DATA missing -- export $DATASET first (eval.export_geobench)" >&2; exit 1; }
-python3 -m eval.export_geobench --task "${DATASET//_/-}" --out "$DATA"  # tree == committed manifest
+[ -d "$DATA/${SPLIT_LIST[0]}" ] || { echo "FATAL: $DATA missing -- export $DATASET first (eval.export_geobench / eval.export_cxr)" >&2; exit 1; }
+python3 -m eval.official_tree verify "$DATASET" "$DATA"  # tree == manifest (GEO-Bench or chest X-ray)
 
 seed_for() { case "$1" in train) echo 42 ;; test) echo 43 ;; val) echo 44 ;; *) echo "FATAL: no seed for split $1" >&2; exit 1 ;; esac; }
 
@@ -160,11 +163,12 @@ for split in "${SPLIT_LIST[@]}"; do
     extract "$split"
 done
 echo "GIT10M_EVAL_OK $DATASET -> $SAVE_ROOT"
+FEAT_BASE="$(dirname "$SAVE_ROOT")"  # models/git10m_eval/<NAME>, or its CXR-store counterpart
 cat <<EOF
 matrix model entries (eval/matrix_specs/phase2_template.json; fill <NAME_$ARM> = $NAME):
   fixed aligned block:
   {"name": "flux-$LORA_TAG", "kind": "flux", "teacher": "dinov3-sat", "view": null,
-   "features": "models/git10m_eval/$NAME/{dataset}/*/multistep_{split}_feats_oneshot_g1.0_lora-${LORA_TAG}_k*.npz",
+   "features": "$FEAT_BASE/{dataset}/*/multistep_{split}_feats_oneshot_g1.0_lora-${LORA_TAG}_k*.npz",
    "expect": {"extraction_mode": "ONESHOT", "ensemble_size": $ENS, "weights": "flux-dev+lora:$LORA_TAG", "k": 28}}
   own best block: the same entry named "flux-$LORA_TAG-best" plus "per_dataset": {<dataset>: {"expect": {..., "k": <block>}}},
   <block> = eval.sweep select on THESE caches' val split at 100 % labels (phase1.json's frozen
